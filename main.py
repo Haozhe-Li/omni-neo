@@ -103,7 +103,7 @@ def chat(request: QueryRequest):
 
 
 @app.post("/get_title")
-def get_title(request: QueryRequest):
+def generate_title(request: QueryRequest):
     return get_title(request.query)
 
 
