@@ -10,3 +10,4 @@ spider-client
 langchain-openai
 uvicorn
 fastapi
+tavily-python
