@@ -1,0 +1,12 @@
+deepagents
+langchain
+langchain_community
+langgraph
+python-dotenv
+langgraph-checkpoint-postgres
+psycopg[binary]
+langchain-groq
+spider-client
+langchain-openai
+uvicorn
+fastapi
