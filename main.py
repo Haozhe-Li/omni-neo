@@ -42,7 +42,7 @@ def generate_response(query: str, thread_id: str):
     start_researching_item = {
         "type": "reasoning",
         "agent": "System",
-        "content": "Great! I'm working on your query now. Hang tight!",
+        "content": "Hang tight! It may take a few minutes to complete the research. Please don't close this page while I'm working on it.",
         "raw": {},
     }
 
