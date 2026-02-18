@@ -53,7 +53,7 @@ Sources list rules:
 sub_agents = [coding_expert, evaluator, researcher]
 
 agent = create_deep_agent(
-    model="openai:gpt-5-mini-2025-08-07",
+    model="openai:gpt-4.1-mini-2025-04-14",
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,
     checkpointer=checkpointer,
