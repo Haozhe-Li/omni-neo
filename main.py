@@ -38,15 +38,14 @@ def generate_response(query: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
-    # logger.info(f"Received query: {query}")
-    # start_researching_item = {
-    #     "type": "reasoning",
-    #     "agent": "System",
-    #     "content": f"Great! I'm working on your query now. Hang tight!",
-    #     "raw": {},
-    # }
+    start_researching_item = {
+        "type": "reasoning",
+        "agent": "System",
+        "content": f"Great! I'm working on your query now. Hang tight!",
+        "raw": {},
+    }
 
-    # yield f"data: {json.dumps(start_researching_item)}\n\n"
+    yield f"data: {json.dumps(start_researching_item)}\n\n"
 
     try:
         # Replicating the logic from main.py
