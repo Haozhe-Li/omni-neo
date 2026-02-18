@@ -15,10 +15,7 @@ from core.light_agent import omni_light_agent
 from core.supervisor import agent
 from core.utils.format import format_answer
 from core.get_title import get_title
-
-# Configure logging
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
+from core.auto_select_model import get_auto_select_model
 
 app = FastAPI(title="Omni Agent API")
 
@@ -134,6 +131,17 @@ def get_thread_id():
 @app.post("/get_title")
 def generate_title(request: QueryRequest):
     return get_title(request.query)
+
+
+@app.post("/get_model")
+def get_model(request: QueryRequest):
+    res = get_auto_select_model(request.query)
+    if res == "smart":
+        res = "canvas"
+    else:
+        res = "light"
+    # print(f"Query: {request.query}, Model: {res}")
+    return json.dumps({"model": res})
 
 
 @app.get("/health")
