@@ -7,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import json
+import uuid
 import logging
+from core.light_agent import omni_light_agent
 
 # Import the agent and formatter from existing codebase
 from core.supervisor import agent
@@ -32,29 +34,32 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     query: str
+    thread_id: str = None
+    follow_up_content: str = None
 
 
-def generate_response(query: str):
+def generate_response(query: str, thread_id: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
     start_researching_item = {
         "type": "reasoning",
         "agent": "System",
-        "content": f"Great! I'm working on your query now. Hang tight!",
+        "content": "Great! I'm working on your query now. Hang tight!",
         "raw": {},
     }
 
     yield f"data: {json.dumps(start_researching_item)}\n\n"
 
     try:
+        config = {"configurable": {"thread_id": thread_id}}
         # Replicating the logic from main.py
         # stream_mode="updates" and subgraphs=True are critical parameters used in main.py
         stream = agent.stream(
             {"messages": [{"role": "user", "content": query}]},
             subgraphs=True,
             stream_mode="updates",
-            # config={"recursion_limit": 20}, # Optional config found in main.py comments
+            config=config,
         )
         for content in stream:
             # Replicating the formatting logic from main.py
@@ -76,6 +81,9 @@ def generate_response(query: str):
                     yield f"data: {formatted}\n\n"
 
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         # logger.error(f"Error during streaming: {e}")
         # Return an error message in a compatible format
         error_response = json.dumps(
@@ -95,10 +103,32 @@ def chat(request: QueryRequest):
         "Connection": "keep-alive",
     }
     return StreamingResponse(
-        generate_response(request.query),
+        generate_response(request.query, request.thread_id),
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@app.post("/light_chat")
+def light_chat(request: QueryRequest):
+    config = {"configurable": {"thread_id": request.thread_id}}
+    message = {"messages": [{"role": "user", "content": request.query}]}
+    if request.follow_up_content:
+        message = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"{request.query}\n\nFollow up text selection: {request.follow_up_content}",
+                }
+            ]
+        }
+    res = omni_light_agent.invoke(message, config=config)
+    return json.dumps({"answer": res.get("messages")[-1].content})
+
+
+@app.get("/get_thread_id")
+def get_thread_id():
+    return str(uuid.uuid4())
 
 
 @app.post("/get_title")

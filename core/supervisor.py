@@ -1,8 +1,8 @@
-import os
 from deepagents import create_deep_agent
 from core.subagents.coding_expert import coding_expert
 from core.subagents.evaluator import evaluator
 from core.subagents.researcher import researcher
+from core.database.postgresql_saver import checkpointer
 
 supervisor_system_prompt = """
 You are the supervisor deep agent. You receive a user request and deliver a comprehensive, well-sourced report.
@@ -51,8 +51,10 @@ Sources list rules:
 
 
 sub_agents = [coding_expert, evaluator, researcher]
+
 agent = create_deep_agent(
     model="openai:gpt-5-mini-2025-08-07",
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,
+    checkpointer=checkpointer,
 )
