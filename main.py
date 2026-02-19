@@ -8,8 +8,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import json
 import uuid
-import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from core.light_agent import omni_light_agent
+from core.database.db_threads_control import (
+    upsert_thread,
+    touch_thread,
+    cleanup_old_threads,
+)
 
 # Import the agent and formatter from existing codebase
 from core.supervisor import agent
@@ -19,6 +25,9 @@ from core.auto_select_model import get_auto_select_model
 from core.source_checker import check_source
 
 app = FastAPI(title="Omni Agent API")
+
+# Thread pool for fire-and-forget blocking DB calls
+_db_executor = ThreadPoolExecutor(max_workers=4)
 
 # Enable CORS for all origins
 app.add_middleware(
@@ -60,13 +69,12 @@ def generate_response(query: str, thread_id: str):
         config = {"configurable": {"thread_id": thread_id}}
         # Replicating the logic from main.py
         # stream_mode="updates" and subgraphs=True are critical parameters used in main.py
-        stream = agent.stream(
+        for content in agent.stream(
             {"messages": [{"role": "user", "content": query}]},
             subgraphs=True,
             stream_mode="updates",
             config=config,
-        )
-        for content in stream:
+        ):
             # Replicating the formatting logic from main.py
             # 1. Convert content to string (as main.py does)
             content_str = str(content)
@@ -101,11 +109,16 @@ def generate_response(query: str, thread_id: str):
 
 
 @app.post("/chat")
-def chat(request: QueryRequest):
+async def chat(request: QueryRequest):
     """
     Endpoint to interact with the agent.
     Returns a streaming response of formatted JSON objects.
+    Fire-and-forget: update threads_control.updated_at asynchronously.
     """
+    if request.thread_id:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
@@ -118,7 +131,12 @@ def chat(request: QueryRequest):
 
 
 @app.post("/light_chat")
-def light_chat(request: QueryRequest):
+async def light_chat(request: QueryRequest):
+    # Fire-and-forget: update threads_control.updated_at asynchronously
+    if request.thread_id:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+
     config = {"configurable": {"thread_id": request.thread_id}}
     message = {"messages": [{"role": "user", "content": request.query}]}
     if request.follow_up_content:
@@ -151,7 +169,13 @@ def check_source_api(request: CheckSourceRequest):
 
 @app.get("/get_thread_id")
 def get_thread_id():
-    return str(uuid.uuid4())
+    """
+    Generate a new thread ID and synchronously register it in threads_control.
+    This is the only blocking DB write in the thread lifecycle.
+    """
+    thread_id = str(uuid.uuid4())
+    upsert_thread(thread_id)
+    return thread_id
 
 
 @app.post("/get_title")
@@ -171,7 +195,10 @@ def get_model(request: QueryRequest):
 
 
 @app.get("/health")
-def health():
+async def health():
+    # Fire-and-forget: clean up stale threads asynchronously
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_db_executor, cleanup_old_threads)
     return {"status": "ok"}
 
 
