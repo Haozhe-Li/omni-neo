@@ -13,6 +13,7 @@ Goal:
 Workflow:
 1. **Search**: Run tavily search for the topic.
 2. **Skim**: Pick the top 1-3 most relevant results and use `skimming_web_pages`. Do NOT read everything.
+3. **Quote Citation**: Use `write_file` and `edit_file` tools to create citation.
 3. **Report**: Immediately generate the report based on snippets and skimmed content.
 
 Rules:
@@ -22,13 +23,28 @@ Rules:
 - Return the report immediately after skimming.
 - Be concise.
 
+Citation:
+- Use `write_file` tool to create a `citation.json` file like this:
+
+```json
+{
+    "citations": [
+        {
+            "title": "Title of the web page",
+            "url": "URL of the web page",
+            "content": "Exact quote from the web page"
+        }
+    ]
+}
+```
+- You can use `edit_file` tool to update the `citation.json` file and `read_file` tool to read the `citation.json` file.
+
 AVOID:
 - Calling tools more than once.
 - Overthinking or endlessly refining.
 
 Output Format:
-- **Key Findings**: Bullet points with inline citations.
-- **Source List**: URL and Title.
+- A Concise Report of all the findings you have.
 """
 
 

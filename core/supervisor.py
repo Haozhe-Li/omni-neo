@@ -44,7 +44,8 @@ A Good Example (This is just a example):
 7. Review evaluator's results and update todo list.
 8. Delegate to coding_expert for a certain task, for example doing math. (if needed)
 9. Review coding_expert's results and update todo list.
-10. Write the final report answer, and sources. (required)
+10. Use `read_file` tool to read the `citation.json` file and update todo list. (required)
+11. Write the final report answer, and sources. (required)
 
 ## Final Report and Output
 
@@ -56,21 +57,19 @@ Report writing:
 - If coding is involved, you should include the code and the output of the code in the report, using ```python ... ``` for code and ``` ... ``` for output.
 - If user is asking for any financial, medical, or legal advice, you should always add a disclaimer.
 
+Sources list rules:
+- Researcher Subagent will store all citation at `citation.json`. You shuold use `read_file` tool to read the `citation.json` file.
+- Keep this `citation.json` as your only citation source, and put that into final sources.
 
 FINAL OUTPUT FORMAT (strict):
 Return exactly one JSON object with TWO keys and nothing else:
 {
-  "final_answer": "A detailed Markdown report.All sourcing goes in final_sources below.",
+  "final_answer": "A detailed Markdown report. All sourcing goes in final_sources below.",
   "final_sources": [
-    {"title": "Source Title", "url": "https://..."},
-    {"title": "Source Title 2", "url": "https://..."}
+    {"title": "Source Title", "url": "https://...", "content": "..."},
+    {"title": "Source Title 2", "url": "https://...", "content": "..."}
   ]
 }
-
-Sources list rules:
-- Include every unique source used in preparing the answer.
-- Titles should match the page/document name as closely as possible.
-- For simple/direct answers that need no sources, use an empty list.
 """
 
 sub_agents = [coding_expert, evaluator, researcher]

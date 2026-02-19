@@ -21,14 +21,15 @@ for content in agent.stream(
         "messages": [
             {
                 "role": "user",
-                "content": "你好",
+                "content": "深度研究介绍一下Langchain",
             }
         ]
     },
     subgraphs=True,
     stream_mode="updates",
-    # config={"recursion_limit": 20},
+    config={"configurable": {"thread_id": "1221"}},
 ):
+    print(content)
     formated = format_answer(str(content))
     if formated:
         items_to_save = []

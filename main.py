@@ -16,6 +16,7 @@ from core.supervisor import agent
 from core.utils.format import format_answer
 from core.get_title import get_title
 from core.auto_select_model import get_auto_select_model
+from core.source_checker import check_source
 
 app = FastAPI(title="Omni Agent API")
 
@@ -33,6 +34,11 @@ class QueryRequest(BaseModel):
     query: str
     thread_id: str = None
     follow_up_content: str = None
+
+
+class CheckSourceRequest(BaseModel):
+    source: dict  # Check if source is a dict
+    text_selection: str
 
 
 def generate_response(query: str, thread_id: str):
@@ -123,6 +129,21 @@ def light_chat(request: QueryRequest):
     return json.dumps({"answer": res.get("messages")[-1].content})
 
 
+@app.post("/check_source")
+def check_source_api(request: CheckSourceRequest):
+    try:
+        source_data = request.source
+        if len(request.text_selection) < 10:
+            return {"error": "Text selection is too short"}
+        final_sources = source_data.get("final_sources", [])
+        if not final_sources:
+            return {"error": "No sources found"}
+        res = check_source(source_data, request.text_selection)
+        return res
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/get_thread_id")
 def get_thread_id():
     return str(uuid.uuid4())
@@ -151,5 +172,5 @@ def health():
 
 # if __name__ == "__main__":
 #     import uvicorn
-
+#
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
