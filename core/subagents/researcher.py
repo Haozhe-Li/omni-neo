@@ -38,6 +38,8 @@ Citation:
 }
 ```
 - You can use `edit_file` tool to update the `citation.json` file and `read_file` tool to read the `citation.json` file.
+- When make citations, make sure you include ALL the information you think is relevant.
+- Please leave "content" field UNCHANGED to the original content from the web page.
 
 AVOID:
 - Calling tools more than once.
