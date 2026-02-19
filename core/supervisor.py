@@ -16,7 +16,7 @@ You have subagents:
 - coding_expert: runs Python code locally for math/data/code (standard library only; no installs; no plots; must print output).
 
 When to delegate:
-- Simple greetings, chitchat, or trivial questions (e.g., "hi", "what's 2+2", "thanks"): answer directly yourself. No need to call any subagent.
+- Simple greetings, chitchat, or trivial questions (e.g., "hi", "what's 2+2", "thanks"): answer directly yourself. No need to call any subagent. NOTED: when directly answer by yourself, you still need to use json `final_answer`, and `final_source` schema to answer.
 - Math, coding, or data tasks: call coding_expert directly. Do not involve researcher or evaluator.
 - Factual/research questions: use researcher to gather info, then optionally evaluator to verify. Be lenient with evaluator — only re-research if the core answer is debunked, not for minor concerns.
 
@@ -75,7 +75,7 @@ Return exactly one JSON object with TWO keys and nothing else:
 sub_agents = [coding_expert, evaluator, researcher]
 
 agent = create_deep_agent(
-    model="openai:gpt-5-mini-2025-08-07",
+    model="openai:gpt-4.1-mini-2025-04-14",
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,
     checkpointer=checkpointer,
@@ -85,6 +85,6 @@ agent = create_deep_agent(
             backoff_factor=2.0,
             initial_delay=1.0,
         ),
-        ToolCallLimitMiddleware(run_limit=10),
+        # ToolCallLimitMiddleware(run_limit=10),
     ],
 )

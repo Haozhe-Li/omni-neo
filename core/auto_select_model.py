@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
 import os
-import re
+from core.utils.utils import smart_split
 import dotenv
 from pydantic import BaseModel, Field
 
@@ -23,12 +23,6 @@ model_with_structure = auto_select_model_llm.with_structured_output(Decision)
 llm_system_prompt = (
     "Decide if the query requires deep reasoning (True) or is simple (False)."
 )
-
-
-def smart_split(text):
-    pattern = r"[a-zA-Z0-9']+|[\u4e00-\u9fff]|[^\w\s]"
-    result = re.findall(pattern, text)
-    return [item for item in result if item.strip()]
 
 
 def naive_selector(query: str) -> str:
@@ -89,9 +83,9 @@ def get_auto_select_model(query: str) -> str:
     return "smart" if res else "fast"
 
 
-if __name__ == "__main__":
-    import time
+# if __name__ == "__main__":
+#     import time
 
-    start_time = time.time()
-    print(get_auto_select_model("给我介绍一下2026年的超级碗，研究一下"))
-    print(time.time() - start_time)
+#     start_time = time.time()
+#     print(get_auto_select_model("给我介绍一下2026年的超级碗，研究一下"))
+#     print(time.time() - start_time)

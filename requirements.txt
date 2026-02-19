@@ -11,4 +11,3 @@ langchain-openai
 uvicorn
 fastapi
 tavily-python
-rank_bm25

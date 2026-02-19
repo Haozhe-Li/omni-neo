@@ -32,21 +32,23 @@ Citation:
         {
             "title": "Title of the web page",
             "url": "URL of the web page",
-            "content": "Exact quote from the web page"
-        }
+            "content": "quote from the web page, can be from Search Results Snippets or Skimmed Web Pages, or Full Text"
+        },
+        xxx
     ]
 }
 ```
 - You can use `edit_file` tool to update the `citation.json` file and `read_file` tool to read the `citation.json` file.
-- When make citations, make sure you include ALL the information you think is relevant.
+- When make citations, make as much as possible if the information is useful. (No Less than 5 pieces)
 - Please leave "content" field UNCHANGED to the original content from the web page.
 
 AVOID:
 - Calling tools more than once.
 - Overthinking or endlessly refining.
 
-Output Format:
+RETURNS:
 - A Concise Report of all the findings you have.
+- The `citation.json` file (You don't need to return it, as it is saved already.)
 """
 
 

@@ -54,6 +54,8 @@ def generate_response(query: str, thread_id: str):
 
     yield f"data: {json.dumps(start_researching_item)}\n\n"
 
+    answer_produced = False
+
     try:
         config = {"configurable": {"thread_id": thread_id}}
         # Replicating the logic from main.py
@@ -76,12 +78,15 @@ def generate_response(query: str, thread_id: str):
             if formatted:
                 if isinstance(formatted, list):
                     for item in formatted:
-                        # item is expected to be a JSON string from format_answer
-                        # We yield it followed by a newline for streaming
+                        if "final_answer" in str(item):
+                            answer_produced = True
                         yield f"data: {item}\n\n"
                 else:
                     # Fallback for non-list returns, though format_answer type hint says list[str]
                     yield f"data: {formatted}\n\n"
+        print("Stream finished")
+        if not answer_produced:
+            yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'No answer produced'})}\n\n"
 
     except Exception as e:
         import traceback
