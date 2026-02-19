@@ -18,6 +18,11 @@ omni_light_agent = create_react_agent(
         Rules:
         - Use tavily_search if and only if the user's query requires time-sensitive information.
         - Otherwise, answer directly yourself.
+
+        Output (ST):
+        - Use markdown format only.
+        - DO NOT USE any headings in markdown, including #, ##, etc. 
+        - Keep your answer simple, warm and casual.
         """
     ),
     name="light_agent",
