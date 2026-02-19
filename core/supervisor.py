@@ -3,6 +3,7 @@ from core.subagents.coding_expert import coding_expert
 from core.subagents.evaluator import evaluator
 from core.subagents.researcher import researcher
 from core.database.postgresql_saver import checkpointer
+from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 supervisor_system_prompt = """
 You are the supervisor deep agent. You receive a user request and deliver a comprehensive, well-sourced report.
@@ -50,7 +51,7 @@ A Good Example (This is just a example):
 Report writing:
 - Use Markdown ONLY (strict).
 - Use H1 as main title. Then use h2 for sections. Your sections should include [introduction, main bodies (multiple), conclusion ].
-- Make sure your report has total words ~500 words.
+- Make sure your report has total words ~800 words.
 - Do not include any inline citations, links, or URLs in this field. (Unless user explicitly ask for a certain URL)
 - If coding is involved, you should include the code and the output of the code in the report, using ```python ... ``` for code and ``` ... ``` for output.
 - If user is asking for any financial, medical, or legal advice, you should always add a disclaimer.
@@ -75,8 +76,16 @@ Sources list rules:
 sub_agents = [coding_expert, evaluator, researcher]
 
 agent = create_deep_agent(
-    model="openai:gpt-4.1-mini-2025-04-14",
+    model="openai:gpt-5-mini-2025-08-07",
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,
     checkpointer=checkpointer,
+    middleware=[
+        ToolRetryMiddleware(
+            max_retries=2,
+            backoff_factor=2.0,
+            initial_delay=1.0,
+        ),
+        ToolCallLimitMiddleware(run_limit=10),
+    ],
 )
