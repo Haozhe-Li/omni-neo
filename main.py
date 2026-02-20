@@ -177,7 +177,9 @@ async def light_chat(request: QueryRequest):
 
     config = {"configurable": {"thread_id": request.thread_id}}
     personalization = format_personalization(request.personalization)
-    message_str = f"{request.query}\n\n{personalization}"
+    message_str = (
+        f"User Query: {request.query}\n\nPersonalization: {personalization}\n\n"
+    )
     if request.follow_up_content:
         message_str += f"\n\nFollow up text selection: {request.follow_up_content}"
     message = {
