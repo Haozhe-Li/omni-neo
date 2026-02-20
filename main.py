@@ -176,16 +176,18 @@ async def light_chat(request: QueryRequest):
         loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
 
     config = {"configurable": {"thread_id": request.thread_id}}
-    message = {"messages": [{"role": "user", "content": request.query}]}
+    personalization = format_personalization(request.personalization)
+    message_str = f"{request.query}\n\n{personalization}"
     if request.follow_up_content:
-        message = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"{request.query}\n\nFollow up text selection: {request.follow_up_content}",
-                }
-            ]
-        }
+        message_str += f"\n\nFollow up text selection: {request.follow_up_content}"
+    message = {
+        "messages": [
+            {
+                "role": "user",
+                "content": message_str,
+            }
+        ]
+    }
     res = omni_light_agent.invoke(message, config=config)
     return json.dumps(
         {

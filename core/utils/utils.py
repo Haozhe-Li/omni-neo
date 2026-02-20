@@ -13,7 +13,7 @@ def format_personalization(personalization: Personalization) -> str:
     if personalization.response_language:
         result += f"Response Language: {personalization.response_language}\n"
     if personalization.memories:
-        result += "Memories:\n"
+        result += "Memories (Not all memories might be useful for the current task):\n"
         for i, memory in enumerate(personalization.memories):
             result += f"{i + 1}. {memory}\n"
     return result
