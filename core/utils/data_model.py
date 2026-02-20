@@ -10,7 +10,7 @@ class QueryRequest(BaseModel):
     query: str
     thread_id: str = None
     follow_up_content: str = None
-    personalization: Personalization = None
+    personalization: Personalization = Personalization()
 
 
 class CheckSourceRequest(BaseModel):
