@@ -2,7 +2,7 @@ from langchain_groq import ChatGroq
 import os
 from core.utils.utils import smart_split
 import dotenv
-from pydantic import BaseModel, Field
+from core.utils.data_model import Decision
 
 
 dotenv.load_dotenv()
@@ -11,12 +11,6 @@ auto_select_model_llm = ChatGroq(
     model="llama-3.1-8b-instant",
     api_key=os.getenv("GROQ_API_KEY"),
 )
-
-
-class Decision(BaseModel):
-    is_smart: bool = Field(
-        description="True if query requires deep thinking, coding, or research. False if simple."
-    )
 
 
 model_with_structure = auto_select_model_llm.with_structured_output(Decision)

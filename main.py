@@ -5,7 +5,6 @@ dotenv.load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 import json
 import uuid
 import asyncio
@@ -25,6 +24,8 @@ from core.auto_select_model import get_auto_select_model
 from core.source_checker import check_source
 from core.query_rewriter import rewrite_query
 from core.prompt_guard import is_harmful
+from core.utils.data_model import QueryRequest, CheckSourceRequest, Personalization
+from core.utils.utils import format_personalization
 
 app = FastAPI(title="Omni Agent API")
 
@@ -41,18 +42,7 @@ app.add_middleware(
 )
 
 
-class QueryRequest(BaseModel):
-    query: str
-    thread_id: str = None
-    follow_up_content: str = None
-
-
-class CheckSourceRequest(BaseModel):
-    source: dict  # Check if source is a dict
-    text_selection: str
-
-
-def generate_response(query: str, thread_id: str):
+def generate_response(query: str, thread_id: str, personalization: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
@@ -80,7 +70,7 @@ def generate_response(query: str, thread_id: str):
 
     yield f"data: {json.dumps(start_researching_message)}\n\n"
 
-    rewritten_query = rewrite_query(query)
+    rewritten_query = rewrite_query(query, personalization)
 
     finish_rewriting_message = {
         "type": "tool",
@@ -102,7 +92,7 @@ def generate_response(query: str, thread_id: str):
     show_rewritten_query_message = {
         "type": "reasoning",
         "agent": "Supervisor",
-        "content": f"I've rewritten user's query to: {rewritten_query}. Now let's start the research.",
+        "content": f"I've rewritten user's query to: {rewritten_query} Now let's start the research.",
         "raw": {},
     }
 
@@ -163,12 +153,14 @@ async def chat(request: QueryRequest):
         loop = asyncio.get_event_loop()
         loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
 
+    personalization = format_personalization(request.personalization)
+
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
     return StreamingResponse(
-        generate_response(request.query, request.thread_id),
+        generate_response(request.query, request.thread_id, personalization),
         media_type="text/event-stream",
         headers=headers,
     )

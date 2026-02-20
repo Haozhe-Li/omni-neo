@@ -3,13 +3,8 @@ from core.tools.web_search import tavily_search
 from langchain.agents import create_agent
 from core.database.postgresql_saver import checkpointer
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
-from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
-from pydantic import BaseModel, Field
-
-
-class LightAgentOutput(BaseModel):
-    answer: str = Field(description="The final answer to the user's query.")
-    use_search: bool = Field(description="Whether you have used tavily_search.")
+from langchain.agents.structured_output import ProviderStrategy
+from core.utils.data_model import LightAgentOutput
 
 
 model = init_chat_model("openai:gpt-4.1-nano-2025-04-14")
