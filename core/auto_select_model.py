@@ -26,7 +26,18 @@ llm_system_prompt = "Decide if the query requires deep reasoning, math or coding
 def naive_selector(query: str) -> str:
     tokens = smart_split(query)
     q_lowered = query.lower()
-    fast_indicators = ["quick answer", "快速回答"]
+    fast_indicators = [
+        "quick answer",
+        "快速回答",
+        "translate",
+        "翻译",
+        "rewrite",
+        "润色",
+        "改写",
+        "polish",
+        "proofread",
+        "校对",
+    ]
     for indicator in fast_indicators:
         if indicator.lower() in q_lowered:
             return "fast"
