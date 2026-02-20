@@ -20,9 +20,7 @@ class Decision(BaseModel):
 
 
 model_with_structure = auto_select_model_llm.with_structured_output(Decision)
-llm_system_prompt = (
-    "Decide if the query requires deep reasoning (True) or is simple (False)."
-)
+llm_system_prompt = "Decide if the query requires deep reasoning, math or coding (True) or is simple (False)."
 
 
 def naive_selector(query: str) -> str:
@@ -49,11 +47,15 @@ def naive_selector(query: str) -> str:
         "review",
         "复杂",
         "canvas",
+        "编程",
+        "coding",
+        "code",
+        "python",
     ]
     for keyword in research_indicators:
         if keyword.lower() in q_lowered:
             return "smart"
-    if len(tokens) > 20:
+    if len(tokens) > 30:
         return "smart"
     if len(tokens) < 5:
         return "fast"

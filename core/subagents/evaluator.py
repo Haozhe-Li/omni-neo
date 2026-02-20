@@ -1,4 +1,5 @@
 from core.tools.verifying import verify_claim
+from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 evaluator_system_prompt = """
 You are a sub-agent evaluator for a supervisor.
@@ -31,4 +32,12 @@ evaluator = {
     "system_prompt": evaluator_system_prompt,
     "tools": [verify_claim],
     "model": "groq:openai/gpt-oss-20b",
+    "middleware": [
+        ToolRetryMiddleware(
+            max_retries=2,
+            backoff_factor=2.0,
+            initial_delay=1.0,
+        ),
+        ToolCallLimitMiddleware(run_limit=3),
+    ],
 }

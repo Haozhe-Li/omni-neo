@@ -1,4 +1,5 @@
 from core.tools.coding_sandbox import run_python_tool
+from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 coding_expert_system_prompt = """
 You are a coding sub-agent. You write and run Python code to solve math, data, and analysis tasks, then report results back to the supervisor.
@@ -32,4 +33,12 @@ coding_expert = {
     "system_prompt": coding_expert_system_prompt,
     "tools": [run_python_tool],
     "model": "groq:qwen/qwen3-32b",
+    "middleware": [
+        ToolRetryMiddleware(
+            max_retries=2,
+            backoff_factor=2.0,
+            initial_delay=1.0,
+        ),
+        ToolCallLimitMiddleware(run_limit=3),
+    ],
 }

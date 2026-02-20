@@ -85,6 +85,6 @@ agent = create_deep_agent(
             backoff_factor=2.0,
             initial_delay=1.0,
         ),
-        # ToolCallLimitMiddleware(run_limit=10),
+        ToolCallLimitMiddleware(run_limit=10),
     ],
 )

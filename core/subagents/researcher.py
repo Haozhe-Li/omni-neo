@@ -1,5 +1,6 @@
 from core.tools.web_search import tavily_search
 from core.tools.web_page_reader import get_full_text, skimming_web_pages
+from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 
 researcher_system_prompt = """
@@ -58,4 +59,12 @@ researcher = {
     "system_prompt": researcher_system_prompt,
     "tools": [tavily_search, get_full_text, skimming_web_pages],
     "model": "groq:openai/gpt-oss-120b",
+    "middleware": [
+        ToolRetryMiddleware(
+            max_retries=2,
+            backoff_factor=2.0,
+            initial_delay=1.0,
+        ),
+        ToolCallLimitMiddleware(run_limit=10),
+    ],
 }

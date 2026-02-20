@@ -23,6 +23,8 @@ from core.utils.format import format_answer
 from core.get_title import get_title
 from core.auto_select_model import get_auto_select_model
 from core.source_checker import check_source
+from core.query_rewriter import rewrite_query
+from core.prompt_guard import is_harmful
 
 app = FastAPI(title="Omni Agent API")
 
@@ -54,14 +56,57 @@ def generate_response(query: str, thread_id: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
-    start_researching_item = {
+    # yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'Stream ended. Answer might escaped.'})}\n\n"
+    # return
+
+    if is_harmful(query):
+        yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'I’m sorry, but I can’t share that.'})}\n\n"
+        return
+
+    start_researching_message = {
+        "type": "tool",
+        "tool": "write_todos",
+        "agent": "Supervisor",
+        "content": "Tool Calling",
+        "raw": {
+            "args": {
+                "todos": [
+                    {"content": "Understand the user's query", "status": "pending"},
+                ]
+            },
+            "id": "call_42W2889jFBqKSKhfWQptY7An",
+        },
+    }
+
+    yield f"data: {json.dumps(start_researching_message)}\n\n"
+
+    rewritten_query = rewrite_query(query)
+
+    finish_rewriting_message = {
+        "type": "tool",
+        "tool": "write_todos",
+        "agent": "Supervisor",
+        "content": "Tool Calling",
+        "raw": {
+            "args": {
+                "todos": [
+                    {"content": "Understand the user's query", "status": "completed"},
+                ]
+            },
+            "id": "call_42W2889jFBqKSKhfWQptY7An",
+        },
+    }
+
+    yield f"data: {json.dumps(finish_rewriting_message)}\n\n"
+
+    show_rewritten_query_message = {
         "type": "reasoning",
-        "agent": "System",
-        "content": "Hang tight! It may take a few minutes to complete the research. Please don't close this page while I'm working on it.",
+        "agent": "Supervisor",
+        "content": f"I've rewritten user's query to: {rewritten_query}. Now let's start the research.",
         "raw": {},
     }
 
-    yield f"data: {json.dumps(start_researching_item)}\n\n"
+    yield f"data: {json.dumps(show_rewritten_query_message)}\n\n"
 
     answer_produced = False
 
@@ -70,7 +115,7 @@ def generate_response(query: str, thread_id: str):
         # Replicating the logic from main.py
         # stream_mode="updates" and subgraphs=True are critical parameters used in main.py
         for content in agent.stream(
-            {"messages": [{"role": "user", "content": query}]},
+            {"messages": [{"role": "user", "content": rewritten_query}]},
             subgraphs=True,
             stream_mode="updates",
             config=config,
@@ -92,9 +137,8 @@ def generate_response(query: str, thread_id: str):
                 else:
                     # Fallback for non-list returns, though format_answer type hint says list[str]
                     yield f"data: {formatted}\n\n"
-        print("Stream finished")
         if not answer_produced:
-            yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'No answer produced'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'Stream ended. Answer might escaped.'})}\n\n"
 
     except Exception as e:
         import traceback
@@ -132,6 +176,8 @@ async def chat(request: QueryRequest):
 
 @app.post("/light_chat")
 async def light_chat(request: QueryRequest):
+    if is_harmful(request.query):
+        return json.dumps({"answer": "I’m sorry, but I can’t share that."})
     # Fire-and-forget: update threads_control.updated_at asynchronously
     if request.thread_id:
         loop = asyncio.get_event_loop()
@@ -149,7 +195,12 @@ async def light_chat(request: QueryRequest):
             ]
         }
     res = omni_light_agent.invoke(message, config=config)
-    return json.dumps({"answer": res.get("messages")[-1].content})
+    return json.dumps(
+        {
+            "answer": res["structured_response"].answer,
+            "use_search": res["structured_response"].use_search,
+        }
+    )
 
 
 @app.post("/check_source")
