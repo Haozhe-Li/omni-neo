@@ -16,4 +16,8 @@ def format_personalization(personalization: Personalization) -> str:
         result += "Memories (Not all memories might be useful for the current task):\n"
         for i, memory in enumerate(personalization.memories):
             result += f"{i + 1}. {memory}\n"
+    if personalization.user_local_datetime:
+        result += f"User Local Date Time: {personalization.user_local_datetime}\n"
+    if personalization.user_location:
+        result += f"User Location: {personalization.user_location}\n"
     return result

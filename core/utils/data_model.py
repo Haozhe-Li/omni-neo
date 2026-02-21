@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 class Personalization(BaseModel):
     response_language: str = "Follow User's Query Language"
     memories: list[str] = []
+    user_local_datetime: str = None
+    user_location: str = None
 
 
 class QueryRequest(BaseModel):
