@@ -24,8 +24,14 @@ from core.auto_select_model import get_auto_select_model
 from core.source_checker import check_source
 from core.query_rewriter import rewrite_query
 from core.prompt_guard import is_harmful
-from core.utils.data_model import QueryRequest, CheckSourceRequest, Personalization
+from core.utils.data_model import (
+    QueryRequest,
+    CheckSourceRequest,
+    Personalization,
+    UpdateMemoriesRequest,
+)
 from core.utils.utils import format_personalization
+from core.memories_update_llm import get_update_memories
 
 app = FastAPI(title="Omni Agent API")
 
@@ -239,6 +245,15 @@ def get_model(request: QueryRequest):
         res = "light"
     # print(f"Query: {request.query}, Model: {res}")
     return json.dumps({"model": res})
+
+
+@app.post("/update_memories")
+async def update_memories_api(request: UpdateMemoriesRequest):
+    # print(
+    #     f"Past queries: {request.past_queries}, Past memories: {request.past_memories}"
+    # )
+    res = await get_update_memories(request.past_queries, request.past_memories)
+    return res
 
 
 @app.get("/health")
