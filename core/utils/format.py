@@ -1,7 +1,68 @@
 import json
+from typing import Any
 
 
-def format_answer(content: str) -> list[str]:
+def extract_struct_dict(obj: Any) -> Any:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict") and callable(getattr(obj, "dict")):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+
+    if isinstance(obj, dict):
+        if "final_answer" in obj or "answer" in obj:
+            return obj
+        if "structured_response" in obj:
+            return extract_struct_dict(obj["structured_response"])
+
+        for k, v in obj.items():
+            res = extract_struct_dict(v)
+            if res is not None:
+                return res
+
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        for item in obj:
+            res = extract_struct_dict(item)
+            if res is not None:
+                return res
+
+    if hasattr(obj, "additional_kwargs"):
+        parsed = obj.additional_kwargs.get("parsed")
+        if parsed:
+            res = extract_struct_dict(parsed)
+            if res is not None:
+                return res
+
+    if hasattr(obj, "final_answer") or hasattr(obj, "answer"):
+        return {
+            "final_answer": getattr(obj, "final_answer", None)
+            or getattr(obj, "answer", None),
+            "final_sources": getattr(obj, "final_sources", getattr(obj, "sources", [])),
+        }
+
+    return None
+
+
+def format_answer(content: Any) -> list[str]:
+    if not isinstance(content, str):
+        struct_dict = extract_struct_dict(content)
+        if struct_dict and ("final_answer" in struct_dict or "answer" in struct_dict):
+            item = json.dumps(
+                {
+                    "type": "answer",
+                    "agent": "Supervisor",
+                    "content": json.dumps(struct_dict, ensure_ascii=False),
+                    "raw": {},
+                },
+                ensure_ascii=False,
+            )
+            return [item]
+        content_str = str(content)
+    else:
+        content_str = content
+
     # 1. --- Mock 环境 ---
     def Overwrite(**kwargs):
         return kwargs.get("value", [])
@@ -10,7 +71,11 @@ def format_answer(content: str) -> list[str]:
         return {"type": "human", **kwargs}
 
     def AIMessage(**kwargs):
-        return {"type": "ai", **kwargs}
+        return {
+            "type": "ai",
+            "additional_kwargs": kwargs.get("additional_kwargs", {}),
+            **kwargs,
+        }
 
     def ToolMessage(**kwargs):
         return {"type": "tool", **kwargs}
@@ -31,7 +96,7 @@ def format_answer(content: str) -> list[str]:
     balance_counter = 0
     start_char = None
 
-    for line in content.split("\n"):
+    for line in content_str.split("\n"):
         line = line.strip()
         if not line:
             continue
@@ -57,6 +122,14 @@ def format_answer(content: str) -> list[str]:
             raw_blocks.append(current_block)
             current_block = ""
             start_char = None
+
+    # [补丁] 针对直接传入的字典字符串 (非嵌套 tuple) 做尝试解析
+    try:
+        parsed_dict = json.loads(content_str.replace("'", '"'))
+        if isinstance(parsed_dict, dict) and "structured_response" in parsed_dict:
+            raw_blocks.append(content_str)
+    except:
+        pass
 
     parsed_events = []
     for block in raw_blocks:
@@ -114,6 +187,30 @@ def format_answer(content: str) -> list[str]:
                         # Skip "task" tool calls
                         if t_name == "task":
                             continue
+
+                        # [补丁] 针对 SupervisorOutput 结构化输出工具，拦截并转为 answer
+                        if t_name == "SupervisorOutput" and agent_name == "Supervisor":
+                            if isinstance(t_args, str):
+                                try:
+                                    t_args = json.loads(t_args)
+                                except:
+                                    pass
+
+                            # Append to answer stream if it looks like the expected model
+                            if isinstance(t_args, dict) and "final_answer" in t_args:
+                                json_results.append(
+                                    json.dumps(
+                                        {
+                                            "type": "answer",
+                                            "agent": agent_name,
+                                            "content": t_args["final_answer"],
+                                            "raw": {},
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                )
+                            continue  # Do not emit "SupervisorOutput" as a standard tool call to the UI
+
                         json_results.append(
                             json.dumps(
                                 {
@@ -128,37 +225,64 @@ def format_answer(content: str) -> list[str]:
                         )
 
                     # 3. Answer (【补丁】仅 Supervisor 可用)
-                    content = msg.get("content", "")
-                    if content:
-                        if agent_name == "Supervisor" and "final_answer" in str(
-                            content
-                        ):
+                    # 优先从 LangChain ProviderStrategy 的 parsed kwarg 中提取
+                    parsed_data = kwargs.get("parsed") or msg.get("parsed")
+                    if (
+                        parsed_data
+                        and isinstance(parsed_data, dict)
+                        and "final_answer" in parsed_data
+                    ):
+                        if agent_name == "Supervisor":
                             json_results.append(
                                 json.dumps(
                                     {
                                         "type": "answer",
                                         "agent": agent_name,
-                                        "content": content,
+                                        "content": parsed_data["final_answer"],
                                         "raw": {},
                                     },
                                     ensure_ascii=False,
                                 )
                             )
-                        else:
-                            pass
-                            # Sub-agent 的普通文本输出，转为 Reasoning 展示
-                            # 这样既符合 "No Answer" 原则，又不会丢掉 Sub-agent 的回复信息
-                            # json_results.append(
-                            #     json.dumps(
-                            #         {
-                            #             "type": "reasoning",
-                            #             "agent": agent_name,
-                            #             "content": f"{content}",
-                            #             "raw": {"original_content": content},
-                            #         },
-                            #         ensure_ascii=False,
-                            #     )
-                            # )
+                    else:
+                        # 退路：如果有传统的纯文本 content，依然返回
+                        content = msg.get("content", "")
+                        if content and isinstance(content, str):
+                            if agent_name == "Supervisor" and "final_answer" in content:
+                                json_results.append(
+                                    json.dumps(
+                                        {
+                                            "type": "answer",
+                                            "agent": agent_name,
+                                            "content": content,
+                                            "raw": {},
+                                        },
+                                        ensure_ascii=False,
+                                    )
+                                )
+
+        # --- B.2. 处理 Structured Response 直接返回 (如 langgraph 返回结构体) ---
+        if isinstance(data_payload, dict) and "structured_response" in data_payload:
+            structured = data_payload["structured_response"]
+            # Some structured models are parsed into objects or dicts
+            answer_content = None
+            if hasattr(structured, "final_answer"):
+                answer_content = getattr(structured, "final_answer")
+            elif isinstance(structured, dict) and "final_answer" in structured:
+                answer_content = structured.get("final_answer")
+
+            if answer_content and agent_name == "Supervisor":
+                json_results.append(
+                    json.dumps(
+                        {
+                            "type": "answer",
+                            "agent": agent_name,
+                            "content": answer_content,
+                            "raw": {},
+                        },
+                        ensure_ascii=False,
+                    )
+                )
 
         # --- C. 处理 Tools 消息 ---
         if "tools" in data_payload and data_payload["tools"]:

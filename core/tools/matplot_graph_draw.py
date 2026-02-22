@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from core.utils.shorter_url import get_shorten_url
 import pandas as pd
-
+from core.tools.coding_sandbox import is_safe_code
 
 s3_client = boto3.client(
     "s3",
@@ -68,6 +68,11 @@ def draw_graph(code: str) -> str:
         str: The URL of the graph or error message.
     """
     # print(code)
+
+    is_safe, reason = is_safe_code(code)
+    if not is_safe:
+        return f"Error: Code rejected for safety reasons: {reason}. Do not use plt.savefig() or any file save/read operations. The tool processes saving automatically."
+
     plt.clf()
     plt.close("all")
     plt.rcParams.update(CUSTOM_STYLE)

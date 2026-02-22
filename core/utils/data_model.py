@@ -41,3 +41,10 @@ class Decision(BaseModel):
 class LightAgentOutput(BaseModel):
     answer: str = Field(description="The final answer to the user's query.")
     use_search: bool = Field(description="Whether you have used tavily_search.")
+
+
+class SupervisorOutput(BaseModel):
+    final_answer: str = Field(description="The markdown report.")
+    final_sources: list[dict] = Field(
+        description="The final sources used to generate the answer. Leave a empty list if no sources are used."
+    )

@@ -21,16 +21,20 @@ for content in agent.stream(
         "messages": [
             {
                 "role": "user",
-                "content": "请帮我画一张正弦函数图像",
+                "content": "你好",
             }
         ]
     },
     subgraphs=True,
     stream_mode="updates",
-    config={"configurable": {"thread_id": "1221"}},
+    config={"configurable": {"thread_id": "111121"}},
 ):
     print(content)
-    formated = format_answer(str(content))
+
+    answer_produced = False
+
+    # Pass full payload to format_answer (it will natively extract SupervisorOutputs and struct JSONs now)
+    formated = format_answer(content)
     if formated:
         items_to_save = []
         if isinstance(formated, list):
@@ -41,9 +45,6 @@ for content in agent.stream(
         for item in items_to_save:
             file_path = os.path.join(output_dir, f"{file_counter}.json")
             with open(file_path, "w", encoding="utf-8") as f:
-                # If item is a string (JSON string), load it to ensure it's formatted nicely, or write as is.
-                # User said "formated之后的content会是一个dict", implying `item` might be a dict.
-                # But format_answer returns JSON strings usually. We handle both.
                 if isinstance(item, str):
                     try:
                         json_data = json.loads(item)

@@ -116,24 +116,24 @@ def generate_response(query: str, thread_id: str, personalization: str):
             stream_mode="updates",
             config=config,
         ):
-            # Replicating the formatting logic from main.py
-            # 1. Convert content to string (as main.py does)
-            content_str = str(content)
+            # Pass full payload to format_answer (it will natively extract SupervisorOutputs and struct JSONs now)
+            formatted = format_answer(content)
 
-            # 2. Pass to format_answer
-            formatted = format_answer(content_str)
-
-            # 3. Handle the output similar to main.py's writing logic
+            # Handle the output similar to main.py's writing logic
             if formatted:
                 if isinstance(formatted, list):
                     for item in formatted:
-                        if "final_answer" in str(item):
+                        if 'type":"answer' in str(item).replace(
+                            " ", ""
+                        ) or '"type": "answer"' in str(item):
                             answer_produced = True
                         yield f"data: {item}\n\n"
                 else:
                     # Fallback for non-list returns, though format_answer type hint says list[str]
                     yield f"data: {formatted}\n\n"
+
         if not answer_produced:
+            print("Stream ended. Answer might escaped.")
             yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'Stream ended. Answer might escaped.'})}\n\n"
 
     except Exception as e:
