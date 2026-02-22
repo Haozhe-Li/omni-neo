@@ -97,7 +97,7 @@ def draw_graph(code: str) -> str:
         )
 
         shorter_url = get_shorten_url(presigned_url)
-        # print(shorter_url)
+        print(shorter_url)
         return shorter_url if shorter_url else presigned_url
 
     except Exception as e:
