@@ -44,7 +44,7 @@ coding_expert = {
     "description": "Coding expert for math, data analysis, and plotting. Supports numpy, pandas, and a specialized graph drawing tool.",
     "system_prompt": coding_expert_system_prompt,
     "tools": [run_python_tool, draw_graph],
-    "model": "openai:gpt-5-mini-2025-08-07",
+    "model": "openai:gpt-4.1-mini-2025-04-14",
     "middleware": [
         ToolRetryMiddleware(
             max_retries=2,

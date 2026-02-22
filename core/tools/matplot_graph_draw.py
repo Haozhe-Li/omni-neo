@@ -40,6 +40,8 @@ CUSTOM_STYLE = {
     "font.family": "sans-serif",
     "font.sans-serif": [
         "Noto Sans CJK SC",
+        "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei",
         "Arial Unicode MS",
         "PingFang SC",
         "Microsoft YaHei",

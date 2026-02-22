@@ -24,12 +24,17 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
     fonts-noto-cjk \
+    fonts-wqy-microhei \
+    fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. 安装 Python 依赖
 # 升级 pip 以防止兼容性问题，并安装 setuptools (Python 3.12 移除了 distutils，某些旧包安装需要它)
 RUN pip install --upgrade pip setuptools && \
     pip install --no-cache-dir -r requirements.txt
+
+# 强制 Matplotlib 构建字体缓存，确保刚安装的中文字体被识别
+RUN python -c "import matplotlib.font_manager; matplotlib.font_manager.findSystemFonts(fontpaths=None, fontext='ttf'); import matplotlib.pyplot as plt"
 
 # 6. 最后再拷贝代码
 # 这一步放在最后，确保代码变动不会导致重新安装依赖
