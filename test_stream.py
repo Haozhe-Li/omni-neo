@@ -21,13 +21,13 @@ for content in agent.stream(
         "messages": [
             {
                 "role": "user",
-                "content": "请用matplotlib给我画个曲线图",
+                "content": "请分析一下特斯拉股票过去一个月的走势",
             }
         ]
     },
     subgraphs=True,
     stream_mode="updates",
-    config={"configurable": {"thread_id": "111121"}},
+    config={"configurable": {"thread_id": "1131211"}},
 ):
     print(content)
 

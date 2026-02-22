@@ -63,3 +63,10 @@ class CodeExpertOutput(BaseModel):
     assets: list[str] = Field(
         description="A list of URLs of images you draw. Leave a empty list if no assets are used."
     )
+
+
+class StockExpertOutput(BaseModel):
+    report: str = Field(description="The analysis report of the stock.")
+    assets: list[str] = Field(
+        description="A list of URLs of images you draw. Leave a empty list if no assets are used."
+    )

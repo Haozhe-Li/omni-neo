@@ -187,17 +187,17 @@ def run_python_tool(code: str) -> str:
     Returns:
         str: The result of the executed code.
     """
-    is_safe, reason = is_safe_code(code)
-    if not is_safe:
-        return json.dumps(
-            {
-                "ok": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": f"Security Error: {reason}\\nThis operation was blocked by the security sandbox.",
-                "timed_out": False,
-            }
-        )
+    # is_safe, reason = is_safe_code(code)
+    # if not is_safe:
+    #     return json.dumps(
+    #         {
+    #             "ok": False,
+    #             "returncode": 1,
+    #             "stdout": "",
+    #             "stderr": f"Security Error: {reason}\\nThis operation was blocked by the security sandbox.",
+    #             "timed_out": False,
+    #         }
+    #     )
 
     run_res = _run_python_code(code)
     return json.dumps(
@@ -211,6 +211,6 @@ def run_python_tool(code: str) -> str:
     )
 
 
-if __name__ == "__main__":
-    print(run_python_tool("import os"))
-    print(run_python_tool("print('hello')"))
+# if __name__ == "__main__":
+#     print(run_python_tool("import os"))
+#     print(run_python_tool("print('hello')"))

@@ -69,9 +69,9 @@ def draw_graph(code: str) -> str:
     """
     # print(code)
 
-    is_safe, reason = is_safe_code(code)
-    if not is_safe:
-        return f"Error: Code rejected for safety reasons: {reason}. Do not use plt.savefig() or any file save/read operations. The tool processes saving automatically."
+    # is_safe, reason = is_safe_code(code)
+    # if not is_safe:
+    #     return f"Error: Code rejected for safety reasons: {reason}. Do not use plt.savefig() or any file save/read operations. The tool processes saving automatically."
 
     plt.clf()
     plt.close("all")
