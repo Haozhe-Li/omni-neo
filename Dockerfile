@@ -19,9 +19,11 @@ COPY requirements.txt .
 
 # 4. 安装系统级依赖
 # python:3.12 完整版通常自带 gcc，但为了保险起见，以及为了 psycopg2 (Postgres) 支持，安装 libpq-dev
+# 注：额外安装 fonts-noto-cjk 解决 matplotlib 在容器内渲染中文变“豆腐块”的问题
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. 安装 Python 依赖

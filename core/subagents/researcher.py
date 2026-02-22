@@ -1,5 +1,5 @@
 from core.tools.web_search import tavily_search
-from core.tools.web_page_reader import get_full_text, skimming_web_pages
+from core.tools.web_page_reader import get_full_text
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 
@@ -13,15 +13,15 @@ Goal:
 
 Workflow:
 1. **Search**: Run tavily search for the topic.
-2. **Skim**: Pick the top 1-3 most relevant results and use `skimming_web_pages`. Do NOT read everything.
+2. **Read**: Pick the top 1-3 most relevant results and use `get_full_text` ONLY if necessary. Do NOT read everything.
 3. **Quote Citation**: Use `write_file` and `edit_file` tools to create citation.
-3. **Report**: Immediately generate the report based on snippets and skimmed content.
+4. **Report**: Immediately generate the report based on search snippets and any read content.
 
 Rules:
-- Most of the time, answer from tavily is sufficient. Only use `skimming_web_pages` when needed.
-- Do NOT use `get_full_text` unless `skimming_web_pages` returned absolutely nothing useful.
-- One round of search + skim is sufficient.
-- Return the report immediately after skimming.
+- Most of the time, the snippets from tavily search results are sufficient. 
+- Do NOT over-use `get_full_text`. To save context window size, it will only return a MAXIMUM of 2000 characters. Only use it when the search snippet is absolutely not enough.
+- One round of search + reading is sufficient.
+- Return the report immediately after your search and optional reading.
 - Be concise.
 
 Citation:
@@ -33,7 +33,7 @@ Citation:
         {
             "title": "Title of the web page",
             "url": "URL of the web page",
-            "content": "quote from the web page, can be from Search Results Snippets or Skimmed Web Pages, or Full Text"
+            "content": "quote from the web page, can be from Search Results Snippets or Full Text"
         },
         xxx
     ]
@@ -55,9 +55,9 @@ RETURNS:
 
 researcher = {
     "name": "researcher",
-    "description": "Web researcher that searches, skims, reads full pages, and produces evidence-grounded answers with citations.",
+    "description": "Web researcher that searches, reads pages, and produces evidence-grounded answers with citations.",
     "system_prompt": researcher_system_prompt,
-    "tools": [tavily_search, get_full_text, skimming_web_pages],
+    "tools": [tavily_search, get_full_text],
     "model": "groq:openai/gpt-oss-120b",
     "middleware": [
         ToolRetryMiddleware(

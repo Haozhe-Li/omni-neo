@@ -1,13 +1,26 @@
+# For building agents
 deepagents
 langchain
 langchain_community
 langgraph
 python-dotenv
+langchain-groq
+langchain-openai
+
+# For persisting agent state
 langgraph-checkpoint-postgres
 psycopg[binary]
-langchain-groq
+
+# For fetching data
 spider-client
-langchain-openai
+tavily-python
+
+# For running agents
 uvicorn
 fastapi
-tavily-python
+
+# For coding sandbox
+numpy
+pandas
+matplotlib
+boto3

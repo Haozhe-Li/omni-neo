@@ -21,7 +21,7 @@ for content in agent.stream(
         "messages": [
             {
                 "role": "user",
-                "content": "深度研究介绍一下Langchain",
+                "content": "请帮我画一张正弦函数图像",
             }
         ]
     },

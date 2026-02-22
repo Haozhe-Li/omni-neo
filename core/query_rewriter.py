@@ -1,32 +1,33 @@
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 import os
 import dotenv
 
 
 dotenv.load_dotenv()
 
-rewriter_llm = ChatGroq(
-    model="openai/gpt-oss-20b",
-    api_key=os.getenv("GROQ_API_KEY"),
+rewriter_llm = ChatOpenAI(
+    model="gpt-5-mini-2025-08-07",
+    api_key=os.getenv("OPENAI_API_KEY"),
 )
+
 
 rewriter_system_prompt = """
 ### Role
-You are an expert Query Rewriter. Your task is to transform raw user input into optimized, actionable instructions for an AI Agent.
+You are an expert in filtering information and combing them.
 
 ### Input
 - User Query
-- User Personalization: Including response language, memories.
+- User Personalization: Including response language, memories etc.
 
 ### Rules
-1. **Instructional Format**: Convert questions or fragments into clear, objective task statements (e.g., "What is X" -> "Explain the definition and core features of X").
-2. **Refine & Clean**: Remove typos, emotional bias, and conversational filler while preserving the original intent.
-3. **Precision**: Use domain-specific terminology where appropriate to reduce ambiguity.
-4. **Expand**: Expand the query to be more detailed and specific.
-5. **Personalization**: Use user personalization to tailor the rewritten query. This includes:
-    - Response Language: Add "Please respond in [Language]." to the rewritten query. [language] is extracted from user personalization.
-    - Memories: Use structured user memories to tailor the rewritten query. This may include User Profile, Current Focus, Interaction Style, and Avoid Topics. Only pick the most relevant pieces of information for the rewritten query.
-    - User Local Date and Time, and User Location: Use this information if it is helpful to answer the query.
+- You need to analyze the personalization information, combine it into user query. 
+- You shuold only take the useful information from the personalization information.
+
+### Example
+
+User Query: "What is the weather like today?"
+User Personalization: "Response Language: Chinese. Memories: I am a software engineer. I am working on a project about AI."
+Rewritten Query: "What is the weather like today? Please respond in Chinese."
 
 ### Output
 - Rewritten Query Only

@@ -55,7 +55,7 @@ def get_full_text(url: str):
         str: The full text of the web page.
     """
     print(f"Loading web page: {url}")
-    return load_web_page(url)
+    return load_web_page(url)[:2000]
 
 
 def skimming_web_page(url: str, purpose: str):

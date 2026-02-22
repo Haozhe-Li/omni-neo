@@ -37,7 +37,102 @@ class RunResult:
     timed_out: bool
 
 
-def run_python_code(
+def is_safe_code(code: str) -> tuple[bool, str]:
+    """Very basic AST-level security check to prevent obvious harmful operations.
+
+    Args:
+        code (str): The code to check.
+
+    Returns:
+        tuple[bool, str]: (True if safe, error message if any)
+    """
+    forbidden_modules = {
+        "os",
+        "sys",
+        "subprocess",
+        "shutil",
+        "socket",
+        "urllib",
+        "requests",
+        "pathlib",
+        "pty",
+        "glob",
+        "pickle",
+        "shelve",
+        "marshal",
+        "dbm",
+        "sqlite3",
+    }
+    # Block common file-saving methods used in data science libraries
+    forbidden_funcs = {
+        "eval",
+        "exec",
+        "open",
+        "__import__",
+        "compile",
+        "save",
+        "savefig",
+        "to_csv",
+        "to_json",
+        "to_excel",
+        "to_parquet",
+        "to_pickle",
+        "to_feather",
+        "to_stata",
+        "to_hdf",
+        "to_sql",
+        "dump",
+    }
+    forbidden_attrs = {
+        "__builtins__",
+        "__class__",
+        "__bases__",
+        "__subclasses__",
+        "__getattribute__",
+        "__globals__",
+    }
+
+    try:
+        tree = ast.parse(code)
+    except Exception as e:
+        return False, f"Parse error: {str(e)}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base_module = alias.name.split(".")[0]
+                if base_module in forbidden_modules:
+                    return False, f"Importing '{base_module}' is strictly forbidden."
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                base_module = node.module.split(".")[0]
+                if base_module in forbidden_modules:
+                    return (
+                        False,
+                        f"Importing from '{base_module}' is strictly forbidden.",
+                    )
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in forbidden_funcs:
+                return False, f"Calling '{node.func.id}()' is strictly forbidden."
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in forbidden_funcs
+            ):
+                return (
+                    False,
+                    f"Calling '{node.func.attr}()' via attribute is forbidden.",
+                )
+        elif isinstance(node, ast.Name):
+            if node.id in forbidden_attrs:
+                return False, f"Accessing magic attribute '{node.id}' is forbidden."
+        elif isinstance(node, ast.Attribute):
+            if node.attr in forbidden_attrs:
+                return False, f"Accessing magic attribute '{node.attr}' is forbidden."
+
+    return True, "Safe"
+
+
+def _run_python_code(
     code: str,
     *,
     timeout_s: float = 2.0,
@@ -58,7 +153,8 @@ def run_python_code(
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
-                cwd=cwd,
+                cwd=cwd
+                or td,  # Force CWD to temp dir if not specified to prevent file persistence
                 env=env,
             )
             return RunResult(
@@ -91,8 +187,19 @@ def run_python_tool(code: str) -> str:
     Returns:
         str: The result of the executed code.
     """
+    is_safe, reason = is_safe_code(code)
+    if not is_safe:
+        return json.dumps(
+            {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"Security Error: {reason}\\nThis operation was blocked by the security sandbox.",
+                "timed_out": False,
+            }
+        )
 
-    run_res = run_python_code(code)
+    run_res = _run_python_code(code)
     return json.dumps(
         {
             "ok": run_res.ok,
@@ -102,3 +209,8 @@ def run_python_tool(code: str) -> str:
             "timed_out": run_res.timed_out,
         }
     )
+
+
+if __name__ == "__main__":
+    print(run_python_tool("import os"))
+    print(run_python_tool("print('hello')"))
