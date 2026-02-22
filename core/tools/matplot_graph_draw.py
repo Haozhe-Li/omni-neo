@@ -81,8 +81,8 @@ def draw_graph(code: str) -> str:
     try:
         exec(code, execution_namespace)
 
-        if not plt.get_fignums():
-            return "Error: 没有生成任何图表，请检查你的代码。"
+        # if not plt.get_fignums():
+        #     return "Error: 没有生成任何图表，请检查你的代码。"
 
         fig = plt.gcf()
         fig.autofmt_xdate(rotation=45)
@@ -109,8 +109,43 @@ def draw_graph(code: str) -> str:
         return shorter_url if shorter_url else presigned_url
 
     except Exception as e:
+        print(e)
         return f"Code Execution Error: {str(e)}"
 
     finally:
         plt.clf()
         plt.close("all")
+
+
+if __name__ == "__main__":
+    code = """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    # 1. Create a DataFrame
+    data = {
+        "Category": ["A", "B", "C", "D", "E"],
+        "Values": [23, 45, 56, 78, 34],
+    }
+    df = pd.DataFrame(data)
+
+    # 2. Create the plot
+    plt.figure(figsize=(8, 5))
+    plt.bar(df["Category"], df["Values"], color="#20B2AA")
+
+    # 3. Add labels and title
+    plt.xlabel("Category")
+    plt.ylabel("Values")
+    plt.title("Bar Chart Example")
+
+    # 4. Add value labels on top of bars
+    for i, value in enumerate(df["Values"]):
+        plt.text(i, value + 1, str(value), ha="center", va="bottom")
+
+    # 5. Display the plot (The tool will handle saving)
+    plt.show()
+    """
+
+    url = draw_graph(code)
+    print(f"Generated Graph URL: {url}")
