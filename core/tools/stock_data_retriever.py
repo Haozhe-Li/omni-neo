@@ -147,7 +147,7 @@ def get_stock_data(symbol: str) -> Dict[str, Any]:
         }
 
 
-if __name__ == "__main__":
-    # Example usage:
-    print(json.dumps(get_stock_data("TSLA"), indent=2))
-    # print(json.dumps(get_history_trend("TSLA"), indent=2))
+# if __name__ == "__main__":
+#     # Example usage:
+#     print(json.dumps(get_stock_data("TSLA"), indent=2))
+# print(json.dumps(get_history_trend("TSLA"), indent=2))

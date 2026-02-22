@@ -12,7 +12,7 @@ def extract_struct_dict(obj: Any) -> Any:
             pass
 
     if isinstance(obj, dict):
-        if "final_answer" in obj or "answer" in obj:
+        if "answer" in obj or "answer" in obj:
             return obj
         if "structured_response" in obj:
             return extract_struct_dict(obj["structured_response"])
@@ -35,11 +35,10 @@ def extract_struct_dict(obj: Any) -> Any:
             if res is not None:
                 return res
 
-    if hasattr(obj, "final_answer") or hasattr(obj, "answer"):
+    if hasattr(obj, "answer") or hasattr(obj, "answer"):
         return {
-            "final_answer": getattr(obj, "final_answer", None)
-            or getattr(obj, "answer", None),
-            "final_sources": getattr(obj, "final_sources", getattr(obj, "sources", [])),
+            "answer": getattr(obj, "answer", None) or getattr(obj, "answer", None),
+            "sources": getattr(obj, "sources", getattr(obj, "sources", [])),
         }
 
     return None
@@ -48,7 +47,7 @@ def extract_struct_dict(obj: Any) -> Any:
 def format_answer(content: Any) -> list[str]:
     if not isinstance(content, str):
         struct_dict = extract_struct_dict(content)
-        if struct_dict and ("final_answer" in struct_dict or "answer" in struct_dict):
+        if struct_dict and ("answer" in struct_dict or "answer" in struct_dict):
             item = json.dumps(
                 {
                     "type": "answer",
@@ -197,13 +196,13 @@ def format_answer(content: Any) -> list[str]:
                                     pass
 
                             # Append to answer stream if it looks like the expected model
-                            if isinstance(t_args, dict) and "final_answer" in t_args:
+                            if isinstance(t_args, dict) and "answer" in t_args:
                                 json_results.append(
                                     json.dumps(
                                         {
                                             "type": "answer",
                                             "agent": agent_name,
-                                            "content": t_args["final_answer"],
+                                            "content": t_args["answer"],
                                             "raw": {},
                                         },
                                         ensure_ascii=False,
@@ -230,7 +229,7 @@ def format_answer(content: Any) -> list[str]:
                     if (
                         parsed_data
                         and isinstance(parsed_data, dict)
-                        and "final_answer" in parsed_data
+                        and "answer" in parsed_data
                     ):
                         if agent_name == "Supervisor":
                             json_results.append(
@@ -238,7 +237,7 @@ def format_answer(content: Any) -> list[str]:
                                     {
                                         "type": "answer",
                                         "agent": agent_name,
-                                        "content": parsed_data["final_answer"],
+                                        "content": parsed_data["answer"],
                                         "raw": {},
                                     },
                                     ensure_ascii=False,
@@ -248,7 +247,7 @@ def format_answer(content: Any) -> list[str]:
                         # 退路：如果有传统的纯文本 content，依然返回
                         content = msg.get("content", "")
                         if content and isinstance(content, str):
-                            if agent_name == "Supervisor" and "final_answer" in content:
+                            if agent_name == "Supervisor" and "answer" in content:
                                 json_results.append(
                                     json.dumps(
                                         {
@@ -266,10 +265,10 @@ def format_answer(content: Any) -> list[str]:
             structured = data_payload["structured_response"]
             # Some structured models are parsed into objects or dicts
             answer_content = None
-            if hasattr(structured, "final_answer"):
-                answer_content = getattr(structured, "final_answer")
-            elif isinstance(structured, dict) and "final_answer" in structured:
-                answer_content = structured.get("final_answer")
+            if hasattr(structured, "answer"):
+                answer_content = getattr(structured, "answer")
+            elif isinstance(structured, dict) and "answer" in structured:
+                answer_content = structured.get("answer")
 
             if answer_content and agent_name == "Supervisor":
                 json_results.append(

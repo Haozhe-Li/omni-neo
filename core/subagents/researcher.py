@@ -1,5 +1,6 @@
 from core.tools.web_search import tavily_search
 from core.tools.web_page_reader import get_full_text
+from core.tools.stock_data_retriever import get_stock_data, get_history_trend
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 
@@ -15,7 +16,8 @@ Workflow:
 1. **Search**: Run tavily search for the topic.
 2. **Read**: Pick the top 1-3 most relevant results and use `get_full_text` ONLY if necessary. Do NOT read everything.
 3. **Quote Citation**: Use `write_file` and `edit_file` tools to create citation.
-4. **Report**: Immediately generate the report based on search snippets and any read content.
+4. **Stock Data**: If the task involves stock information, use `get_stock_data` and `get_history_trend` tools. You MUST write the retrieved stock documents and data to a file named `stock.json` using the `write_file` tool.
+5. **Report**: Immediately generate the report based on search snippets, any read content, and stock data.
 
 Rules:
 - Most of the time, the snippets from tavily search results are sufficient. 
@@ -49,7 +51,7 @@ AVOID:
 
 RETURNS:
 - A Concise Report of all the findings you have.
-- The `citation.json` file (You don't need to return it, as it is saved already.)
+- The `citation.json` file and `stock.json` file (You don't need to return them, as they are saved already.)
 """
 
 
@@ -57,7 +59,7 @@ researcher = {
     "name": "researcher",
     "description": "Web researcher that searches, reads pages, and produces evidence-grounded answers with citations.",
     "system_prompt": researcher_system_prompt,
-    "tools": [tavily_search, get_full_text],
+    "tools": [tavily_search, get_full_text, get_stock_data, get_history_trend],
     "model": "groq:openai/gpt-oss-120b",
     "middleware": [
         ToolRetryMiddleware(

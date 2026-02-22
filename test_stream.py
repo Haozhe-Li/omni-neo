@@ -21,7 +21,7 @@ for content in agent.stream(
         "messages": [
             {
                 "role": "user",
-                "content": "你好",
+                "content": "请用matplotlib给我画个曲线图",
             }
         ]
     },

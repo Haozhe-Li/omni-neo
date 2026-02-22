@@ -6,7 +6,7 @@ def check_source(source: dict, text_selection: str):
     Checks if the text_selection exists in the source documents using a sliding window algorithm.
     Returns the matching source if the similarity score is > 0.5.
     """
-    sources = source.get("final_sources", [])
+    sources = source.get("sources", [])
     if not sources:
         return {}
 

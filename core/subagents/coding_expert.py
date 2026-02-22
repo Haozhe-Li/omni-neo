@@ -1,6 +1,8 @@
 from core.tools.coding_sandbox import run_python_tool
 from core.tools.matplot_graph_draw import draw_graph
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
+from core.utils.data_model import CodeExpertOutput
+from langchain.agents.structured_output import ProviderStrategy
 
 coding_expert_system_prompt = """
 You are a highly capable coding sub-agent. You write and execute Python code to solve math, logic, data processing, and data visualization tasks.
@@ -29,7 +31,7 @@ Security & Environment Constraints:
 - Do not fabricate results. Only report outputs and image URLs you actually got from running the tools.
 
 Workflow:
-1. Plan: Determine if the task needs data computation, visualization, or both.
+1. Load Data (if you were told to load data): use `read_file` tool to read the data.
 2. Compute (if needed): Use `run_python_tool` to pre-calculate data or solve logic problems using standard library, `numpy`, or `pandas`. Remember to `print()` the results you need.
 3. Visualize (if needed): Use `draw_graph` for making charts. Provide clean, minimal plotting code directly utilizing `plt`, `np`, and `pd`.
 4. Retry on Error: If any tool returns an error or traceback, read it carefully, fix your code, and retry.
@@ -56,4 +58,5 @@ coding_expert = {
         ),
         ToolCallLimitMiddleware(run_limit=5),
     ],
+    "response_format": ProviderStrategy(CodeExpertOutput),
 }

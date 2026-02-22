@@ -44,7 +44,22 @@ class LightAgentOutput(BaseModel):
 
 
 class SupervisorOutput(BaseModel):
-    final_answer: str = Field(description="The markdown report.")
-    final_sources: list[dict] = Field(
+    answer: str = Field(description="The markdown report.")
+    sources: list[dict] = Field(
         description="The final sources used to generate the answer. Leave a empty list if no sources are used."
+    )
+    assets: list[str] = Field(
+        description="A list of URL of images or other assets used to generate the answer. Leave a empty list if no assets are used."
+    )
+
+
+class CodeExpertOutput(BaseModel):
+    code: str = Field(
+        description="The Python Code (If you only draw a graph, you can leave this empty)"
+    )
+    code_output: str = Field(
+        description="The output of the Python Code (If any, leave empty if no output)"
+    )
+    assets: list[str] = Field(
+        description="A list of URLs of images you draw. Leave a empty list if no assets are used."
     )

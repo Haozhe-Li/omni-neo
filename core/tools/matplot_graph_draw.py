@@ -84,6 +84,9 @@ def draw_graph(code: str) -> str:
         if not plt.get_fignums():
             return "Error: 没有生成任何图表，请检查你的代码。"
 
+        fig = plt.gcf()
+        fig.autofmt_xdate(rotation=45)
+
         buf = io.BytesIO()
         plt.savefig(buf, format="png", bbox_inches="tight", transparent=False, dpi=150)
         buf.seek(0)
