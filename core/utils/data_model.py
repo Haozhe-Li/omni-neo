@@ -46,10 +46,10 @@ class LightAgentOutput(BaseModel):
 class SupervisorOutput(BaseModel):
     answer: str = Field(description="The markdown report.")
     sources: list[dict] = Field(
-        description="The final sources used to generate the answer. Leave a empty list if no sources are used."
+        description="The final sources used to generate the answer. Schema: [{'title': str, 'url': str, 'content': str}, ...]. Leave a empty list if no sources are used."
     )
     assets: list[str] = Field(
-        description="A list of URL of images or other assets used to generate the answer. Leave a empty list if no assets are used."
+        description="A list of URL of images or other assets used to generate the answer. Schema: ['url1', 'url2', ...]. Leave a empty list if no assets are used."
     )
 
 

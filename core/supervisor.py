@@ -68,7 +68,8 @@ Report writing:
 
 Sources and Data rules:
 - Researcher Subagent will store all citation at `citation.json`. You should use `read_file` tool to read these files when needed.
-- Keep this `citation.json` as your only citation source, and put that into the `sources` field of the output model.
+- Keep this `citation.json` as your primary citation source, and put that into the `sources` field of the output model.
+- If you delegated tasks to `stock_expert`, you MUST manually add a source object for the stock data into the `sources` field. The URL should be `https://finance.yahoo.com/quote/{ticker}` (where `{ticker}` is the actual stock symbol), the title should be `Yahoo Finance - {ticker}`, and the content should be `Yahoo Finance stock data for {ticker}`.
 
 FINAL OUTPUT FORMAT (strict):
 You MUST output your final answer using the provided structured output model. Do NOT output a raw JSON block in the text.
