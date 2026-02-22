@@ -101,7 +101,7 @@ def draw_graph(code: str) -> str:
         presigned_url = s3_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket_name, "Key": object_key},
-            ExpiresIn=3600,
+            ExpiresIn=3600 * 24 * 7,  # 7 days
         )
 
         shorter_url = get_shorten_url(presigned_url)
