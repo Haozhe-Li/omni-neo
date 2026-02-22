@@ -22,7 +22,6 @@ from core.utils.format import format_answer
 from core.get_title import get_title
 from core.auto_select_model import get_auto_select_model
 from core.source_checker import check_source
-from core.query_rewriter import rewrite_query
 from core.prompt_guard import is_harmful
 from core.utils.data_model import (
     QueryRequest,
@@ -48,7 +47,7 @@ app.add_middleware(
 )
 
 
-def generate_response(query: str, thread_id: str, personalization: str):
+def generate_response(query: str, thread_id: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
@@ -59,51 +58,6 @@ def generate_response(query: str, thread_id: str, personalization: str):
         yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'I’m sorry, but I can’t share that.'})}\n\n"
         return
 
-    start_researching_message = {
-        "type": "tool",
-        "tool": "write_todos",
-        "agent": "Supervisor",
-        "content": "Tool Calling",
-        "raw": {
-            "args": {
-                "todos": [
-                    {"content": "Understand the user's query", "status": "pending"},
-                ]
-            },
-            "id": "call_42W2889jFBqKSKhfWQptY7An",
-        },
-    }
-
-    yield f"data: {json.dumps(start_researching_message)}\n\n"
-
-    rewritten_query = rewrite_query(query, personalization)
-
-    finish_rewriting_message = {
-        "type": "tool",
-        "tool": "write_todos",
-        "agent": "Supervisor",
-        "content": "Tool Calling",
-        "raw": {
-            "args": {
-                "todos": [
-                    {"content": "Understand the user's query", "status": "completed"},
-                ]
-            },
-            "id": "call_42W2889jFBqKSKhfWQptY7An",
-        },
-    }
-
-    yield f"data: {json.dumps(finish_rewriting_message)}\n\n"
-
-    show_rewritten_query_message = {
-        "type": "reasoning",
-        "agent": "Supervisor",
-        "content": f"I've rewritten user's query to: {rewritten_query} Now let's start the research.",
-        "raw": {},
-    }
-
-    yield f"data: {json.dumps(show_rewritten_query_message)}\n\n"
-
     answer_produced = False
 
     try:
@@ -111,7 +65,7 @@ def generate_response(query: str, thread_id: str, personalization: str):
         # Replicating the logic from main.py
         # stream_mode="updates" and subgraphs=True are critical parameters used in main.py
         for content in agent.stream(
-            {"messages": [{"role": "user", "content": rewritten_query}]},
+            {"messages": [{"role": "user", "content": query}]},
             subgraphs=True,
             stream_mode="updates",
             config=config,
@@ -159,14 +113,12 @@ async def chat(request: QueryRequest):
         loop = asyncio.get_event_loop()
         loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
 
-    personalization = format_personalization(request.personalization)
-
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
     return StreamingResponse(
-        generate_response(request.query, request.thread_id, personalization),
+        generate_response(request.query, request.thread_id),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -203,6 +155,48 @@ async def light_chat(request: QueryRequest):
             "use_search": res["structured_response"].use_search,
         }
     )
+
+
+from core.research_helper import omni_research_helper
+
+
+@app.post("/research_helper")
+async def research_helper(request: QueryRequest):
+    if is_harmful(request.query):
+        return json.dumps(
+            {
+                "response": "I’m sorry, but I can’t share that.",
+                "read_to_begin_research": False,
+                "rewritten_query": "",
+            }
+        )
+    # Fire-and-forget: update threads_control.updated_at asynchronously
+    if request.thread_id:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+
+    config = {"configurable": {"thread_id": request.thread_id}}
+    personalization = format_personalization(request.personalization)
+    message_str = (
+        f"User Query: {request.query}\n\nPersonalization: {personalization}\n\n"
+    )
+    if request.follow_up_content:
+        message_str += f"\n\nFollow up text selection: {request.follow_up_content}"
+    message = {
+        "messages": [
+            {
+                "role": "user",
+                "content": message_str,
+            }
+        ]
+    }
+    res = omni_research_helper.invoke(message, config=config)
+    to_return = {
+        "response": res["structured_response"].response,
+        "read_to_begin_research": res["structured_response"].read_to_begin_research,
+        "rewritten_query": res["structured_response"].rewritten_query,
+    }
+    return to_return
 
 
 @app.post("/check_source")

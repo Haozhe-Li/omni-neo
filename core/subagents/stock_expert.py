@@ -45,7 +45,7 @@ stock_expert = {
     "description": "Stock expert for retrieving stock information, historical trends, and drawing financial charts.",
     "system_prompt": stock_expert_system_prompt,
     "tools": [get_stock_data, get_history_trend, draw_graph],
-    "model": "openai:gpt-4.1-mini-2025-04-14",
+    "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
         ToolRetryMiddleware(
             max_retries=2,

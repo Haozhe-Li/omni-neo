@@ -58,7 +58,7 @@ researcher = {
     "description": "Web researcher that searches, reads pages, and produces evidence-grounded answers with citations.",
     "system_prompt": researcher_system_prompt,
     "tools": [tavily_search, get_full_text],
-    "model": "openai:gpt-4.1-mini-2025-04-14",
+    "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
         ToolRetryMiddleware(
             max_retries=2,

@@ -6,6 +6,7 @@ langgraph
 python-dotenv
 langchain-groq
 langchain-openai
+langchain-google-genai
 
 # For persisting agent state
 langgraph-checkpoint-postgres

@@ -9,6 +9,8 @@ def smart_split(text):
 
 
 def format_personalization(personalization: Personalization) -> str:
+    if not personalization:
+        return ""
     result = ""
     if personalization.response_language:
         result += f"Response Language: {personalization.response_language}\n"

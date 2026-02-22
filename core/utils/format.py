@@ -37,8 +37,10 @@ def extract_struct_dict(obj: Any) -> Any:
 
     if hasattr(obj, "answer") or hasattr(obj, "answer"):
         return {
+            "title": getattr(obj, "title", None),
             "answer": getattr(obj, "answer", None) or getattr(obj, "answer", None),
             "sources": getattr(obj, "sources", getattr(obj, "sources", [])),
+            "assets": getattr(obj, "assets", getattr(obj, "assets", [])),
         }
 
     return None
@@ -202,7 +204,9 @@ def format_answer(content: Any) -> list[str]:
                                         {
                                             "type": "answer",
                                             "agent": agent_name,
-                                            "content": t_args["answer"],
+                                            "content": json.dumps(
+                                                t_args, ensure_ascii=False
+                                            ),
                                             "raw": {},
                                         },
                                         ensure_ascii=False,
@@ -237,7 +241,9 @@ def format_answer(content: Any) -> list[str]:
                                     {
                                         "type": "answer",
                                         "agent": agent_name,
-                                        "content": parsed_data["answer"],
+                                        "content": json.dumps(
+                                            parsed_data, ensure_ascii=False
+                                        ),
                                         "raw": {},
                                     },
                                     ensure_ascii=False,
@@ -263,20 +269,14 @@ def format_answer(content: Any) -> list[str]:
         # --- B.2. 处理 Structured Response 直接返回 (如 langgraph 返回结构体) ---
         if isinstance(data_payload, dict) and "structured_response" in data_payload:
             structured = data_payload["structured_response"]
-            # Some structured models are parsed into objects or dicts
-            answer_content = None
-            if hasattr(structured, "answer"):
-                answer_content = getattr(structured, "answer")
-            elif isinstance(structured, dict) and "answer" in structured:
-                answer_content = structured.get("answer")
-
-            if answer_content and agent_name == "Supervisor":
+            struct_dict = extract_struct_dict(structured)
+            if struct_dict and "answer" in struct_dict and agent_name == "Supervisor":
                 json_results.append(
                     json.dumps(
                         {
                             "type": "answer",
                             "agent": agent_name,
-                            "content": answer_content,
+                            "content": json.dumps(struct_dict, ensure_ascii=False),
                             "raw": {},
                         },
                         ensure_ascii=False,

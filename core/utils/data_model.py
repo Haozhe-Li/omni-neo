@@ -43,7 +43,18 @@ class LightAgentOutput(BaseModel):
     use_search: bool = Field(description="Whether you have used tavily_search.")
 
 
+class ResearchHelperOutput(BaseModel):
+    response: str = Field(description="The response to the user's query.")
+    read_to_begin_research: bool = Field(
+        description="Whether you are ready to begin research."
+    )
+    rewritten_query: str = Field(description="The rewritten query for research.")
+
+
 class SupervisorOutput(BaseModel):
+    title: str = Field(
+        description="A very short title of the report, no more than 5 words."
+    )
     answer: str = Field(description="The markdown report.")
     sources: list[dict] = Field(
         description="The final sources used to generate the answer. Schema: [{'title': str, 'url': str, 'content': str}, ...]. Leave a empty list if no sources are used."

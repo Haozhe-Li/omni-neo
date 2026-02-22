@@ -27,7 +27,7 @@ for content in agent.stream(
     },
     subgraphs=True,
     stream_mode="updates",
-    config={"configurable": {"thread_id": "1131211"}},
+    config={"configurable": {"thread_id": "391"}},
 ):
     print(content)
 
