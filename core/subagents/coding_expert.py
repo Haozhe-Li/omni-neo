@@ -37,11 +37,12 @@ Workflow:
 4. Retry on Error: If any tool returns an error or traceback, read it carefully, fix your code, and retry.
 5. Finalize: Once tools succeed, do not run them again. Build your final response.
 
+IMPORTANT:
+- When using `draw_graph` tool, DO NOT use `plt.savefig()` or `plt.show()` or any other saving/displaying functions. The tool handles saving automatically and returns the image URL. You MUST use the returned URL in your final output. Do NOT attempt to save it manually.
+- When using `run_python_tool` tool, you MUST use `print()` to print the results otherwise you will not see anything.
+
 Return to supervisor:
-- The final code used for computation and/or plotting.
-- Whether it ran successfully.
-- Key outputs, how they were computed, and the generated image URLs (if any).
-- If the task failed or requires unavailable external data, return a concise explanation of the limitation. Do NOT output a tutorial, placeholder code, or local execution guide.
+- CodeExpertOutput: the code, output, and image urls.
 """
 
 coding_expert = {
