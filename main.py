@@ -2,19 +2,15 @@ import dotenv
 
 dotenv.load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import json
 import uuid
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from core.light_agent import omni_light_agent
-from core.database.db_threads_control import (
-    upsert_thread,
-    touch_thread,
-    cleanup_old_threads,
-)
 
 # Import the agent and formatter from existing codebase
 from core.supervisor import agent
@@ -28,6 +24,29 @@ from core.utils.data_model import (
     CheckSourceRequest,
     Personalization,
     UpdateMemoriesRequest,
+)
+from core.auth import get_current_user, get_current_user_with_rate_limit, get_current_user_check_rate_limit, get_optional_user, GUEST_DAILY_LIMIT
+from core.database.db_user_threads import get_guest_usage_today as _get_guest_usage_today
+from core.database.db_user_threads import (
+    get_threads_for_user,
+    get_thread_messages,
+    upsert_thread_messages,
+    register_thread,
+    update_thread_title,
+    delete_user_thread,
+    pin_user_thread,
+    merge_guest_to_user,
+    count_user_threads,
+    GUEST_MAX_THREADS,
+)
+from core.database.db_threads_control import (
+    upsert_thread,
+    touch_thread,
+    cleanup_old_threads,
+    delete_thread as delete_thread_state,
+    reassign_threads_user,
+    pin_thread as pin_thread_state,
+    get_thread_owner,
 )
 from core.utils.utils import format_personalization
 from core.memories_update_llm import get_update_memories
@@ -45,6 +64,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _assert_thread_access(thread_id: str | None, user_id: str) -> None:
+    """
+    Verify the requesting user is allowed to access the given thread.
+    Raises HTTP 403 if the thread is claimed by a *different* user.
+    Unclaimed threads (owner is None) are accessible by anyone.
+    """
+    if not thread_id:
+        return
+    owner = get_thread_owner(thread_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: this thread belongs to another user.",
+        )
 
 
 def generate_response(query: str, thread_id: str):
@@ -103,15 +138,19 @@ def generate_response(query: str, thread_id: str):
 
 
 @app.post("/chat")
-async def chat(request: QueryRequest):
+async def chat(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user_with_rate_limit),
+):
     """
     Endpoint to interact with the agent.
     Returns a streaming response of formatted JSON objects.
     Fire-and-forget: update threads_control.updated_at asynchronously.
     """
+    _assert_thread_access(request.thread_id, user_id)
     if request.thread_id:
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
 
     headers = {
         "Cache-Control": "no-cache",
@@ -125,13 +164,17 @@ async def chat(request: QueryRequest):
 
 
 @app.post("/light_chat")
-async def light_chat(request: QueryRequest):
+async def light_chat(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user),
+):
     if is_harmful(request.query):
-        return json.dumps({"answer": "I’m sorry, but I can’t share that."})
+        return json.dumps({"answer": "I'm sorry, but I can't share that."})
+    _assert_thread_access(request.thread_id, user_id)
     # Fire-and-forget: update threads_control.updated_at asynchronously
     if request.thread_id:
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
 
     config = {"configurable": {"thread_id": request.thread_id}}
     personalization = format_personalization(request.personalization)
@@ -161,19 +204,23 @@ from core.research_helper import omni_research_helper
 
 
 @app.post("/research_helper")
-async def research_helper(request: QueryRequest):
+async def research_helper(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user_check_rate_limit),
+):
     if is_harmful(request.query):
         return json.dumps(
             {
-                "response": "I’m sorry, but I can’t share that.",
+                "response": "I'm sorry, but I can't share that.",
                 "read_to_begin_research": False,
                 "rewritten_query": "",
             }
         )
+    _assert_thread_access(request.thread_id, user_id)
     # Fire-and-forget: update threads_control.updated_at asynchronously
     if request.thread_id:
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(_db_executor, touch_thread, request.thread_id)
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
 
     config = {"configurable": {"thread_id": request.thread_id}}
     personalization = format_personalization(request.personalization)
@@ -215,13 +262,22 @@ def check_source_api(request: CheckSourceRequest):
 
 
 @app.get("/get_thread_id")
-def get_thread_id():
+def get_thread_id(user_id: str | None = Depends(get_optional_user)):
     """
-    Generate a new thread ID and synchronously register it in threads_control.
-    This is the only blocking DB write in the thread lifecycle.
+    Generate a new thread ID and register it in both threads_control and user_threads.
+    If auth headers are present the thread is immediately bound to the user.
+    Guests are capped at GUEST_MAX_THREADS active threads.
     """
+    if user_id and user_id.startswith("guest_"):
+        if count_user_threads(user_id) >= GUEST_MAX_THREADS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Guest accounts are limited to {GUEST_MAX_THREADS} threads. Please sign in for unlimited threads.",
+            )
     thread_id = str(uuid.uuid4())
-    upsert_thread(thread_id)
+    upsert_thread(thread_id, user_id)
+    if user_id:
+        register_thread(thread_id, user_id)
     return thread_id
 
 
@@ -256,6 +312,146 @@ async def health():
     loop = asyncio.get_event_loop()
     loop.run_in_executor(_db_executor, cleanup_old_threads)
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# User threads – auth-gated endpoints
+# ---------------------------------------------------------------------------
+
+class SyncThreadRequest(BaseModel):
+    messages: list
+    title: str | None = None
+
+
+class MergeRequest(BaseModel):
+    guest_id: str
+
+
+@app.get("/api/threads")
+def api_get_threads(user_id: str = Depends(get_current_user)):
+    """Return the list of threads owned by the current user."""
+    threads = get_threads_for_user(user_id)
+    # Serialise datetime objects so they become JSON-safe strings
+    for t in threads:
+        if hasattr(t.get("updated_at"), "isoformat"):
+            t["updated_at"] = t["updated_at"].isoformat()
+    return {"threads": threads}
+
+
+@app.get("/api/threads/{thread_id}")
+def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
+    """Return the stored ui_messages for a single thread."""
+    messages = get_thread_messages(thread_id, user_id)
+    return {"messages": messages}
+
+
+@app.post("/api/threads/{thread_id}/sync")
+def api_sync_thread(
+    thread_id: str,
+    body: SyncThreadRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Upsert the ui_messages (and optionally the title) for a thread.
+    The row is only written if it belongs to the requesting user.
+    """
+    ok = upsert_thread_messages(thread_id, user_id, body.messages)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to sync thread.")
+    if body.title:
+        update_thread_title(thread_id, user_id, body.title)
+    return {"status": "success"}
+
+
+@app.get("/api/guests/daily-quota")
+def api_guest_daily_quota(user_id: str = Depends(get_current_user)):
+    """
+    Return the remaining canvas-mode quota for a guest user today.
+    Signed-in users always get unlimited (-1).
+    """
+    if not user_id.startswith("guest_"):
+        return {"daily_limit": -1, "used": 0, "remaining": -1}
+    used = _get_guest_usage_today(user_id)
+    remaining = max(GUEST_DAILY_LIMIT - used, 0)
+    return {"daily_limit": GUEST_DAILY_LIMIT, "used": used, "remaining": remaining}
+
+
+@app.post("/api/users/merge")
+def api_merge_guest(
+    body: MergeRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Migrate all threads from a guest account to the authenticated user.
+    Updates both user_threads (UI state) and threads_control (LangGraph state).
+    Must be called with a valid Bearer token (i.e. after sign-in).
+    """
+    if not body.guest_id.startswith("guest_"):
+        raise HTTPException(status_code=400, detail="Invalid guest_id format.")
+    if user_id.startswith("guest_"):
+        raise HTTPException(status_code=403, detail="Must be signed in to merge.")
+    count = merge_guest_to_user(user_id, body.guest_id)
+    # Mirror the reassignment in threads_control so retention rules apply correctly
+    reassign_threads_user(body.guest_id, user_id)
+    return {"status": "merged", "threads_migrated": count}
+
+
+@app.delete("/api/threads/{thread_id}")
+def api_delete_thread(
+    thread_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Hard-delete a thread.
+    Removes the UI record (user_threads) and the full LangGraph checkpoint state
+    (checkpoints, checkpoint_blobs, checkpoint_writes, threads_control).
+    Returns 404 if the thread doesn't belong to this user.
+    """
+    owned = delete_user_thread(thread_id, user_id)
+    if not owned:
+        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+    # Clean up LangGraph state + threads_control row
+    delete_thread_state(thread_id)
+    return {"status": "deleted"}
+
+
+class PatchTitleRequest(BaseModel):
+    title: str
+
+
+class PatchPinRequest(BaseModel):
+    is_pinned: bool
+
+
+@app.patch("/api/threads/{thread_id}/title")
+def api_rename_thread(
+    thread_id: str,
+    body: PatchTitleRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """Rename a thread. Only the owning user can rename."""
+    ok = update_thread_title(thread_id, user_id, body.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+    return {"status": "updated"}
+
+
+@app.patch("/api/threads/{thread_id}/pin")
+def api_pin_thread(
+    thread_id: str,
+    body: PatchPinRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Pin or unpin a thread.
+    Pinned threads are sorted to the top of the list and exempted from auto-cleanup.
+    """
+    ok = pin_user_thread(thread_id, user_id, body.is_pinned)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+    # Mirror pin state in threads_control so cleanup respects it
+    pin_thread_state(thread_id, body.is_pinned)
+    return {"status": "updated", "is_pinned": body.is_pinned}
 
 
 # if __name__ == "__main__":

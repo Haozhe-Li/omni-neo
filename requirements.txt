@@ -21,6 +21,10 @@ yfinance
 uvicorn
 fastapi
 
+# For authentication (Clerk JWT verification)
+PyJWT[crypto]
+cryptography
+
 # For coding sandbox
 numpy
 pandas
