@@ -342,6 +342,8 @@ def api_get_threads(user_id: str = Depends(get_current_user)):
 def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
     """Return the stored ui_messages for a single thread."""
     messages = get_thread_messages(thread_id, user_id)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
     return {"messages": messages}
 
 
@@ -357,9 +359,11 @@ def api_sync_thread(
     """
     ok = upsert_thread_messages(thread_id, user_id, body.messages)
     if not ok:
-        raise HTTPException(status_code=500, detail="Failed to sync thread.")
+        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
     if body.title:
-        update_thread_title(thread_id, user_id, body.title)
+        title_ok = update_thread_title(thread_id, user_id, body.title)
+        if not title_ok:
+            raise HTTPException(status_code=404, detail="Thread not found or access denied.")
     return {"status": "success"}
 
 

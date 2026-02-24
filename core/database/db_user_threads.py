@@ -59,8 +59,8 @@ def get_threads_for_user(user_id: str) -> list[dict]:
         return []
 
 
-def get_thread_messages(thread_id: str, user_id: str) -> list:
-    """Return the ui_messages JSONB array for a specific thread owned by user."""
+def get_thread_messages(thread_id: str, user_id: str) -> list | None:
+    """Return ui_messages for a specific owned thread, or None if not found."""
     sql = """
         SELECT ui_messages
         FROM user_threads
@@ -76,10 +76,10 @@ def get_thread_messages(thread_id: str, user_id: str) -> list:
                     if isinstance(msgs, str):
                         return json.loads(msgs)
                     return msgs or []
-        return []
+        return None
     except Exception as e:
         logger.error(f"[db_user_threads] get_thread_messages error: {e}")
-        return []
+        return None
 
 
 def count_user_threads(user_id: str) -> int:
@@ -117,7 +117,7 @@ def upsert_thread_messages(thread_id: str, user_id: str, messages: list) -> bool
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (thread_id, user_id, json.dumps(messages)))
-        return True
+                return cur.rowcount > 0
     except Exception as e:
         logger.error(f"[db_user_threads] upsert_thread_messages error: {e}")
         return False
@@ -153,7 +153,7 @@ def update_thread_title(thread_id: str, user_id: str, title: str) -> bool:
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (title, thread_id, user_id))
-        return True
+                return cur.rowcount > 0
     except Exception as e:
         logger.error(f"[db_user_threads] update_thread_title error: {e}")
         return False
