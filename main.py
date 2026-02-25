@@ -2,7 +2,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -50,6 +50,7 @@ from core.database.db_threads_control import (
 )
 from core.utils.utils import format_personalization
 from core.memories_update_llm import get_update_memories
+from core.audio_sst import get_text_from_audio
 
 app = FastAPI(title="Omni Agent API")
 
@@ -304,6 +305,24 @@ async def update_memories_api(request: UpdateMemoriesRequest):
     # )
     res = await get_update_memories(request.past_queries, request.past_memories)
     return res
+
+
+@app.post("/api/sst")
+async def speech_to_text_api(
+    file: UploadFile = File(...),
+):
+    if not file.content_type or not file.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="Only audio files are supported.")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        text = await get_text_from_audio(audio_bytes)
+        return {"text": text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SST failed: {str(e)}")
 
 
 @app.get("/health")

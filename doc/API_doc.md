@@ -496,6 +496,35 @@ https://example.com/1, https://example.com/2
 
 ## 工具接口
 
+### `POST /api/sst`
+
+语音转文字（SST/STT）接口。前端上传音频文件，后端返回识别文本。
+
+**鉴权：** 无需（匿名可调用，不计入游客额度）
+
+**Request Headers**
+```
+Content-Type: multipart/form-data
+```
+
+**Form Data**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | `binary` | ✅ | 音频文件（`audio/*`） |
+
+**Response**
+```json
+{ "text": "你好，这是语音识别结果。" }
+```
+
+| 状态码 | 原因 |
+|---|---|
+| `400` | 不是音频文件，或文件为空 |
+| `500` | 服务端识别失败（例如 `GROQ_API_KEY` 未配置） |
+
+---
+
 ### `POST /get_title`
 
 根据第一条消息自动生成 Thread 标题。建议在用户第一次发送消息后异步调用。

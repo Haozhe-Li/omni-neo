@@ -20,6 +20,8 @@ yfinance
 # For running agents
 uvicorn
 fastapi
+groq
+python-multipart
 
 # For authentication (Clerk JWT verification)
 PyJWT[crypto]
