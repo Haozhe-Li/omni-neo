@@ -7,7 +7,7 @@ from functools import lru_cache
 
 
 @lru_cache(maxsize=64)
-def get_history_trend(symbol: str, period: str = "5y") -> Dict[str, Any]:
+def _get_history_trend_cached(symbol: str, period: str = "5y") -> Dict[str, Any]:
     """
     Get historical stock trends with intelligent sampling to reduce resolution.
 
@@ -87,8 +87,23 @@ def get_history_trend(symbol: str, period: str = "5y") -> Dict[str, Any]:
         }
 
 
+def get_history_trend(
+    symbol: str,
+    period: str = "5y",
+) -> Dict[str, Any]:
+    """Get historical stock trend data for a symbol and period.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., "TSLA").
+        period: Time period ("1mo", "3mo", "6mo", "1y", "2y", "5y", "max").
+    Returns:
+        Historical OHLCV trend payload.
+    """
+    return _get_history_trend_cached(symbol, period)
+
+
 @lru_cache(maxsize=128)
-def get_stock_data(symbol: str) -> Dict[str, Any]:
+def _get_stock_data_cached(symbol: str) -> Dict[str, Any]:
     """
     Get core stock metrics including price, valuation, and financial indicators.
 
@@ -145,6 +160,19 @@ def get_stock_data(symbol: str) -> Dict[str, Any]:
             "success": False,
             "error": f"Failed to get stock data for {symbol}: {str(e)}",
         }
+
+
+def get_stock_data(
+    symbol: str,
+) -> Dict[str, Any]:
+    """Get latest stock snapshot data for a symbol.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., "TSLA").
+    Returns:
+        Stock snapshot payload including key metrics.
+    """
+    return _get_stock_data_cached(symbol)
 
 
 # if __name__ == "__main__":

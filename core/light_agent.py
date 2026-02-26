@@ -1,27 +1,37 @@
 from langchain.chat_models import init_chat_model
-from core.tools.web_search import tavily_search
+from core.utils.light_tools import tavily_search_light, get_stock_data_light, get_weather_light
 from langchain.agents import create_agent
+from langchain.agents import AgentState
 from core.database.postgresql_saver import checkpointer
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
-from langchain.agents.structured_output import ProviderStrategy
-from core.utils.data_model import LightAgentOutput
+from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware, ModelCallLimitMiddleware
+from typing import Any
 
 
-model = init_chat_model("openai:gpt-4.1-nano-2025-04-14")
+class LightAgentState(AgentState):
+    sources: list[dict[str, str]]
+    stock: dict[str, Any]
+    weather: dict[str, Any]
+    
+
+
+model = init_chat_model("groq:openai/gpt-oss-20b")
 
 omni_light_agent = create_agent(
     model=model,
-    tools=[tavily_search],
+    tools=[tavily_search_light, get_stock_data_light, get_weather_light],
     system_prompt="""
-        You are a agent called Omni Light. You receive a user query and deliver a quick and warm response.
+        You are a agent called Omni Light. You will provide answers to user.
 
         Tools:
-        - tavily_search: search the web for relevant information.
+        - tavily_search_light: search the web for relevant information.
+        - get_stock_data_light: get latest stock data by ticker symbol.
+        - get_weather_light: get current weather for a location.
 
         Rules:
-        - Use tavily_search if and only if the user's query requires time-sensitive information.
+        - Use tavily_search_light if and only if the user's query requires time-sensitive information.
+        - Use get_stock_data_light when user asks stock price/metrics for a specific ticker.
+        - Use get_weather_light when user asks about current weather in a specific location. If user does not provide a location, use the personalization info gave to you.
         - Otherwise, answer directly yourself.
-        - The model behind you is gpt-4.1-nano. Don't reveal this unless the user explicitly asks.
         - You might be given some user personalization information. Use it if it is helpful to answer the query.
 
         Answer:
@@ -30,9 +40,7 @@ omni_light_agent = create_agent(
         - Keep your answer simple, warm and casual.
 
         Output:
-        Output to pydantic model:
-        - answer: The final answer to the user's query.
-        - use_search: Whether you have used tavily_search.
+        - Return plain text markdown answer only.
     """,
     name="light_agent",
     checkpointer=checkpointer,
@@ -42,7 +50,8 @@ omni_light_agent = create_agent(
             backoff_factor=2.0,
             initial_delay=1.0,
         ),
-        ToolCallLimitMiddleware(run_limit=2),
+        ToolCallLimitMiddleware(run_limit=3),
+        ModelCallLimitMiddleware(run_limit=5),
     ],
-    response_format=ProviderStrategy(LightAgentOutput),
+    state_schema=LightAgentState,
 )

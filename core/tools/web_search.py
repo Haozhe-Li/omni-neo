@@ -7,6 +7,48 @@ import os
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 
+def _normalize_tavily_result_item(item: dict) -> dict:
+    title = str(item.get("title", "") or "").strip()
+    url = str(item.get("url", "") or "").strip()
+    content = item.get("content")
+    if content is None:
+        content = item.get("raw_content", "")
+    content = str(content or "").strip()
+    return {
+        "title": title,
+        "url": url,
+        "content": content,
+    }
+
+
+def _normalize_tavily_response(raw: dict, query: str) -> dict:
+    if not isinstance(raw, dict):
+        return {
+            "query": query,
+            "results": [],
+            "error": "Search failed: invalid Tavily response format.",
+        }
+
+    normalized_results = []
+    for item in raw.get("results", []):
+        if not isinstance(item, dict):
+            continue
+        normalized_item = _normalize_tavily_result_item(item)
+        if normalized_item["title"] or normalized_item["url"] or normalized_item["content"]:
+            normalized_results.append(normalized_item)
+
+    return {
+        "query": raw.get("query", query),
+        "follow_up_questions": raw.get("follow_up_questions"),
+        "answer": raw.get("answer"),
+        "images": raw.get("images", []),
+        "results": normalized_results,
+        "response_time": raw.get("response_time"),
+        "request_id": raw.get("request_id"),
+        "error": raw.get("error"),
+    }
+
+
 def tavily_search(
     query: str,
     max_results: int = 5,
@@ -36,14 +78,30 @@ def tavily_search(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_search)
         try:
-            return future.result(timeout=TIMEOUT_SECONDS)
+            raw_res = future.result(timeout=TIMEOUT_SECONDS)
+            return _normalize_tavily_response(raw_res, query)
         except TimeoutError:
             return {
+                "query": query,
+                "follow_up_questions": None,
+                "answer": None,
+                "images": [],
                 "results": [],
+                "response_time": None,
+                "request_id": None,
                 "error": f"Search timed out after {TIMEOUT_SECONDS} seconds.",
             }
         except Exception as e:
-            return {"results": [], "error": f"Search failed: {str(e)}"}
+            return {
+                "query": query,
+                "follow_up_questions": None,
+                "answer": None,
+                "images": [],
+                "results": [],
+                "response_time": None,
+                "request_id": None,
+                "error": f"Search failed: {str(e)}",
+            }
 
 
 def google_search(querys: list[str], k: int = 5, tbs: str = "") -> list[dict]:

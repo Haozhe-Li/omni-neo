@@ -2,6 +2,22 @@ import json
 from typing import Any
 
 
+def _attach_sources(payload: dict) -> dict:
+    merged = dict(payload)
+    existing = merged.get("sources")
+    existing_list = existing if isinstance(existing, list) else []
+    merged["sources"] = existing_list
+    return merged
+
+
+def _attach_assets(payload: dict) -> dict:
+    merged = dict(payload)
+    existing = merged.get("assets")
+    existing_list = existing if isinstance(existing, list) else []
+    merged["assets"] = existing_list
+    return merged
+
+
 def extract_struct_dict(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
@@ -36,12 +52,14 @@ def extract_struct_dict(obj: Any) -> Any:
                 return res
 
     if hasattr(obj, "answer") or hasattr(obj, "answer"):
-        return {
+        data = {
             "title": getattr(obj, "title", None),
             "answer": getattr(obj, "answer", None) or getattr(obj, "answer", None),
-            "sources": getattr(obj, "sources", getattr(obj, "sources", [])),
             "assets": getattr(obj, "assets", getattr(obj, "assets", [])),
         }
+        if hasattr(obj, "sources"):
+            data["sources"] = getattr(obj, "sources", [])
+        return data
 
     return None
 
@@ -50,6 +68,8 @@ def format_answer(content: Any) -> list[str]:
     if not isinstance(content, str):
         struct_dict = extract_struct_dict(content)
         if struct_dict and ("answer" in struct_dict or "answer" in struct_dict):
+            struct_dict = _attach_sources(struct_dict)
+            struct_dict = _attach_assets(struct_dict)
             item = json.dumps(
                 {
                     "type": "answer",
@@ -199,6 +219,8 @@ def format_answer(content: Any) -> list[str]:
 
                             # Append to answer stream if it looks like the expected model
                             if isinstance(t_args, dict) and "answer" in t_args:
+                                t_args = _attach_sources(t_args)
+                                t_args = _attach_assets(t_args)
                                 json_results.append(
                                     json.dumps(
                                         {
@@ -236,6 +258,8 @@ def format_answer(content: Any) -> list[str]:
                         and "answer" in parsed_data
                     ):
                         if agent_name == "Supervisor":
+                            parsed_data = _attach_sources(parsed_data)
+                            parsed_data = _attach_assets(parsed_data)
                             json_results.append(
                                 json.dumps(
                                     {
@@ -271,6 +295,8 @@ def format_answer(content: Any) -> list[str]:
             structured = data_payload["structured_response"]
             struct_dict = extract_struct_dict(structured)
             if struct_dict and "answer" in struct_dict and agent_name == "Supervisor":
+                struct_dict = _attach_sources(struct_dict)
+                struct_dict = _attach_assets(struct_dict)
                 json_results.append(
                     json.dumps(
                         {

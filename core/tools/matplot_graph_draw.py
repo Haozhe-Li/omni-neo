@@ -58,7 +58,9 @@ CUSTOM_STYLE = {
 }
 
 
-def draw_graph(code: str) -> str:
+def draw_graph(
+    code: str,
+) -> str:
     """Draw a graph using pandas, numpy and matplotlib.
 
     Args:

@@ -18,6 +18,7 @@ class Personalization(BaseModel):
     memories: Memories | None = None
     user_local_datetime: str | None = None
     user_location: str | None = None
+    user_unit: str | None = None
 
 
 class QueryRequest(BaseModel):
@@ -72,12 +73,12 @@ class CodeExpertOutput(BaseModel):
         description="The output of the Python Code (If any, leave empty if no output)"
     )
     assets: list[str] = Field(
-        description="A list of URLs of images you draw. Leave a empty list if no assets are used."
+        description="A list of URLs of images you draw. You MUST INCLUDE ALL IMAGE URL YOU GENERATED in this field. Leave a empty list if no images are created."
     )
 
 
 class StockExpertOutput(BaseModel):
     report: str = Field(description="The analysis report of the stock.")
     assets: list[str] = Field(
-        description="A list of URLs of images you draw. Leave a empty list if no assets are used."
+        description="A list of URLs of images you draw. You MUST INCLUDE ALL IMAGE URL YOU GENERATED in this field. Leave a empty list if no images are created."
     )

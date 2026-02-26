@@ -22,7 +22,7 @@ def naive_selector(query: str) -> str:
     q_lowered = query.lower()
     fast_indicators = [
         "quick answer",
-        "快速回答",
+        "快速",
         "translate",
         "翻译",
         "rewrite",
@@ -40,11 +40,9 @@ def naive_selector(query: str) -> str:
         "分析",
         "深度",
         "详细",
-        "解释",
         "deep",
         "research",
         "analysis",
-        "explain",
         "compare",
         "对比",
         "评测",
@@ -52,16 +50,10 @@ def naive_selector(query: str) -> str:
         "review",
         "复杂",
         "canvas",
-        "编程",
-        "coding",
-        "code",
-        "python",
     ]
     for keyword in research_indicators:
         if keyword.lower() in q_lowered:
             return "smart"
-    if len(tokens) > 30:
-        return "smart"
     if len(tokens) < 5:
         return "fast"
     return "unknown"

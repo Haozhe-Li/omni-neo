@@ -45,7 +45,9 @@ def load_web_page(url: str) -> str:
     return f"URL: {url}\n\nContent:\n{documents[0].page_content}"
 
 
-def get_full_text(url: str):
+def get_full_text(
+    url: str,
+):
     """Get the full text of a web page.
 
     Args:

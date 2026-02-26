@@ -16,6 +16,7 @@ psycopg[binary]
 spider-client
 tavily-python
 yfinance
+pyowm
 
 # For running agents
 uvicorn

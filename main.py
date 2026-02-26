@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import json
+import ast
 import uuid
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -138,6 +139,134 @@ def generate_response(query: str, thread_id: str):
         yield f"data: {error_response}\n\n"
 
 
+def _coerce_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    if isinstance(value, dict):
+        return str(value.get("text", ""))
+    return ""
+
+
+def _slice_messages_for_current_query(messages: list, current_query_text: str) -> list:
+    if not messages or not current_query_text:
+        return messages
+
+    anchor_index = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if getattr(msg, "type", None) != "human":
+            continue
+        if current_query_text in _coerce_text(getattr(msg, "content", "")):
+            anchor_index = idx
+            break
+
+    if anchor_index < 0:
+        return messages
+    return messages[anchor_index + 1 :]
+
+
+def _extract_light_answer(res: dict) -> str:
+    messages = res.get("messages", []) if isinstance(res, dict) else []
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        content = getattr(msg, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(str(block.get("text", "")))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            joined = "".join(text_parts).strip()
+            if joined:
+                return joined
+    return ""
+
+
+def _parse_tool_payload(content) -> dict | None:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        return None
+
+    text = content.strip()
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    try:
+        parsed = ast.literal_eval(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    return None
+
+
+def _extract_light_metadata(
+    res: dict,
+    current_query_text: str = "",
+) -> tuple[list[dict], dict, dict]:
+    messages = res.get("messages", []) if isinstance(res, dict) else []
+    messages = _slice_messages_for_current_query(messages, current_query_text)
+    sources: list[dict] = []
+    seen_sources: set[tuple[str, str, str]] = set()
+    stock_payload: dict = {}
+    weather_payload: dict = {}
+
+    for msg in messages:
+        if getattr(msg, "type", None) != "tool":
+            continue
+
+        tool_name = getattr(msg, "name", "") or ""
+        payload = _parse_tool_payload(getattr(msg, "content", ""))
+        if not isinstance(payload, dict):
+            continue
+
+        if tool_name == "tavily_search_light":
+            for item in payload.get("results", []):
+                if not isinstance(item, dict):
+                    continue
+                source = {
+                    "title": str(item.get("title", "") or "").strip(),
+                    "url": str(item.get("url", "") or "").strip(),
+                    "content": str(item.get("content", "") or "").strip(),
+                }
+                key = (source["title"], source["url"], source["content"])
+                if key in seen_sources or not any(key):
+                    continue
+                sources.append(source)
+                seen_sources.add(key)
+
+        if tool_name == "get_stock_data_light":
+            stock_candidate = payload.get("stock")
+            if isinstance(stock_candidate, dict):
+                stock_payload = stock_candidate
+
+        if tool_name == "get_weather_light":
+            weather_payload = payload
+
+    return sources, stock_payload, weather_payload
+
+
 @app.post("/chat")
 async def chat(
     request: QueryRequest,
@@ -193,11 +322,23 @@ async def light_chat(
         ]
     }
     res = omni_light_agent.invoke(message, config=config)
+    scoped_messages = _slice_messages_for_current_query(
+        res.get("messages", []) if isinstance(res, dict) else [],
+        message_str,
+    )
+    answer = _extract_light_answer({"messages": scoped_messages})
+    sources, stock, weather = _extract_light_metadata(
+        {"messages": scoped_messages},
+        message_str,
+    )
     return json.dumps(
         {
-            "answer": res["structured_response"].answer,
-            "use_search": res["structured_response"].use_search,
-        }
+            "answer": answer,
+            "sources": sources,
+            "stock": stock,
+            "weather": weather,
+        },
+        ensure_ascii=False,
     )
 
 
