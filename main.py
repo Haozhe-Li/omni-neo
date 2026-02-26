@@ -11,15 +11,15 @@ import ast
 import uuid
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from core.light_agent import omni_light_agent
+from core.light_agent import omni_light_agent, LIGHT_AGENT_SYSTEM_PROMPT
 
 # Import the agent and formatter from existing codebase
-from core.supervisor import agent
+from core.supervisor import agent, supervisor_system_prompt
 from core.utils.format import format_answer
-from core.get_title import get_title
-from core.auto_select_model import get_auto_select_model
+from core.get_title import get_title, get_title_llm_system_prompt
+from core.auto_select_model import get_auto_select_model, llm_system_prompt as auto_select_model_system_prompt
 from core.source_checker import check_source
-from core.prompt_guard import is_harmful
+from core.prompt_guard import is_harmful, has_prompt_leakage, register_sensitive_prompts
 from core.utils.data_model import (
     QueryRequest,
     CheckSourceRequest,
@@ -50,10 +50,22 @@ from core.database.db_threads_control import (
     get_thread_owner,
 )
 from core.utils.utils import format_personalization
-from core.memories_update_llm import get_update_memories
+from core.memories_update_llm import get_update_memories, llm_system_prompt as memories_update_system_prompt
 from core.audio_sst import get_text_from_audio
+from core.research_helper import omni_research_helper, RESEARCH_HELPER_SYSTEM_PROMPT
 
 app = FastAPI(title="Omni Agent API")
+
+register_sensitive_prompts(
+    [
+        supervisor_system_prompt,
+        LIGHT_AGENT_SYSTEM_PROMPT,
+        RESEARCH_HELPER_SYSTEM_PROMPT,
+        auto_select_model_system_prompt,
+        get_title_llm_system_prompt,
+        memories_update_system_prompt,
+    ]
+)
 
 # Thread pool for fire-and-forget blocking DB calls
 _db_executor = ThreadPoolExecutor(max_workers=4)
@@ -114,6 +126,7 @@ def generate_response(query: str, thread_id: str):
             if formatted:
                 if isinstance(formatted, list):
                     for item in formatted:
+                        item, _ = _sanitize_stream_item(item)
                         if 'type":"answer' in str(item).replace(
                             " ", ""
                         ) or '"type": "answer"' in str(item):
@@ -153,6 +166,44 @@ def _coerce_text(value) -> str:
     if isinstance(value, dict):
         return str(value.get("text", ""))
     return ""
+
+
+def _sanitize_stream_item(item: str) -> tuple[str, bool]:
+    try:
+        payload = json.loads(item)
+    except Exception:
+        return item, False
+
+    blocked = False
+    safe_message = "I’m sorry, but I can’t share that."
+    content = payload.get("content")
+    event_type = payload.get("type")
+
+    if isinstance(content, str):
+        if event_type == "answer":
+            try:
+                answer_payload = json.loads(content)
+            except Exception:
+                answer_payload = None
+
+            if isinstance(answer_payload, dict) and isinstance(answer_payload.get("answer"), str):
+                answer_text = answer_payload.get("answer", "")
+                if has_prompt_leakage(answer_text):
+                    answer_payload["answer"] = safe_message
+                    payload["content"] = json.dumps(answer_payload, ensure_ascii=False)
+                    blocked = True
+            elif has_prompt_leakage(content):
+                payload["content"] = safe_message
+                blocked = True
+        elif has_prompt_leakage(content):
+            payload["content"] = safe_message
+            blocked = True
+
+    if blocked:
+        payload["type"] = "error"
+        payload["agent"] = "system"
+
+    return json.dumps(payload, ensure_ascii=False), blocked
 
 
 def _slice_messages_for_current_query(messages: list, current_query_text: str) -> list:
@@ -338,6 +389,8 @@ async def light_chat(
         message_str,
     )
     answer = _extract_light_answer({"messages": scoped_messages})
+    if has_prompt_leakage(answer):
+        answer = "I’m sorry, but I can’t share that."
     sources, map_results, stock, weather = _extract_light_metadata(
         {"messages": scoped_messages},
         message_str,
@@ -352,10 +405,6 @@ async def light_chat(
         },
         ensure_ascii=False,
     )
-
-
-from core.research_helper import omni_research_helper
-
 
 @app.post("/research_helper")
 async def research_helper(

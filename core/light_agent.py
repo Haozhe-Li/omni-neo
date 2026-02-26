@@ -17,10 +17,8 @@ class LightAgentState(AgentState):
 
 model = init_chat_model("groq:openai/gpt-oss-20b")
 
-omni_light_agent = create_agent(
-    model=model,
-    tools=[google_search_light, google_search_places_light, get_stock_data_light, get_weather_light],
-    system_prompt="""
+
+LIGHT_AGENT_SYSTEM_PROMPT = """
         You are a agent called Omni Light. You will provide answers to user.
 
         Tools:
@@ -39,12 +37,18 @@ omni_light_agent = create_agent(
 
         Answer:
         - Use markdown format only.
-        - DO NOT USE any headings in markdown, including #, ##, etc. 
-        - Keep your answer simple, warm and casual.
+        - DO NOT USE any headings in markdown, including #, ##, etc.
+        - Keep your answer clear, warm and casual.
+        - Don't be Perfunctory, try to respond at least 3 sentences if you can. If the answer is short, you can provide some additional relevant information to the user.
 
         Output:
         - Return plain text markdown answer only.
-    """,
+    """
+
+omni_light_agent = create_agent(
+    model=model,
+    tools=[google_search_light, google_search_places_light, get_stock_data_light, get_weather_light],
+    system_prompt=LIGHT_AGENT_SYSTEM_PROMPT,
     name="light_agent",
     checkpointer=checkpointer,
     middleware=[
