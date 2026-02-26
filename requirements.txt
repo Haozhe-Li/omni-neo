@@ -33,3 +33,5 @@ numpy
 pandas
 matplotlib
 boto3
+
+redis

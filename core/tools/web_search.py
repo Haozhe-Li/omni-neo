@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
-from functools import lru_cache
+from core.utils.redis_cache import l1cache
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
@@ -51,7 +51,7 @@ def _normalize_tavily_response(raw: dict, query: str) -> dict:
         "error": raw.get("error"),
     }
 
-
+@l1cache(ttl=3600 * 24 * 3)
 def tavily_search(
     query: str,
     max_results: int = 5,
@@ -107,7 +107,7 @@ def tavily_search(
             }
 
 
-@lru_cache(maxsize=128)
+@l1cache(ttl=3600 * 24 * 3)
 def google_search(query: str, k: int = 3) -> list[dict]:
     """
     Perform an google search using Google Serper API.
@@ -154,7 +154,7 @@ def google_search(query: str, k: int = 3) -> list[dict]:
                 })
     return normalized_results[:k]
 
-@lru_cache(maxsize=128)
+@l1cache(ttl=3600 * 24 * 90)
 def google_search_places(query: str, k: int = 3) -> list[dict]:
     k = min(k, 5)
     search = GoogleSerperAPIWrapper(k=k, type="places")

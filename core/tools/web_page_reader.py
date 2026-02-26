@@ -1,8 +1,9 @@
 from langchain_community.document_loaders import SpiderLoader
 import os
-from functools import lru_cache
+from core.utils.redis_cache import l1cache
 from langchain_groq import ChatGroq
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
 
 web_page_summarizer = ChatGroq(
     model="llama-3.1-8b-instant",
@@ -21,7 +22,7 @@ Output format:
 """
 
 
-@lru_cache(maxsize=None)
+@l1cache(ttl=3600 * 24 * 90) # Cache for 90 days since historical web page content doesn't change
 def load_web_page(url: str) -> str:
     """Load a web page and return its content.
 

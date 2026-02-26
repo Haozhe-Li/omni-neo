@@ -2,6 +2,7 @@ from core.tools.web_page_reader import load_web_page
 from core.tools.web_search import tavily_search
 import os
 from langchain_groq import ChatGroq
+from core.utils.redis_cache import l1cache
 import time
 from tavily import TavilyClient
 from typing import Literal
@@ -10,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
-
+@l1cache(ttl=3600 * 24 * 10)
 def verify_claim(fact: str) -> str:
     """Check a claim using Tavily API.
 
