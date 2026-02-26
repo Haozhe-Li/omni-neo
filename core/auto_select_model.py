@@ -14,7 +14,7 @@ auto_select_model_llm = ChatGroq(
 
 
 model_with_structure = auto_select_model_llm.with_structured_output(Decision)
-llm_system_prompt = "Decide if the query requires deep reasoning, math or coding (True) or is simple (False)."
+llm_system_prompt = "Decide if the query requires deep research, reasoning, or logics or is simple (False)."
 
 
 def naive_selector(query: str) -> str:
