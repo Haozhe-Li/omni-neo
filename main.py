@@ -194,8 +194,10 @@ def _extract_light_answer(res: dict) -> str:
     return ""
 
 
-def _parse_tool_payload(content) -> dict | None:
+def _parse_tool_payload(content) -> dict | list | None:
     if isinstance(content, dict):
+        return content
+    if isinstance(content, list):
         return content
     if not isinstance(content, str):
         return None
@@ -206,14 +208,14 @@ def _parse_tool_payload(content) -> dict | None:
 
     try:
         parsed = json.loads(text)
-        if isinstance(parsed, dict):
+        if isinstance(parsed, (dict, list)):
             return parsed
     except Exception:
         pass
 
     try:
         parsed = ast.literal_eval(text)
-        if isinstance(parsed, dict):
+        if isinstance(parsed, (dict, list)):
             return parsed
     except Exception:
         pass
@@ -224,10 +226,11 @@ def _parse_tool_payload(content) -> dict | None:
 def _extract_light_metadata(
     res: dict,
     current_query_text: str = "",
-) -> tuple[list[dict], dict, dict]:
+) -> tuple[list[dict], list[dict], dict, dict]:
     messages = res.get("messages", []) if isinstance(res, dict) else []
     messages = _slice_messages_for_current_query(messages, current_query_text)
     sources: list[dict] = []
+    map_results: list[dict] = []
     seen_sources: set[tuple[str, str, str]] = set()
     stock_payload: dict = {}
     weather_payload: dict = {}
@@ -238,11 +241,9 @@ def _extract_light_metadata(
 
         tool_name = getattr(msg, "name", "") or ""
         payload = _parse_tool_payload(getattr(msg, "content", ""))
-        if not isinstance(payload, dict):
-            continue
-
-        if tool_name == "tavily_search_light":
-            for item in payload.get("results", []):
+        if tool_name == "google_search_light":
+            items = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+            for item in items:
                 if not isinstance(item, dict):
                     continue
                 source = {
@@ -256,6 +257,16 @@ def _extract_light_metadata(
                 sources.append(source)
                 seen_sources.add(key)
 
+        if tool_name == "google_search_places_light":
+            items = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                map_results.append(item)
+
+        if not isinstance(payload, dict):
+            continue
+
         if tool_name == "get_stock_data_light":
             stock_candidate = payload.get("stock")
             if isinstance(stock_candidate, dict):
@@ -264,7 +275,7 @@ def _extract_light_metadata(
         if tool_name == "get_weather_light":
             weather_payload = payload
 
-    return sources, stock_payload, weather_payload
+    return sources, map_results, stock_payload, weather_payload
 
 
 @app.post("/chat")
@@ -327,7 +338,7 @@ async def light_chat(
         message_str,
     )
     answer = _extract_light_answer({"messages": scoped_messages})
-    sources, stock, weather = _extract_light_metadata(
+    sources, map_results, stock, weather = _extract_light_metadata(
         {"messages": scoped_messages},
         message_str,
     )
@@ -335,6 +346,7 @@ async def light_chat(
         {
             "answer": answer,
             "sources": sources,
+            "map": map_results,
             "stock": stock,
             "weather": weather,
         },

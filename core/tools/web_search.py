@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+from functools import lru_cache
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
@@ -104,27 +107,56 @@ def tavily_search(
             }
 
 
-def google_search(querys: list[str], k: int = 5, tbs: str = "") -> list[dict]:
+@lru_cache(maxsize=128)
+def google_search(query: str, k: int = 3) -> list[dict]:
     """
     Perform an google search using Google Serper API.
 
     Args:
-        querys (list[str]): A list of search queries.
+        query (str): The search query.
+        k (int): The number of results to return. Default is 3. Max is 10.
         k (int): The number of results to return per query. Default is 5. Max is 10.
-        tbs (str): Time-based search filter. Default is an empty string.
 
     Returns:
         list[dict]: A list of search result dictionaries.
 
     """
-    print(f"Searching google: {querys}, k: {k}, tbs: {tbs}")
     k = min(k, 10)
-    if not tbs:
-        search = GoogleSerperAPIWrapper(k=k)
-    else:
-        search = GoogleSerperAPIWrapper(k=k, tbs=tbs)
-    results = []
-    for query in querys:
-        result = search.results(query)
-        results.append(result)
-    return results
+    search = GoogleSerperAPIWrapper(k=k, type="search")
+    res =  search.results(query)
+    normalized_results = []
+    if res.get("answerBox"):
+        answer_box = res["answerBox"]
+        normalized_results.append({
+            "title": answer_box.get("title", ""),
+            "url": "https://www.google.com/search?q=" + query.replace(" ", "+"),
+            "content": "Answer from Google Answer Box: " + answer_box.get("snippet", ""),
+        })
+    
+    if res.get("knowledgeGraph"):
+        kg = res["knowledgeGraph"]
+        normalized_results.append({
+            "title": kg.get("title", ""),
+            "url": kg.get("descriptionLink", ""),
+            "content": "Knowledge Graph: " + kg.get("description", ""),
+        })
+
+    if res.get("organic"):
+        for item in res["organic"]:
+            title = item.get("title", "").strip()
+            url = item.get("link", "").strip()
+            content = item.get("snippet", "").strip()
+            if title or url or content:
+                normalized_results.append({
+                    "title": title,
+                    "url": url,
+                    "content": content,
+                })
+    return normalized_results[:k]
+
+@lru_cache(maxsize=128)
+def google_search_places(query: str, k: int = 3) -> list[dict]:
+    k = min(k, 5)
+    search = GoogleSerperAPIWrapper(k=k, type="places")
+    res =  search.results(query)
+    return res.get("places", [])[:k]

@@ -41,7 +41,7 @@ class Decision(BaseModel):
 
 class LightAgentOutput(BaseModel):
     answer: str = Field(description="The final answer to the user's query.")
-    use_search: bool = Field(description="Whether you have used tavily_search.")
+    use_search: bool = Field(description="Whether you have used google_search.")
 
 
 class ResearchHelperOutput(BaseModel):

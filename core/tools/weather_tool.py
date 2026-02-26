@@ -20,5 +20,3 @@ def get_weather(location: str) -> dict:
     except Exception as e:
         return {"error": f"Failed to get weather data for {location}: {str(e)}"}
 
-print(get_weather("New York, US"))
-

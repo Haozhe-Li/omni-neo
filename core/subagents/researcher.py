@@ -1,4 +1,4 @@
-from core.tools.web_search import tavily_search
+from core.tools.web_search import google_search
 from core.tools.web_page_reader import get_full_text
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
@@ -12,13 +12,13 @@ Goal:
 - Do NOT overthink or endlessly refine.
 
 Workflow:
-1. **Search**: Run tavily search for the topic.
+1. **Search**: Run google search for the topic.
 2. **Read**: Pick the top 1-3 most relevant results and use `get_full_text` ONLY if necessary. Do NOT read everything.
 3. **Quote Citation**: Use `write_file` and `edit_file` tools to create citation.
 4. **Report**: Immediately generate the report based on search snippets and any read content.
 
 Rules:
-- Most of the time, the snippets from tavily search results are sufficient. 
+- Most of the time, the snippets from google search results are sufficient. 
 - Do NOT over-use `get_full_text`. To save context window size, it will only return a MAXIMUM of 2000 characters. Only use it when the search snippet is absolutely not enough.
 - One round of search + reading is sufficient.
 - Return the report immediately after your search and optional reading.
@@ -57,7 +57,7 @@ researcher = {
     "name": "researcher",
     "description": "Web researcher that searches, reads pages, and produces evidence-grounded answers with citations.",
     "system_prompt": researcher_system_prompt,
-    "tools": [tavily_search, get_full_text],
+    "tools": [google_search, get_full_text],
     "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
         ToolRetryMiddleware(
