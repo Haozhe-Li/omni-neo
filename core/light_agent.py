@@ -1,9 +1,18 @@
 from langchain.chat_models import init_chat_model
-from core.utils.light_tools import google_search_light, google_search_places_light, get_stock_data_light, get_weather_light
+from core.utils.light_tools import (
+    google_search_light,
+    google_search_places_light,
+    get_stock_data_light,
+    get_weather_light,
+)
 from langchain.agents import create_agent
 from langchain.agents import AgentState
 from core.database.postgresql_saver import checkpointer
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware, ModelCallLimitMiddleware
+from langchain.agents.middleware import (
+    ToolRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ModelCallLimitMiddleware,
+)
 from typing import Any
 
 
@@ -12,7 +21,6 @@ class LightAgentState(AgentState):
     map: list[dict[str, Any]]
     stock: dict[str, Any]
     weather: dict[str, Any]
-    
 
 
 model = init_chat_model("groq:openai/gpt-oss-20b")
@@ -47,9 +55,14 @@ LIGHT_AGENT_SYSTEM_PROMPT = """
 
 omni_light_agent = create_agent(
     model=model,
-    tools=[google_search_light, google_search_places_light, get_stock_data_light, get_weather_light],
+    tools=[
+        google_search_light,
+        google_search_places_light,
+        get_stock_data_light,
+        get_weather_light,
+    ],
     system_prompt=LIGHT_AGENT_SYSTEM_PROMPT,
-    name="light_agent",
+    name="Omni Light",
     checkpointer=checkpointer,
     middleware=[
         ToolRetryMiddleware(

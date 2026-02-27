@@ -1,7 +1,7 @@
 from langchain_groq import ChatGroq
 import os
 import dotenv
-from functools import lru_cache
+from core.utils.redis_cache import l1cache
 import re
 from typing import Iterable
 
@@ -14,11 +14,15 @@ rewriter_llm = ChatGroq(
 
 
 _LEAKAGE_PATTERNS = [
-    re.compile(r"\b(system prompt|developer message|hidden instructions?)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(system prompt|developer message|hidden instructions?)\b", re.IGNORECASE
+    ),
     re.compile(r"\b(ignore (all|previous|prior) instructions?)\b", re.IGNORECASE),
     re.compile(r"\b(chain\s*of\s*thought|reasoning(?:_content)?)\b", re.IGNORECASE),
     re.compile(r"\bBEGIN\s+(SYSTEM|DEVELOPER)\s+PROMPT\b", re.IGNORECASE),
-    re.compile(r"\b(api[_-]?key|secret|token|bearer\s+[A-Za-z0-9\-._~+/]+=*)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(api[_-]?key|secret|token|bearer\s+[A-Za-z0-9\-._~+/]+=*)\b", re.IGNORECASE
+    ),
     re.compile(r"\bsk-[A-Za-z0-9]{16,}\b", re.IGNORECASE),
 ]
 
@@ -147,7 +151,7 @@ def sanitize_output_text(
     return text, False
 
 
-@lru_cache(maxsize=128)
+@l1cache(ttl=3600 * 24 * 90)
 def is_harmful(query: str) -> bool:
     try:
         messages = [

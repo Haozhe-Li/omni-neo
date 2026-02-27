@@ -82,6 +82,7 @@ You MUST output your final answer using the provided structured output model. Do
 sub_agents = [coding_expert, evaluator, researcher, stock_expert]
 
 agent = create_deep_agent(
+    name="Deep Research",
     model="google_genai:gemini-3-flash-preview",
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,

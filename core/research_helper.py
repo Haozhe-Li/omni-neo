@@ -26,12 +26,10 @@ RESEARCH_HELPER_SYSTEM_PROMPT = """
     """
 
 omni_research_helper = create_agent(
+    name="Research Helper",
     model=model,
     system_prompt=RESEARCH_HELPER_SYSTEM_PROMPT,
-    name="research_helper",
     checkpointer=checkpointer,
-    middleware=[
-        ModelCallLimitMiddleware(run_limit=2)
-    ],
+    middleware=[ModelCallLimitMiddleware(run_limit=2)],
     response_format=ProviderStrategy(ResearchHelperOutput),
 )
