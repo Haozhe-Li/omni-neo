@@ -14,6 +14,8 @@ from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
 )
 from typing import Any
+from langchain_groq import ChatGroq
+import os
 
 
 class LightAgentState(AgentState):
@@ -23,7 +25,11 @@ class LightAgentState(AgentState):
     weather: dict[str, Any]
 
 
-model = init_chat_model("groq:openai/gpt-oss-20b")
+model = ChatGroq(
+    model="openai/gpt-oss-20b",
+    reasoning_effort="low",
+    api_key=os.getenv("GROQ_API_KEY"),
+)
 
 
 LIGHT_AGENT_SYSTEM_PROMPT = """
