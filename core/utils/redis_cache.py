@@ -174,7 +174,6 @@ class L1Cache:
         
         return decorator
 
-# 使用示例（基于你的连接）
 r = redis.Redis.from_url(os.environ["REDIS_URL"])
 
 l1cache = L1Cache(r, prefix="app:", ttl=3600 * 24)

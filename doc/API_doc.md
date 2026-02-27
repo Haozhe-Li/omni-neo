@@ -344,12 +344,12 @@ https://example.com/1, https://example.com/2
 
 ---
 
-##### `tool: "get_full_text"` — 网页精读
+##### `tool: "load_web_page"` — 网页精读
 
 ```json
 {
   "type": "tool",
-  "tool": "get_full_text",
+  "tool": "load_web_page",
   "agent": "Sub-agent",
   "content": "Tool Calling",
   "raw": {
