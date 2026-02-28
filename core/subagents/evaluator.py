@@ -1,5 +1,9 @@
 from core.tools.verifying import verify_claim
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    ToolRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ModelCallLimitMiddleware,
+)
 
 evaluator_system_prompt = """
 You are an evaluator sub-agent.
@@ -46,5 +50,6 @@ evaluator = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=5),
+        ModelCallLimitMiddleware(run_limit=10),
     ],
 }

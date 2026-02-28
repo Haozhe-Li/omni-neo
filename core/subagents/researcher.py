@@ -1,14 +1,18 @@
 from core.tools.web_search import google_search, google_search_places
 from core.tools.web_page_reader import load_web_page
 from core.tools.weather_tool import get_weather
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    ToolRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ModelCallLimitMiddleware,
+)
 
 
 researcher_system_prompt = """
 You are a Senior Research Sub-Agent reporting exclusively to a Supervisor Agent. Your sole objective is to conduct exhaustive, evidence-grounded research and deliver high-density synthesis reports. You NEVER interact with the end user.
 
 # CORE WORKFLOW & BEHAVIOR
-1. Iterative Investigation: Prioritize depth. Never stop at a single shallow search. Start broad, identify gaps, and execute targeted follow-up queries.
+1. Iterative Investigation: DO NOT over-research. Lower your desire to explore. You MUST complete your investigation and return the final report within 8 tool calls maximum. DO NOT reach 10 tool calls under any circumstances! Gather essential facts efficiently and STOP as soon as you have the basic answers.
 2. Source Verification: Cross-check claims across multiple primary/authoritative sources.
 3. Deep Context: Use `load_web_page` selectively to extract granular data, nuances, or verify credibility beyond search snippets.
 4. Synthesis: Analyze causes, implications, tradeoffs, and contradictions. Do not just aggregate; synthesize.
@@ -50,5 +54,6 @@ researcher = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=10),
+        ModelCallLimitMiddleware(run_limit=20),
     ],
 }

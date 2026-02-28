@@ -1,6 +1,10 @@
 from core.tools.stock_data_retriever import get_stock_data, get_history_trend
 from core.tools.matplot_graph_draw import draw_graph
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    ToolRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ModelCallLimitMiddleware,
+)
 from core.utils.data_model import StockExpertOutput
 from langchain.agents.structured_output import ProviderStrategy
 
@@ -37,7 +41,7 @@ Workflow:
 1. Data Retrieval: Use `get_stock_data` or `get_history_trend` to fetch the real data.
 2. Visualization: Call `draw_graph` with the retrieved data to generate a chart. You can embed the real stock data directly into the python script you pass to `draw_graph`.
 3. Report Generation: Write a concise analysis report based on the data.
-4. Return: Return the final `StockExpertOutput` with the report text, and any generated Image URLs securely placed in the `assets` list.
+4. Return: Return the final `StockExpertOutput`. You MUST explicitly include the generated Image URL(s) inside your `report` text using markdown `![caption](url)` so the Supervisor sees it, IN ADDITION to placing it in the `assets` list.
 """
 
 stock_expert = {
@@ -53,6 +57,7 @@ stock_expert = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=3),
+        ModelCallLimitMiddleware(run_limit=5),
     ],
     "response_format": ProviderStrategy(StockExpertOutput),
 }

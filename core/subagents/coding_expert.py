@@ -1,6 +1,10 @@
 from core.tools.coding_sandbox import run_python_tool
 from core.tools.matplot_graph_draw import draw_graph
-from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    ToolRetryMiddleware,
+    ToolCallLimitMiddleware,
+    ModelCallLimitMiddleware,
+)
 from core.utils.data_model import CodeExpertOutput
 from langchain.agents.structured_output import ProviderStrategy
 
@@ -39,7 +43,7 @@ Workflow:
 1. Load Data & Compute: Use `run_python_tool` to process data if needed. Remember to print the results.
 2. Visualize: Use `draw_graph` if a plot is needed. ONLY write minimal visualization code.
 3. Retry on Error: Read traceback, fix code, and retry.
-4. Return: Return the final `CodeExpertOutput` with the generated Image URL(s) securely placed in the `assets` list.
+4. Return: Return the final `CodeExpertOutput`. You MUST explicitly include the generated Image URL(s) inside your `code_output` text using markdown `![caption](url)` so the Supervisor sees it, IN ADDITION to placing it in the `assets` list.
 """
 
 coding_expert = {
@@ -55,6 +59,7 @@ coding_expert = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=2),
+        ModelCallLimitMiddleware(run_limit=5),
     ],
     "response_format": ProviderStrategy(CodeExpertOutput),
 }
