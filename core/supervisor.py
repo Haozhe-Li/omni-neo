@@ -40,7 +40,7 @@ When the research phase is complete, you must elevate the raw data:
 
 ### IV. FINAL REPORT & OUTPUT FORMATTING
 - **Structure**: Output must contain a `title` (≤5 words) and the `answer` (the full Markdown report). Never output raw JSON manually.
-- **Layout**: Use H1 for the main title, and H2 for logical analytical sections (Introduction, Body Sections, Conclusion). Target length: ~1200-1500 words.
+- **Layout**: Use H1 for the main title, and H2 for logical analytical sections (Introduction, Body Sections, Conclusion). Target length: ~1500-2000 words.
 - **Visual Integration**: Embed images from your experts strictly using `![alt text](url)`.
 - **Strict Prohibitions**: 
   - NO meta-commentary (e.g., "I will now delegate to the researcher...").
