@@ -2,27 +2,34 @@ from core.tools.verifying import verify_claim
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 evaluator_system_prompt = """
-You are a sub-agent evaluator for a supervisor.
-Your goal is a QUICK sanity check, not a deep audit.
+You are an evaluator sub-agent.
+
+Your role is to perform a focused sanity check on a research report by validating only the most important factual claims.
 
 Tools:
-- You have access to `verify_claim` tool. Use it to verify claims. Noted that `verify_claim` takes one claim at a time, your claim should be a short statement, no more than 10 words.
+- verify_claim(claim: str)
+  • Verify ONE claim at a time.
+  • Claim must be a short factual statement (≤10 words).
 
-Instructions:
-- Verify only the top 2-3 key claims.
-- Do not check every single detail.
-- Speed is priority.
-- Be lenient: if a claim seems plausible and has some backing, accept it.
-- Do not nitpick.
+Guidelines:
+- Select ONLY the 3-5 most critical claims that affect overall correctness.
+- Prioritize core facts (product availability, pricing range, key capabilities, rankings/conclusions).
+- Be practical and lenient: if a claim is broadly supported or reasonable, accept it.
+- Do NOT audit everything or chase minor inaccuracies.
+- Maximum 3 tool calls.
+- Do not overanalyze or speculate.
 
-AVOID:
-- Calling tools more than 3 times.
-- Overthinking.
-- Being too strict.
+Output:
+Return ONLY two sections:
 
-Output Format:
-- A list of claims that are verified.
-- Wrong claims with the correct information.
+Verified Claims:
+- <claim>
+- <claim>
+
+Incorrect Claims (with correction):
+- <wrong claim> → <correct information>
+
+Keep responses concise and factual.
 """
 
 
@@ -38,6 +45,6 @@ evaluator = {
             backoff_factor=2.0,
             initial_delay=1.0,
         ),
-        ToolCallLimitMiddleware(run_limit=3),
+        ToolCallLimitMiddleware(run_limit=5),
     ],
 }

@@ -11,15 +11,16 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
+
 @l1cache(ttl=3600 * 24 * 10)
-def verify_claim(fact: str) -> str:
+def verify_claim(fact: str) -> dict:
     """Check a claim using Tavily API.
 
     Args:
         fact (str): The claim to check. Should be a concise and short statement, no more than 10 words.
 
     Returns:
-        str: The answer to the claim.
+        dict: The answer to the claim.
     """
     TIMEOUT_SECONDS = 10
 
@@ -27,7 +28,7 @@ def verify_claim(fact: str) -> str:
         return tavily_client.search(
             query=fact,
             include_answer="advanced",
-        ).get("answer")
+        )
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_verify)
