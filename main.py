@@ -308,21 +308,32 @@ def _extract_light_metadata(
 
         tool_name = getattr(msg, "name", "") or ""
         payload = _parse_tool_payload(getattr(msg, "content", ""))
-        if tool_name == "google_search_light":
-            items = (
-                payload
-                if isinstance(payload, list)
-                else payload.get("results", [])
-                if isinstance(payload, dict)
-                else []
-            )
+        if tool_name in ["google_search_light", "load_web_page_light"]:
+            items = []
+            if tool_name == "google_search_light":
+                items = (
+                    payload
+                    if isinstance(payload, list)
+                    else payload.get("results", [])
+                    if isinstance(payload, dict)
+                    else []
+                )
+            elif tool_name == "load_web_page_light":
+                if isinstance(payload, dict):
+                    items = [payload]
+
             for item in items:
                 if not isinstance(item, dict):
                     continue
+
+                content = str(item.get("content", "") or "").strip()
+                if tool_name == "load_web_page_light" and len(content) > 100:
+                    content = content[:100] + "..."
+
                 source = {
                     "title": str(item.get("title", "") or "").strip(),
                     "url": str(item.get("url", "") or "").strip(),
-                    "content": str(item.get("content", "") or "").strip(),
+                    "content": content,
                 }
                 key = (source["title"], source["url"], source["content"])
                 if key in seen_sources or not any(key):

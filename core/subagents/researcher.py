@@ -1,5 +1,6 @@
-from core.tools.web_search import google_search
+from core.tools.web_search import google_search, google_search_places
 from core.tools.web_page_reader import load_web_page
+from core.tools.weather_tool import get_weather
 from langchain.agents.middleware import ToolRetryMiddleware, ToolCallLimitMiddleware
 
 
