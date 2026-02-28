@@ -20,10 +20,17 @@ def _attach_assets(payload: dict) -> dict:
 
 def extract_struct_dict(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        try:
+            res = extract_struct_dict(obj.model_dump())
+            if res is not None:
+                return res
+        except Exception:
+            pass
     if hasattr(obj, "dict") and callable(getattr(obj, "dict")):
         try:
-            return obj.dict()
+            res = extract_struct_dict(obj.dict())
+            if res is not None:
+                return res
         except Exception:
             pass
 
@@ -31,7 +38,9 @@ def extract_struct_dict(obj: Any) -> Any:
         if "answer" in obj or "answer" in obj:
             return obj
         if "structured_response" in obj:
-            return extract_struct_dict(obj["structured_response"])
+            res = extract_struct_dict(obj["structured_response"])
+            if res is not None:
+                return res
 
         for k, v in obj.items():
             res = extract_struct_dict(v)
@@ -101,11 +110,15 @@ def format_answer(content: Any) -> list[str]:
     def ToolMessage(**kwargs):
         return {"type": "tool", **kwargs}
 
+    def SupervisorOutput(**kwargs):
+        return kwargs
+
     eval_context = {
         "Overwrite": Overwrite,
         "HumanMessage": HumanMessage,
         "AIMessage": AIMessage,
         "ToolMessage": ToolMessage,
+        "SupervisorOutput": SupervisorOutput,
         "null": None,
         "true": True,
         "false": False,

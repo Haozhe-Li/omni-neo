@@ -8,6 +8,7 @@ from langgraph.prebuilt import InjectedState
 from core.tools.web_search import google_search, google_search_places
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.weather_tool import get_weather
+from core.tools.web_page_reader import load_web_page
 
 
 @tool
@@ -16,7 +17,12 @@ def google_search_light(
     k: int = 5,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> list[dict]:
-    """Search the web and return normalized Google search results for light agent."""
+    """
+    Use Google Search for online information retrival.
+
+    query (str): The query to search for.
+    k (int, optional): The number of results to return. Defaults to 5. Max to be 10.
+    """
     _ = state
     return google_search(query=query, k=k)
 
@@ -27,7 +33,12 @@ def google_search_places_light(
     k: int = 5,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> list[dict]:
-    """Search places and return normalized Google places results for light agent."""
+    """
+    Use Google Search for places, restaurants, etc.
+
+    query (str): The place to search for, must include "near <location>"
+    k (int, optional): The number of results to return. Defaults to 5. Max to be 10.
+    """
     _ = state
     return google_search_places(query=query, k=k)
 
@@ -37,7 +48,11 @@ def get_stock_data_light(
     symbol: str,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> dict[str, Any]:
-    """Get latest stock data for one ticker and return normalized payload."""
+    """
+    Use Yahoo Finance for real time stock data. (US Market only)
+
+    symbol (str): The stock ticker symbol.
+    """
     _ = state
     result = get_stock_data(symbol)
     return {
@@ -45,11 +60,30 @@ def get_stock_data_light(
         "stock": result,
     }
 
+
 @tool
 def get_weather_light(
     location: str,
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> dict[str, Any]:
-    """Get current weather for a location."""
+    """
+    Use OpenWeatherMap for current weather.
+
+    location (str): The location to get the weather for. location MUST BE IN ENGLISH.
+    """
     _ = state
     return get_weather(location)
+
+
+@tool
+def load_web_page_light(
+    url: str,
+    state: Annotated[dict[str, Any], InjectedState] = None,
+) -> dict[str, Any]:
+    """
+    Visit a web page and return the content.
+
+    url (str): The URL to load.
+    """
+    _ = state
+    return load_web_page(url)

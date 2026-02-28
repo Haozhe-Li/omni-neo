@@ -17,7 +17,10 @@ from core.light_agent import omni_light_agent, LIGHT_AGENT_SYSTEM_PROMPT
 from core.supervisor import agent, supervisor_system_prompt
 from core.utils.format import format_answer
 from core.get_title import get_title, get_title_llm_system_prompt
-from core.auto_select_model import get_auto_select_model, llm_system_prompt as auto_select_model_system_prompt
+from core.auto_select_model import (
+    get_auto_select_model,
+    llm_system_prompt as auto_select_model_system_prompt,
+)
 from core.source_checker import check_source
 from core.prompt_guard import is_harmful, has_prompt_leakage, register_sensitive_prompts
 from core.utils.data_model import (
@@ -26,8 +29,16 @@ from core.utils.data_model import (
     Personalization,
     UpdateMemoriesRequest,
 )
-from core.auth import get_current_user, get_current_user_with_rate_limit, get_current_user_check_rate_limit, get_optional_user, GUEST_DAILY_LIMIT
-from core.database.db_user_threads import get_guest_usage_today as _get_guest_usage_today
+from core.auth import (
+    get_current_user,
+    get_current_user_with_rate_limit,
+    get_current_user_check_rate_limit,
+    get_optional_user,
+    GUEST_DAILY_LIMIT,
+)
+from core.database.db_user_threads import (
+    get_guest_usage_today as _get_guest_usage_today,
+)
 from core.database.db_user_threads import (
     get_threads_for_user,
     get_thread_messages,
@@ -50,7 +61,10 @@ from core.database.db_threads_control import (
     get_thread_owner,
 )
 from core.utils.utils import format_personalization
-from core.memories_update_llm import get_update_memories, llm_system_prompt as memories_update_system_prompt
+from core.memories_update_llm import (
+    get_update_memories,
+    llm_system_prompt as memories_update_system_prompt,
+)
 from core.audio_sst import get_text_from_audio
 from core.research_helper import omni_research_helper, RESEARCH_HELPER_SYSTEM_PROMPT
 
@@ -186,7 +200,9 @@ def _sanitize_stream_item(item: str) -> tuple[str, bool]:
             except Exception:
                 answer_payload = None
 
-            if isinstance(answer_payload, dict) and isinstance(answer_payload.get("answer"), str):
+            if isinstance(answer_payload, dict) and isinstance(
+                answer_payload.get("answer"), str
+            ):
                 answer_text = answer_payload.get("answer", "")
                 if has_prompt_leakage(answer_text):
                     answer_payload["answer"] = safe_message
@@ -293,7 +309,13 @@ def _extract_light_metadata(
         tool_name = getattr(msg, "name", "") or ""
         payload = _parse_tool_payload(getattr(msg, "content", ""))
         if tool_name == "google_search_light":
-            items = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+            items = (
+                payload
+                if isinstance(payload, list)
+                else payload.get("results", [])
+                if isinstance(payload, dict)
+                else []
+            )
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -309,7 +331,13 @@ def _extract_light_metadata(
                 seen_sources.add(key)
 
         if tool_name == "google_search_places_light":
-            items = payload if isinstance(payload, list) else payload.get("results", []) if isinstance(payload, dict) else []
+            items = (
+                payload
+                if isinstance(payload, list)
+                else payload.get("results", [])
+                if isinstance(payload, dict)
+                else []
+            )
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -355,13 +383,119 @@ async def chat(
     )
 
 
+def light_generate_response(query_text: str, message: dict, config: dict):
+    if is_harmful(query_text):
+        yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'I’m sorry, but I can’t share that.'})}\n\n"
+        return
+
+    answer_produced = False
+
+    try:
+        seen_tools_emitted = set()
+        all_sources = []
+        all_map = []
+        all_stock = {}
+        all_weather = {}
+        full_answer = ""
+
+        for data in omni_light_agent.stream(
+            message, config=config, stream_mode="updates"
+        ):
+            if True:  # Kept for indentation logic
+                for node_name, node_output in data.items():
+                    if isinstance(node_output, dict) and "messages" in node_output:
+                        msgs = node_output["messages"]
+                        if not isinstance(msgs, list):
+                            msgs = [msgs]
+
+                        # 1. Check if the model is calling a tool right now
+                        for msg in msgs:
+                            if getattr(msg, "type", None) == "ai":
+                                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                    for tc in msg.tool_calls:
+                                        tool_name = tc.get("name")
+                                        args = tc.get("args", {})
+                                        if tool_name:
+                                            payload_str = json.dumps(
+                                                {
+                                                    "type": "tool_call",
+                                                    "tool": tool_name,
+                                                    "args": args,
+                                                },
+                                                ensure_ascii=False,
+                                            )
+                                            if payload_str not in seen_tools_emitted:
+                                                yield f"data: {payload_str}\n\n"
+                                                seen_tools_emitted.add(payload_str)
+
+                                # 2. Check if the model is yielding a text answer
+                                if getattr(msg, "content", None) and isinstance(
+                                    msg.content, str
+                                ):
+                                    content_str = msg.content
+                                    if has_prompt_leakage(content_str):
+                                        content_str = (
+                                            "I’m sorry, but I can’t share that."
+                                        )
+                                    # Streaming answer chunk
+                                    # yield f"data: {json.dumps({'type': 'answer_chunk', 'answer': content_str}, ensure_ascii=False)}\n\n"
+                                    full_answer += content_str
+                                    answer_produced = True
+
+                        # 3. Check if tools just ran and returned data
+                        sources, map_results, stock, weather = _extract_light_metadata(
+                            {"messages": msgs}, query_text
+                        )
+                        if sources:
+                            all_sources.extend(sources)
+                        if map_results:
+                            all_map.extend(map_results)
+                        if stock:
+                            all_stock.update(stock)
+                        if weather:
+                            all_weather.update(weather)
+
+                        payload = {}
+                        if sources:
+                            payload["source"] = sources
+                            payload["sources"] = sources
+                        if map_results:
+                            payload["map"] = map_results
+                        if stock:
+                            payload["stock"] = stock
+                        if weather:
+                            payload["weather"] = weather
+
+                        # tool_data is discarded as per patch request; data is accumulated for final answer payload
+                        pass
+
+        # Final unified payload to ensure no info is lost and keys match old format
+        final_payload = {
+            "type": "answer",
+            "answer": full_answer,
+            "sources": all_sources,
+            "map": all_map,
+            "stock": all_stock,
+            "weather": all_weather,
+        }
+        yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
+
+        if not answer_produced and not full_answer:
+            # Fallback for answer escaping
+            pass
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': str(e)})}\n\n"
+
+
 @app.post("/light_chat")
 async def light_chat(
     request: QueryRequest,
     user_id: str = Depends(get_current_user),
 ):
-    if is_harmful(request.query):
-        return json.dumps({"answer": "I'm sorry, but I can't share that."})
     _assert_thread_access(request.thread_id, user_id)
     # Fire-and-forget: update threads_control.updated_at asynchronously
     if request.thread_id:
@@ -383,28 +517,16 @@ async def light_chat(
             }
         ]
     }
-    res = omni_light_agent.invoke(message, config=config)
-    scoped_messages = _slice_messages_for_current_query(
-        res.get("messages", []) if isinstance(res, dict) else [],
-        message_str,
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(
+        light_generate_response(request.query, message, config),
+        media_type="text/event-stream",
+        headers=headers,
     )
-    answer = _extract_light_answer({"messages": scoped_messages})
-    if has_prompt_leakage(answer):
-        answer = "I’m sorry, but I can’t share that."
-    sources, map_results, stock, weather = _extract_light_metadata(
-        {"messages": scoped_messages},
-        message_str,
-    )
-    return json.dumps(
-        {
-            "answer": answer,
-            "sources": sources,
-            "map": map_results,
-            "stock": stock,
-            "weather": weather,
-        },
-        ensure_ascii=False,
-    )
+
 
 @app.post("/research_helper")
 async def research_helper(
@@ -539,6 +661,7 @@ async def health():
 # User threads – auth-gated endpoints
 # ---------------------------------------------------------------------------
 
+
 class SyncThreadRequest(BaseModel):
     messages: list
     title: str | None = None
@@ -564,7 +687,9 @@ def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
     """Return the stored ui_messages for a single thread."""
     messages = get_thread_messages(thread_id, user_id)
     if messages is None:
-        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+        raise HTTPException(
+            status_code=404, detail="Thread not found or access denied."
+        )
     return {"messages": messages}
 
 
@@ -580,11 +705,15 @@ def api_sync_thread(
     """
     ok = upsert_thread_messages(thread_id, user_id, body.messages)
     if not ok:
-        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+        raise HTTPException(
+            status_code=404, detail="Thread not found or access denied."
+        )
     if body.title:
         title_ok = update_thread_title(thread_id, user_id, body.title)
         if not title_ok:
-            raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+            raise HTTPException(
+                status_code=404, detail="Thread not found or access denied."
+            )
     return {"status": "success"}
 
 
@@ -634,7 +763,9 @@ def api_delete_thread(
     """
     owned = delete_user_thread(thread_id, user_id)
     if not owned:
-        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+        raise HTTPException(
+            status_code=404, detail="Thread not found or access denied."
+        )
     # Clean up LangGraph state + threads_control row
     delete_thread_state(thread_id)
     return {"status": "deleted"}
@@ -657,7 +788,9 @@ def api_rename_thread(
     """Rename a thread. Only the owning user can rename."""
     ok = update_thread_title(thread_id, user_id, body.title)
     if not ok:
-        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+        raise HTTPException(
+            status_code=404, detail="Thread not found or access denied."
+        )
     return {"status": "updated"}
 
 
@@ -673,7 +806,9 @@ def api_pin_thread(
     """
     ok = pin_user_thread(thread_id, user_id, body.is_pinned)
     if not ok:
-        raise HTTPException(status_code=404, detail="Thread not found or access denied.")
+        raise HTTPException(
+            status_code=404, detail="Thread not found or access denied."
+        )
     # Mirror pin state in threads_control so cleanup respects it
     pin_thread_state(thread_id, body.is_pinned)
     return {"status": "updated", "is_pinned": body.is_pinned}
