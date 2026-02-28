@@ -1,4 +1,5 @@
 import json
+import ast
 from typing import Any
 
 
@@ -16,6 +17,119 @@ def _attach_assets(payload: dict) -> dict:
     existing_list = existing if isinstance(existing, list) else []
     merged["assets"] = existing_list
     return merged
+
+
+def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
+    """
+    Extract sources, map, stock, weather metadata from tool output.
+    """
+    parsed_payload = None
+    if isinstance(tool_output, str):
+        try:
+            parsed_payload = json.loads(tool_output)
+        except Exception:
+            try:
+                parsed_payload = ast.literal_eval(tool_output)
+            except Exception:
+                pass
+    elif isinstance(tool_output, (dict, list)):
+        parsed_payload = tool_output
+
+    if not parsed_payload:
+        return {}
+
+    sources = []
+    map_results = []
+    stock_payload = {}
+    weather_payload = {}
+
+    # Handle search results
+    if tool_name in ["google_search", "google_search_light", "tavily_search"]:
+        items = (
+            parsed_payload
+            if isinstance(parsed_payload, list)
+            else parsed_payload.get("results", [])
+            if isinstance(parsed_payload, dict)
+            else []
+        )
+        for item in items:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("name") or "").strip()
+                url = str(item.get("url") or item.get("link") or "").strip()
+                content = str(item.get("content") or item.get("snippet") or "").strip()
+                if title or url or content:
+                    sources.append({"title": title, "url": url, "content": content})
+
+    # Handle direct page loads
+    elif tool_name in ["load_web_page", "load_web_page_light"]:
+        if isinstance(parsed_payload, dict):
+            title = str(
+                parsed_payload.get("title") or parsed_payload.get("name") or ""
+            ).strip()
+            url = str(
+                parsed_payload.get("url") or parsed_payload.get("link") or ""
+            ).strip()
+            content = str(
+                parsed_payload.get("content") or parsed_payload.get("snippet") or ""
+            ).strip()
+            if len(content) > 100:
+                content = content[:100] + "..."
+            if title or url or content:
+                sources.append({"title": title, "url": url, "content": content})
+
+    # Handle map results
+    elif tool_name in ["google_search_places", "google_search_places_light"]:
+        items = (
+            parsed_payload
+            if isinstance(parsed_payload, list)
+            else parsed_payload.get("results", [])
+            if isinstance(parsed_payload, dict)
+            else []
+        )
+        for item in items:
+            if isinstance(item, dict):
+                map_results.append(item)
+
+    # Handle stock data
+    elif tool_name in ["get_stock_data"]:
+        stock_payload = parsed_payload
+    elif tool_name in ["get_stock_data_light"]:
+        candidate = (
+            parsed_payload.get("stock") if isinstance(parsed_payload, dict) else None
+        )
+        if isinstance(candidate, dict):
+            stock_payload = candidate
+
+    # Handle weather data
+    elif tool_name in ["get_weather", "get_weather_light"]:
+        weather_payload = parsed_payload
+
+    res = {}
+    if sources:
+        res["sources"] = sources
+    if map_results:
+        res["map"] = map_results
+    if stock_payload:
+        res["stock"] = stock_payload
+    if weather_payload:
+        res["weather"] = weather_payload
+    return res
+
+
+def _extract_assets_from_payload(obj: Any) -> list[str]:
+    """
+    Recursively find 'assets' lists in the output payload.
+    """
+    assets = []
+    if isinstance(obj, dict):
+        if "assets" in obj and isinstance(obj["assets"], list):
+            assets.extend([str(a) for a in obj["assets"]])
+        for v in obj.values():
+            assets.extend(_extract_assets_from_payload(v))
+    elif isinstance(obj, list):
+        for item in obj:
+            assets.extend(_extract_assets_from_payload(item))
+    return list(set(assets))
 
 
 def extract_struct_dict(obj: Any) -> Any:
@@ -113,12 +227,18 @@ def format_answer(content: Any) -> list[str]:
     def SupervisorOutput(**kwargs):
         return kwargs
 
+    def GenericOutput(**kwargs):
+        return kwargs
+
     eval_context = {
         "Overwrite": Overwrite,
         "HumanMessage": HumanMessage,
         "AIMessage": AIMessage,
         "ToolMessage": ToolMessage,
         "SupervisorOutput": SupervisorOutput,
+        "CodeExpertOutput": GenericOutput,
+        "StockExpertOutput": GenericOutput,
+        "ResearchHelperOutput": GenericOutput,
         "null": None,
         "true": True,
         "false": False,
@@ -188,6 +308,20 @@ def format_answer(content: Any) -> list[str]:
                 agent_name = "Sub-agent"
             else:
                 agent_name = "Supervisor"
+
+        # --- [New] Extract and stream assets from sub-agent/supervisor payload ---
+        captured_assets = _extract_assets_from_payload(data_payload)
+        if captured_assets:
+            json_results.append(
+                json.dumps(
+                    {
+                        "type": "assets",
+                        "agent": agent_name,
+                        "assets": captured_assets,
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
         # --- B. 处理 Model 消息 ---
         if "model" in data_payload and data_payload["model"]:
@@ -323,35 +457,62 @@ def format_answer(content: Any) -> list[str]:
                 )
 
         # --- C. 处理 Tools 消息 ---
-        if "tools" in data_payload and data_payload["tools"]:
-            messages = data_payload["tools"].get("messages", [])
-            for msg in messages:
-                if msg.get("type") == "tool":
-                    tool_name = msg.get("name", "unknown_tool")
-                    tool_output = msg.get("content", "")
+        # Robustly extract any tool messages via recursion to avoid missing them in nested dicts
+        def extract_tool_messages(obj):
+            tool_msgs = []
+            if isinstance(obj, dict):
+                if "messages" in obj and isinstance(obj["messages"], list):
+                    for m in obj["messages"]:
+                        if hasattr(m, "get") and m.get("type") == "tool":
+                            tool_msgs.append(m)
+                for v in obj.values():
+                    tool_msgs.extend(extract_tool_messages(v))
+            elif isinstance(obj, list):
+                for item in obj:
+                    tool_msgs.extend(extract_tool_messages(item))
+            return tool_msgs
 
-                    display_content = tool_output
-                    should_skip = False
-                    try:
-                        if len(tool_output) > 200:
-                            should_skip = True
-                    except:
-                        pass
+        for msg in extract_tool_messages(data_payload):
+            tool_name = msg.get("name", "unknown_tool")
+            tool_output = msg.get("content", "")
 
-                    if should_skip:
-                        continue
+            display_content = tool_output
 
-                    json_results.append(
-                        json.dumps(
-                            {
-                                "type": "tool",
-                                "tool": tool_name,
-                                "agent": agent_name,
-                                "content": display_content,
-                                "raw": {"full_output": tool_output},
-                            },
-                            ensure_ascii=False,
-                        )
+            # Extract domain metadata (sources, stock, weather, etc.) and stream dynamically
+            metadata = _extract_domain_metadata(tool_name, tool_output)
+            for key, val in metadata.items():
+                json_results.append(
+                    json.dumps(
+                        {
+                            "type": key,
+                            "agent": agent_name,
+                            key: val,
+                        },
+                        ensure_ascii=False,
                     )
+                )
+
+            should_skip = False
+            try:
+                if len(tool_output) > 200:
+                    should_skip = True
+            except:
+                pass
+
+            if should_skip:
+                continue
+
+            json_results.append(
+                json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": tool_name,
+                        "agent": agent_name,
+                        "content": display_content,
+                        "raw": {"full_output": tool_output},
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
     return json_results

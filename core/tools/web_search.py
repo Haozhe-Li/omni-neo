@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+
 load_dotenv()
 from core.utils.redis_cache import l1cache
 from langchain_community.utilities import GoogleSerperAPIWrapper
@@ -37,7 +38,11 @@ def _normalize_tavily_response(raw: dict, query: str) -> dict:
         if not isinstance(item, dict):
             continue
         normalized_item = _normalize_tavily_result_item(item)
-        if normalized_item["title"] or normalized_item["url"] or normalized_item["content"]:
+        if (
+            normalized_item["title"]
+            or normalized_item["url"]
+            or normalized_item["content"]
+        ):
             normalized_results.append(normalized_item)
 
     return {
@@ -50,6 +55,7 @@ def _normalize_tavily_response(raw: dict, query: str) -> dict:
         "request_id": raw.get("request_id"),
         "error": raw.get("error"),
     }
+
 
 @l1cache(ttl=3600 * 24 * 3)
 def tavily_search(
@@ -123,23 +129,28 @@ def google_search(query: str, k: int = 3) -> list[dict]:
     """
     k = min(k, 10)
     search = GoogleSerperAPIWrapper(k=k, type="search")
-    res =  search.results(query)
+    res = search.results(query)
     normalized_results = []
     if res.get("answerBox"):
         answer_box = res["answerBox"]
-        normalized_results.append({
-            "title": answer_box.get("title", ""),
-            "url": "https://www.google.com/search?q=" + query.replace(" ", "+"),
-            "content": "Answer from Google Answer Box: " + answer_box.get("snippet", ""),
-        })
-    
+        normalized_results.append(
+            {
+                "title": answer_box.get("title", ""),
+                "url": "https://www.google.com/search?q=" + query.replace(" ", "+"),
+                "content": "Answer from Google Answer Box: "
+                + answer_box.get("snippet", ""),
+            }
+        )
+
     if res.get("knowledgeGraph"):
         kg = res["knowledgeGraph"]
-        normalized_results.append({
-            "title": kg.get("title", ""),
-            "url": kg.get("descriptionLink", ""),
-            "content": "Knowledge Graph: " + kg.get("description", ""),
-        })
+        normalized_results.append(
+            {
+                "title": kg.get("title", ""),
+                "url": kg.get("descriptionLink", ""),
+                "content": "Knowledge Graph: " + kg.get("description", ""),
+            }
+        )
 
     if res.get("organic"):
         for item in res["organic"]:
@@ -147,16 +158,25 @@ def google_search(query: str, k: int = 3) -> list[dict]:
             url = item.get("link", "").strip()
             content = item.get("snippet", "").strip()
             if title or url or content:
-                normalized_results.append({
-                    "title": title,
-                    "url": url,
-                    "content": content,
-                })
+                normalized_results.append(
+                    {
+                        "title": title,
+                        "url": url,
+                        "content": content,
+                    }
+                )
     return normalized_results[:k]
+
 
 @l1cache(ttl=3600 * 24 * 90)
 def google_search_places(query: str, k: int = 3) -> list[dict]:
+    """
+    Use Google Search for places, restaurants, etc.
+
+    query (str): The place to search for, must include "near <location>"
+    k (int, optional): The number of results to return. Defaults to 5. Max to be 10.
+    """
     k = min(k, 5)
     search = GoogleSerperAPIWrapper(k=k, type="places")
-    res =  search.results(query)
+    res = search.results(query)
     return res.get("places", [])[:k]

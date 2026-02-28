@@ -114,41 +114,84 @@ def generate_response(query: str, thread_id: str):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
-    # yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'Stream ended. Answer might escaped.'})}\n\n"
-    # return
-
     if is_harmful(query):
         yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'I’m sorry, but I can’t share that.'})}\n\n"
         return
 
     answer_produced = False
+    all_sources = []
+    all_assets = []
+    all_map = []
+    all_stock = {}
+    all_weather = {}
+    seen_sources = set()
+    seen_assets = set()
 
     try:
         config = {"configurable": {"thread_id": thread_id}}
-        # Replicating the logic from main.py
-        # stream_mode="updates" and subgraphs=True are critical parameters used in main.py
         for content in agent.stream(
             {"messages": [{"role": "user", "content": query}]},
             subgraphs=True,
             stream_mode="updates",
             config=config,
         ):
-            # Pass full payload to format_answer (it will natively extract SupervisorOutputs and struct JSONs now)
             formatted = format_answer(content)
 
-            # Handle the output similar to main.py's writing logic
             if formatted:
-                if isinstance(formatted, list):
-                    for item in formatted:
-                        item, _ = _sanitize_stream_item(item)
-                        if 'type":"answer' in str(item).replace(
-                            " ", ""
-                        ) or '"type": "answer"' in str(item):
+                for item_str in formatted:
+                    try:
+                        item_obj = json.loads(item_str)
+                        item_type = item_obj.get("type")
+
+                        # 1. Accumulate metadata from the stream
+                        if item_type == "sources":
+                            for s in item_obj.get("sources", []):
+                                key = (s.get("title"), s.get("url"), s.get("content"))
+                                if key not in seen_sources:
+                                    all_sources.append(s)
+                                    seen_sources.add(key)
+
+                        elif item_type == "assets":
+                            for a in item_obj.get("assets", []):
+                                if a not in seen_assets:
+                                    all_assets.append(a)
+                                    seen_assets.add(a)
+
+                        elif item_type == "map":
+                            all_map.extend(item_obj.get("map", []))
+
+                        elif item_type == "stock":
+                            all_stock.update(item_obj.get("stock", {}))
+
+                        elif item_type == "weather":
+                            all_weather.update(item_obj.get("weather", {}))
+
+                        # 2. Intercept final answer and inject full collections
+                        elif item_type == "answer":
                             answer_produced = True
-                        yield f"data: {item}\n\n"
-                else:
-                    # Fallback for non-list returns, though format_answer type hint says list[str]
-                    yield f"data: {formatted}\n\n"
+                            try:
+                                payload = json.loads(item_obj["content"])
+                                if isinstance(payload, dict):
+                                    payload["sources"] = all_sources
+                                    payload["assets"] = all_assets
+                                    if all_map:
+                                        payload["map"] = all_map
+                                    if all_stock:
+                                        payload["stock"] = all_stock
+                                    if all_weather:
+                                        payload["weather"] = all_weather
+
+                                    item_obj["content"] = json.dumps(
+                                        payload, ensure_ascii=False
+                                    )
+                                    item_str = json.dumps(item_obj, ensure_ascii=False)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    item_str, _ = _sanitize_stream_item(item_str)
+                    yield f"data: {item_str}\n\n"
 
         if not answer_produced:
             print("Stream ended. Answer might escaped.")
