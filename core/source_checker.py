@@ -1,55 +1,41 @@
-from core.utils.utils import smart_split
+from rapidfuzz import fuzz
 
 
 def check_source(source: dict, text_selection: str):
     """
-    Checks if the text_selection exists in the source documents using a sliding window algorithm.
-    Returns the matching source if the similarity score is > 0.5.
+    使用 RapidFuzz 进行极速的局部字符串匹配。
     """
-    sources = source.get("sources", [])
-    if not sources:
+    sources = source.get("final_sources", [])
+    if not sources or not text_selection:
         return {}
-
-    selection_tokens = smart_split(text_selection.lower())
-    if not selection_tokens:
-        return {}
-
-    n = len(selection_tokens)
-    selection_set = set(selection_tokens)
 
     best_score = 0.0
     best_result = None
 
+    # 统一小写，提升匹配准确率
+    text_selection_lower = text_selection.lower()
+
     for item in sources:
         content = item.get("content", "")
-        content_tokens = smart_split(content.lower())
-
-        if len(content_tokens) < n:
+        if not content:
             continue
 
-        doc_max_score = 0.0
+        # partial_ratio 会在 content 中寻找与 text_selection 最匹配的滑动窗口（子串）
+        # 返回分数范围是 0.0 到 100.0
+        score = fuzz.partial_ratio(text_selection_lower, content.lower())
 
-        for i in range(len(content_tokens) - n + 1):
-            window = content_tokens[i : i + n]
-            window_set = set(window)
-
-            intersection = len(selection_set.intersection(window_set))
-            union = len(selection_set.union(window_set))
-
-            score = intersection / union if union > 0 else 0.0
-
-            if score > doc_max_score:
-                doc_max_score = score
-
-            if doc_max_score == 1.0:
-                break
-
-        if doc_max_score > best_score:
-            best_score = doc_max_score
+        if score > best_score:
+            best_score = score
             best_result = item
 
+        # 如果找到完美匹配，直接跳出循环
+        if best_score == 100.0:
+            break
+
     # print(f"Best score: {best_score}")
-    if best_score > 0.1 and best_result:
+
+    # rapidfuzz 的 100 分制，50 相当于你的 0.5
+    if best_score > 35.0 and best_result:
         return {
             "title": best_result["title"],
             "url": best_result["url"],

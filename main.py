@@ -631,7 +631,7 @@ def check_source_api(request: CheckSourceRequest):
         source_data = request.source
         if len(request.text_selection) < 10:
             return {"error": "Text selection is too short"}
-        sources = source_data.get("sources", [])
+        sources = source_data.get("final_sources", [])
         if not sources:
             return {"error": "No sources found"}
         res = check_source(source_data, request.text_selection)
