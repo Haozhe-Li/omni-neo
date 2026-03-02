@@ -46,10 +46,13 @@ class LightAgentOutput(BaseModel):
 
 class ResearchHelperOutput(BaseModel):
     response: str = Field(description="The response to the user's query.")
-    read_to_begin_research: bool = Field(
+    ready_to_begin_research: bool = Field(
         description="Whether you are ready to begin research."
     )
     rewritten_query: str = Field(description="The rewritten query for research.")
+    questions_for_user: list[dict] = Field(
+        description="Questions for the user to clarify the query."
+    )
 
 
 class SupervisorOutput(BaseModel):

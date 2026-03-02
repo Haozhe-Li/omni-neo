@@ -5,8 +5,8 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ModelCallLimitMiddleware,
 )
-from core.utils.data_model import CodeExpertOutput
-from langchain.agents.structured_output import ProviderStrategy
+# from core.utils.data_model import CodeExpertOutput
+# from langchain.agents.structured_output import ProviderStrategy
 
 coding_expert_system_prompt = """
 You are a highly capable coding sub-agent. You MUST carefully choose the RIGHT tool for the task.
@@ -43,7 +43,7 @@ Workflow:
 1. Load Data & Compute: Use `run_python_tool` to process data if needed. Remember to print the results.
 2. Visualize: Use `draw_graph` if a plot is needed. ONLY write minimal visualization code.
 3. Retry on Error: Read traceback, fix code, and retry.
-4. Return: Return the final `CodeExpertOutput`. You MUST explicitly include the generated Image URL(s) inside your `code_output` text using markdown `![caption](url)` so the Supervisor sees it, IN ADDITION to placing it in the `assets` list.
+4. Return: the code you wrote, the real output, AND if you generated any images, you MUST include the exact Markdown string in your final response: `![Chart Title](URL)`. This is critical for the supervisor to see the image.
 """
 
 coding_expert = {
@@ -61,5 +61,4 @@ coding_expert = {
         ToolCallLimitMiddleware(run_limit=2),
         ModelCallLimitMiddleware(run_limit=5),
     ],
-    "response_format": ProviderStrategy(CodeExpertOutput),
 }

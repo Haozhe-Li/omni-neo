@@ -42,6 +42,7 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     map_results = []
     stock_payload = {}
     weather_payload = {}
+    currency_payload = {}
 
     # Handle search results
     if tool_name in ["google_search", "google_search_light", "tavily_search"]:
@@ -104,6 +105,13 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     elif tool_name in ["get_weather", "get_weather_light"]:
         weather_payload = parsed_payload
 
+    # Handle currency data
+    elif tool_name in [
+        "get_realtime_currency_rate",
+        "get_realtime_currency_rate_light",
+    ]:
+        currency_payload = parsed_payload
+
     res = {}
     if sources:
         res["sources"] = sources
@@ -113,6 +121,8 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
         res["stock"] = stock_payload
     if weather_payload:
         res["weather"] = weather_payload
+    if currency_payload:
+        res["currency"] = currency_payload
     return res
 
 

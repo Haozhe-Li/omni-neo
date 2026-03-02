@@ -5,6 +5,7 @@ from core.utils.light_tools import (
     get_stock_data_light,
     get_weather_light,
     load_web_page_light,
+    get_realtime_currency_rate_light,
 )
 from langchain.agents import create_agent
 from langchain.agents import AgentState
@@ -24,6 +25,7 @@ class LightAgentState(AgentState):
     map: list[dict[str, Any]]
     stock: dict[str, Any]
     weather: dict[str, Any]
+    currency: dict[str, Any]
 
 
 model = ChatGroq(
@@ -42,6 +44,7 @@ Tools:
 - get_stock_data_light: get latest stock data by ticker symbol.
 - get_weather_light: get current weather for a location.
 - load_web_page_light: read a web page.
+- get_realtime_currency_rate_light: get real-time exchange rate between two currencies.
 
 Tool Usage Rules:
 - Use google_search_light ONLY when the query requires time-sensitive, up-to-date, or factual information that may change over time.
@@ -49,6 +52,7 @@ Tool Usage Rules:
 - Use google_search_places_light when the user asks for places or local recommendations. IMPORTANT: you MUST explicitly include a location in the query (e.g., "coffee shop in navy pier chicago").
 - Use get_stock_data_light when the user asks about stock price, performance, or metrics for a specific ticker.
 - Use get_weather_light when the user asks about current weather. If no location is provided, use available personalization information.
+- Use get_realtime_currency_rate_light when the user asks about exchange rates or currency conversion.
 - Otherwise, answer directly using your own knowledge.
 - Use personalization info when helpful, but do not mention it explicitly unless natural.
 
@@ -88,6 +92,7 @@ omni_light_agent = create_agent(
         get_stock_data_light,
         get_weather_light,
         load_web_page_light,
+        get_realtime_currency_rate_light,
     ],
     system_prompt=LIGHT_AGENT_SYSTEM_PROMPT,
     name="Omni Light",

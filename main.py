@@ -124,6 +124,7 @@ def generate_response(query: str, thread_id: str):
     all_map = []
     all_stock = {}
     all_weather = {}
+    all_currency = {}
     seen_sources = set()
     seen_assets = set()
 
@@ -166,6 +167,9 @@ def generate_response(query: str, thread_id: str):
                         elif item_type == "weather":
                             all_weather.update(item_obj.get("weather", {}))
 
+                        elif item_type == "currency":
+                            all_currency.update(item_obj.get("currency", {}))
+
                         # 2. Intercept final answer and inject full collections
                         elif item_type == "answer":
                             answer_produced = True
@@ -180,6 +184,8 @@ def generate_response(query: str, thread_id: str):
                                         payload["stock"] = all_stock
                                     if all_weather:
                                         payload["weather"] = all_weather
+                                    if all_currency:
+                                        payload["currency"] = all_currency
 
                                     item_obj["content"] = json.dumps(
                                         payload, ensure_ascii=False
@@ -344,6 +350,7 @@ def _extract_light_metadata(
     seen_sources: set[tuple[str, str, str]] = set()
     stock_payload: dict = {}
     weather_payload: dict = {}
+    currency_payload: dict = {}
 
     for msg in messages:
         if getattr(msg, "type", None) != "tool":
@@ -408,7 +415,10 @@ def _extract_light_metadata(
         if tool_name == "get_weather_light":
             weather_payload = payload
 
-    return sources, map_results, stock_payload, weather_payload
+        if tool_name == "get_realtime_currency_rate_light":
+            currency_payload = payload
+
+    return sources, map_results, stock_payload, weather_payload, currency_payload
 
 
 @app.post("/chat")
@@ -450,6 +460,7 @@ def light_generate_response(query_text: str, message: dict, config: dict):
         all_map = []
         all_stock = {}
         all_weather = {}
+        all_currency = {}
         full_answer = ""
 
         for data in omni_light_agent.stream(
@@ -497,8 +508,8 @@ def light_generate_response(query_text: str, message: dict, config: dict):
                                     answer_produced = True
 
                         # 3. Check if tools just ran and returned data
-                        sources, map_results, stock, weather = _extract_light_metadata(
-                            {"messages": msgs}, query_text
+                        sources, map_results, stock, weather, currency = (
+                            _extract_light_metadata({"messages": msgs}, query_text)
                         )
                         if sources:
                             all_sources.extend(sources)
@@ -508,6 +519,8 @@ def light_generate_response(query_text: str, message: dict, config: dict):
                             all_stock.update(stock)
                         if weather:
                             all_weather.update(weather)
+                        if currency:
+                            all_currency.update(currency)
 
                         payload = {}
                         if sources:
@@ -519,6 +532,8 @@ def light_generate_response(query_text: str, message: dict, config: dict):
                             payload["stock"] = stock
                         if weather:
                             payload["weather"] = weather
+                        if currency:
+                            payload["currency"] = currency
 
                         # tool_data is discarded as per patch request; data is accumulated for final answer payload
                         pass
@@ -531,6 +546,7 @@ def light_generate_response(query_text: str, message: dict, config: dict):
             "map": all_map,
             "stock": all_stock,
             "weather": all_weather,
+            "currency": all_currency,
         }
         yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
 
@@ -619,8 +635,9 @@ async def research_helper(
     res = omni_research_helper.invoke(message, config=config)
     to_return = {
         "response": res["structured_response"].response,
-        "read_to_begin_research": res["structured_response"].read_to_begin_research,
+        "ready_to_begin_research": res["structured_response"].ready_to_begin_research,
         "rewritten_query": res["structured_response"].rewritten_query,
+        "questions_for_user": res["structured_response"].questions_for_user,
     }
     return to_return
 

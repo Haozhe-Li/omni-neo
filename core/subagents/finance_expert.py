@@ -1,25 +1,27 @@
 from core.tools.stock_data_retriever import get_stock_data, get_history_trend
+from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.matplot_graph_draw import draw_graph
 from langchain.agents.middleware import (
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
     ModelCallLimitMiddleware,
 )
-from core.utils.data_model import StockExpertOutput
-from langchain.agents.structured_output import ProviderStrategy
+# from core.utils.data_model import StockExpertOutput
+# from langchain.agents.structured_output import ProviderStrategy
 
-stock_expert_system_prompt = """
+finance_expert_system_prompt = """
 You are a highly capable stock expert sub-agent. You exclusively handle all requests related to stock information and financial data visualization.
 
 Goal:
-- Retrieve real stock data using your tools.
+- Retrieve real financial data using your tools.
 - Provide insightful analysis based on the retrieved data.
-- Draw charts to visualize the stock trends if requested or if it helps your analysis.
+- Draw charts to visualize the financial trends if requested or if it helps your analysis.
 
 Tools:
 1. `get_stock_data`: Returns the current/latest data for a stock ticker.
 2. `get_history_trend`: Retrieves historical data for a stock over a specified period.
 3. `draw_graph`: Draws matplotlib charts using Python code.
+4. `get_realtime_currency_rate`: Returns the real-time exchange rate between two currencies.
 
 CRITICAL RULES for Data Visualization / Plotting (draw_graph tool):
 1. In `draw_graph`, DO NOT write ANY import statements (e.g., `import matplotlib.pyplot as plt`, `import pandas as pd`, `import numpy as np`). They are already pre-imported.
@@ -38,17 +40,22 @@ plt.ylabel('Price')
 ```
 
 Workflow:
-1. Data Retrieval: Use `get_stock_data` or `get_history_trend` to fetch the real data.
+1. Data Retrieval: Use `get_stock_data` or `get_history_trend` or `get_realtime_currency_rate to fetch the real data.
 2. Visualization: Call `draw_graph` with the retrieved data to generate a chart. You can embed the real stock data directly into the python script you pass to `draw_graph`.
 3. Report Generation: Write a concise analysis report based on the data.
-4. Return: Return the final `StockExpertOutput`. You MUST explicitly include the generated Image URL(s) inside your `report` text using markdown `![caption](url)` so the Supervisor sees it, IN ADDITION to placing it in the `assets` list.
+4. Return: The Report PLUS if you generated any images, you MUST include the exact Markdown string in your final response: `![Chart Title](URL)`. This is critical for the supervisor to see the image.
 """
 
-stock_expert = {
-    "name": "stock_expert",
+finance_expert = {
+    "name": "finance_expert",
     "description": "Stock expert for retrieving stock information, historical trends, and drawing financial charts.",
-    "system_prompt": stock_expert_system_prompt,
-    "tools": [get_stock_data, get_history_trend, draw_graph],
+    "system_prompt": finance_expert_system_prompt,
+    "tools": [
+        get_stock_data,
+        get_history_trend,
+        draw_graph,
+        get_realtime_currency_rate,
+    ],
     "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
         ToolRetryMiddleware(
@@ -59,5 +66,4 @@ stock_expert = {
         ToolCallLimitMiddleware(run_limit=3),
         ModelCallLimitMiddleware(run_limit=5),
     ],
-    "response_format": ProviderStrategy(StockExpertOutput),
 }
