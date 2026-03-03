@@ -68,6 +68,6 @@ finance_expert = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=5),
-        ModelCallLimitMiddleware(run_limit=10),
+        ModelCallLimitMiddleware(run_limit=20),
     ],
 }

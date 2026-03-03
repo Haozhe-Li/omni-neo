@@ -60,6 +60,6 @@ coding_expert = {
             initial_delay=1.0,
         ),
         ToolCallLimitMiddleware(run_limit=2),
-        ModelCallLimitMiddleware(run_limit=5),
+        ModelCallLimitMiddleware(run_limit=10),
     ],
 }
