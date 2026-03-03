@@ -43,6 +43,7 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     stock_payload = {}
     weather_payload = {}
     currency_payload = {}
+    assets_payload = []
 
     # Handle search results
     if tool_name in ["google_search", "google_search_light", "tavily_search"]:
@@ -112,6 +113,25 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     ]:
         currency_payload = parsed_payload
 
+    # Handle graph generation
+    elif tool_name == "draw_graph":
+        if isinstance(parsed_payload, dict):
+
+            def _find_urls(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if isinstance(v, str) and (
+                            v.startswith("http") or v.startswith("s3")
+                        ):
+                            assets_payload.append({"title": k, "url": v})
+                        elif isinstance(v, (dict, list)):
+                            _find_urls(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        _find_urls(item)
+
+            _find_urls(parsed_payload)
+
     res = {}
     if sources:
         res["sources"] = sources
@@ -123,6 +143,8 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
         res["weather"] = weather_payload
     if currency_payload:
         res["currency"] = currency_payload
+    if assets_payload:
+        res["assets"] = assets_payload
     return res
 
 

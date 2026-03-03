@@ -23,27 +23,31 @@ Tools:
 3. `draw_graph`: Draws matplotlib charts using Python code.
 4. `get_realtime_currency_rate`: Returns the real-time exchange rate between two currencies.
 
+IMPORTANT:
+You only have 5 tool calls in total. Use them wisely.
+
 CRITICAL RULES for Data Visualization / Plotting (draw_graph tool):
 1. In `draw_graph`, DO NOT write ANY import statements (e.g., `import matplotlib.pyplot as plt`, `import pandas as pd`, `import numpy as np`). They are already pre-imported.
 2. In `draw_graph`, DO NOT use `plt.savefig()`, `plt.show()`, or write to any file paths. The tool AUTOMATICALLY saves the graph and returns the Image URL directly.
 3. Only write the bare core plotting logic: `plt.plot()`, `plt.title()`, `plt.xlabel()`, `plt.ylabel()`.
 
-Example of CORRECT `draw_graph` code string:
+Example of CORRECT `draw_graph` syntax:
 ```python
 # DO NOT add any imports here. DO NOT add plt.savefig() here.
-dates = ['2026-01-01', '2026-01-02', '2026-01-03']
-prices = [100, 105, 102]
+dates = pd.date_range('2026-01-01', periods=5)
+prices = [100, 105, 102, 110, 115]
 plt.plot(dates, prices)
 plt.title('Stock Prices')
 plt.xlabel('Date')
 plt.ylabel('Price')
 ```
+For `draw_graph` you also MUST provide a highly descriptive `image_name`.
 
 Workflow:
-1. Data Retrieval: Use `get_stock_data` or `get_history_trend` or `get_realtime_currency_rate to fetch the real data.
-2. Visualization: Call `draw_graph` with the retrieved data to generate a chart. You can embed the real stock data directly into the python script you pass to `draw_graph`.
-3. Report Generation: Write a concise analysis report based on the data.
-4. Return: The Report PLUS if you generated any images, you MUST include the exact Markdown string in your final response: `![Chart Title](URL)`. This is critical for the supervisor to see the image.
+1. Load & Process: Fetch data, clean it, do analysis.
+2. Visualize: Use `draw_graph` to plot using pandas/matplotlib if needed. Provide a descriptive `image_name`. Only do minimal plotting logic.
+3. Validate: Did my tool run successfully? Read traceback if failed.
+4. Output: Write down your analysis and reasoning. DO NOT include the image URL or Markdown in your final response. The system will handle the image automatically.
 """
 
 finance_expert = {
@@ -63,7 +67,7 @@ finance_expert = {
             backoff_factor=2.0,
             initial_delay=1.0,
         ),
-        ToolCallLimitMiddleware(run_limit=3),
-        ModelCallLimitMiddleware(run_limit=5),
+        ToolCallLimitMiddleware(run_limit=5),
+        ModelCallLimitMiddleware(run_limit=10),
     ],
 }

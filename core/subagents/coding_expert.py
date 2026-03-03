@@ -28,6 +28,7 @@ plt.title('Stock Prices')
 plt.xlabel('Date')
 plt.ylabel('Price')
 ```
+For `draw_graph` you also MUST provide a highly descriptive `image_name`.
 
 Rules for `run_python_tool` (General Data Processing & Math):
 1. `run_python_tool` is ONLY for logic, math, data processing/cleaning. NEVER use it for plots.
@@ -41,9 +42,9 @@ Security & Environment Constraints:
 
 Workflow:
 1. Load Data & Compute: Use `run_python_tool` to process data if needed. Remember to print the results.
-2. Visualize: Use `draw_graph` if a plot is needed. ONLY write minimal visualization code.
+2. Visualize: Use `draw_graph` if a plot is needed. ONLY write minimal visualization code, and provide an `image_name`.
 3. Retry on Error: Read traceback, fix code, and retry.
-4. Return: the code you wrote, the real output, AND if you generated any images, you MUST include the exact Markdown string in your final response: `![Chart Title](URL)`. This is critical for the supervisor to see the image.
+4. Return: ONLY the code you wrote and the real output. DO NOT include the image URL or Markdown in your final response. The system will handle the image automatically.
 """
 
 coding_expert = {

@@ -38,6 +38,10 @@ STRICT CONSTRAINTS:
 - DO NOT mention the tools used.
 - DO NOT output internal reasoning/thought processes.
 - DO NOT address or acknowledge the end user.
+- Stop researching when: 
+    - You are confident that you have enough information to answer the user's query.
+    - Your last two search results has no new information.
+    - You have reached the maximum number of tool calls.
 """
 
 

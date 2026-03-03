@@ -58,16 +58,14 @@ CUSTOM_STYLE = {
 }
 
 
-def draw_graph(
-    code: str,
-) -> str:
+def draw_graph(code: str, image_name: str) -> dict:
     """Draw a graph using pandas, numpy and matplotlib.
 
     Args:
         code (str): The code to draw the graph.
 
     Returns:
-        str: The URL of the graph or error message.
+        dict: The URL of the graph or error message.
     """
     # print(code)
 
@@ -107,12 +105,11 @@ def draw_graph(
         )
 
         shorter_url = get_shorten_url(presigned_url)
-        print(shorter_url)
-        return shorter_url if shorter_url else presigned_url
+        return {image_name: shorter_url}
 
     except Exception as e:
         print(e)
-        return f"Code Execution Error: {str(e)}"
+        return {"error": f"Code Execution Error: {str(e)}"}
 
     finally:
         plt.clf()

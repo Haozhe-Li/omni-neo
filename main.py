@@ -36,6 +36,7 @@ from core.auth import (
     get_optional_user,
     GUEST_DAILY_LIMIT,
 )
+from core.report_writer import generate_final_report
 from core.database.db_user_threads import (
     get_guest_usage_today as _get_guest_usage_today,
 )
@@ -110,7 +111,7 @@ def _assert_thread_access(thread_id: str | None, user_id: str) -> None:
         )
 
 
-def generate_response(query: str, thread_id: str):
+def generate_response(query: str, thread_id: str, personalization: str = ""):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
@@ -153,10 +154,19 @@ def generate_response(query: str, thread_id: str):
                                     seen_sources.add(key)
 
                         elif item_type == "assets":
+                            print(f"DEBUG MAIN: Found assets event! {item_obj}")
                             for a in item_obj.get("assets", []):
-                                if a not in seen_assets:
+                                key = (
+                                    (a.get("title"), a.get("url"))
+                                    if isinstance(a, dict)
+                                    else a
+                                )
+                                if key not in seen_assets:
+                                    print(
+                                        f"DEBUG MAIN: Adding asset to all_assets! {a}"
+                                    )
                                     all_assets.append(a)
-                                    seen_assets.add(a)
+                                    seen_assets.add(key)
 
                         elif item_type == "map":
                             all_map.extend(item_obj.get("map", []))
@@ -176,6 +186,15 @@ def generate_response(query: str, thread_id: str):
                             try:
                                 payload = json.loads(item_obj["content"])
                                 if isinstance(payload, dict):
+                                    # Generate final beautiful report using Report Writer
+                                    raw_context = payload.get("answer", "")
+
+                                    yield f"data: {json.dumps({'type': 'reasoning', 'agent': 'Supervisor', 'content': 'Drafting final report...', 'raw': {}})}\n\n"
+
+                                    payload["answer"] = generate_final_report(
+                                        raw_context, all_assets, personalization
+                                    )
+
                                     payload["sources"] = all_sources
                                     payload["assets"] = all_assets
                                     if all_map:
@@ -197,6 +216,7 @@ def generate_response(query: str, thread_id: str):
                         pass
 
                     item_str, _ = _sanitize_stream_item(item_str)
+                    print("Streaming item:", item_str)
                     yield f"data: {item_str}\n\n"
 
         if not answer_produced:
@@ -440,8 +460,9 @@ async def chat(
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
+    personalization_str = format_personalization(request.personalization)
     return StreamingResponse(
-        generate_response(request.query, request.thread_id),
+        generate_response(request.query, request.thread_id, personalization_str),
         media_type="text/event-stream",
         headers=headers,
     )
