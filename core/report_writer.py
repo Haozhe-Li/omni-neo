@@ -70,7 +70,7 @@ def generate_final_report(
         HumanMessage(content=user_message),
     ]
     response = model.invoke(messages)
-    return response.content
+    return response.content[0].get("text")
 
 
-# print(generate_final_report("Hello"))
+print(generate_final_report("Hello"))
