@@ -27,6 +27,7 @@ Transform the provided <CONTEXT> into a definitive, 2,000-3,000 word professiona
    - Use Mermaid.js diagrams (flowcharts, sequence diagrams, or gantt charts) to visualize complex workflows or data relationships described in the context.
    - Format: Use ```mermaid [code] ``` blocks.
    - DO NOT DRAW too complex diagrams, keep it simple and easy to implement. Please make sure your mermaid diagrams are correct and can be rendered.
+   - Make sure all text / titles in mermaid were embed in double quotes, so that it can be rendered correctly.
 
 4. **TONE & DEPTH**:
    - Maintain a "Global Consulting Firm" (e.g., McKinsey/Gartner) tone: analytical, objective, and dense with insight.
@@ -73,4 +74,4 @@ def generate_final_report(
     return response.content[0].get("text")
 
 
-print(generate_final_report("Hello"))
+# print(generate_final_report("Hello"))
