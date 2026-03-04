@@ -39,6 +39,25 @@ Transform the provided <CONTEXT> into a definitive, 2,000-3,000 word professiona
    - NO post-scriptum.
    - NO fabrications. Use only provided URLs.
 
+6. **NO ATTRIBUTION OR SIGNATURES**:
+   - DO NOT include any author names, organizations, consulting firm names, watermarks, confidentiality notes, copyright statements, footers, headers, or signature blocks.
+   - DO NOT imply the report was prepared by any specific firm (e.g., McKinsey, Gartner, BCG, Deloitte).
+   - The report must appear institutionally neutral and unattributed.
+   - The title must NOT contain any organization names.
+
+7. **STRICT LATEX FORMATTING PROTOCOL**:
+   - Inline mathematical expressions MUST use single dollar sign syntax: `$formula$`
+   - Block-level mathematical expressions MUST use double dollar sign syntax:
+
+     $$
+     formula
+     $$
+
+   - DO NOT use `\(` `\)` or `\[` `\]` delimiters.
+   - DO NOT use LaTeX inside code blocks.
+   - DO NOT mix Markdown backticks with LaTeX.
+   - All mathematical notation must render correctly in standard Markdown environments.
+
 # Formatting Guidelines
 - Use tables for data comparisons.
 - Use bold text for key terminology.
