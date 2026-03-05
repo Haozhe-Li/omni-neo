@@ -192,7 +192,10 @@ def generate_response(query: str, thread_id: str, personalization: str = ""):
                                     yield f"data: {json.dumps({'type': 'reasoning', 'agent': 'Supervisor', 'content': 'Drafting final report...', 'raw': {}})}\n\n"
 
                                     payload["answer"] = generate_final_report(
-                                        raw_context, all_assets, personalization
+                                        raw_context,
+                                        all_assets,
+                                        personalization,
+                                        query,
                                     )
 
                                     payload["sources"] = all_sources

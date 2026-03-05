@@ -99,9 +99,7 @@ omni_light_agent = create_agent(
     checkpointer=checkpointer,
     middleware=[
         ToolRetryMiddleware(
-            max_retries=2,
-            backoff_factor=2.0,
-            initial_delay=1.0,
+            max_retries=1,
         ),
         ToolCallLimitMiddleware(run_limit=2),
         ModelCallLimitMiddleware(run_limit=5),

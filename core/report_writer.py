@@ -74,7 +74,10 @@ Transform the provided <CONTEXT> into a definitive, 2,000-3,000 word professiona
 
 
 def generate_final_report(
-    context: str, assets: list = None, personalization: str = ""
+    context: str,
+    assets: list = None,
+    personalization: str = "",
+    original_query: str = "",
 ) -> str:
     model = init_chat_model("google_genai:gemini-3-flash-preview")
 
@@ -83,7 +86,7 @@ def generate_final_report(
         sys_prompt += f"\n\nPersonalization Rules:\n{personalization}"
 
     assets_str = str(assets) if assets else "No images provided."
-    user_message = f"Here is the Internal Research Context:\n\n<CONTEXT>\n{context}\n</CONTEXT>\n\nHere is the Images/Assets list that you MUST insert:\n\n<ASSETS>\n{assets_str}\n</ASSETS>\n\nTransform this into the final beautiful Markdown report."
+    user_message = f"Here is the Original Query:\n\n<QUERY>\n{original_query}\n</QUERY>\n\nHere is the Internal Research Context:\n\n<CONTEXT>\n{context}\n</CONTEXT>\n\nHere is the Images/Assets list that you MUST insert:\n\n<ASSETS>\n{assets_str}\n</ASSETS>\n\nTransform this into the final beautiful Markdown report."
 
     messages = [
         SystemMessage(content=sys_prompt),
