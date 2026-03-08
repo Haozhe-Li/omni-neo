@@ -49,7 +49,12 @@ researcher = {
     "name": "researcher",
     "description": "Web researcher that searches, reads pages, and produces evidence-grounded answers with citations.",
     "system_prompt": researcher_system_prompt,
-    "tools": [google_search, load_web_page, get_weather, google_search_places],
+    "tools": [
+        google_search,
+        load_web_page,
+        get_weather,
+        google_search_places,
+    ],
     "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
         ToolRetryMiddleware(

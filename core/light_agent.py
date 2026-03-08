@@ -1,4 +1,3 @@
-from langchain.chat_models import init_chat_model
 from core.utils.light_tools import (
     google_search_light,
     google_search_places_light,
@@ -7,6 +6,7 @@ from core.utils.light_tools import (
     load_web_page_light,
     get_realtime_currency_rate_light,
 )
+from core.tools.search_document import search_in_document
 from langchain.agents import create_agent
 from langchain.agents import AgentState
 from core.database.postgresql_saver import checkpointer
@@ -58,7 +58,7 @@ LIGHT_AGENT_SYSTEM_PROMPT = """
 
     <tools>
         You have access to external tools for web search, place search, weather, stocks, currency rates,
-        and webpage reading.
+        webpage reading, and searching within user-uploaded long documents.
     </tools>
 
     <tool_strategy>
@@ -68,6 +68,7 @@ LIGHT_AGENT_SYSTEM_PROMPT = """
         - For detailed explanations or verification → search and read web pages.
         - For local recommendations → use place search.
         - For structured data queries (weather, stocks, currency) → use the appropriate tool.
+        - For queries referencing user uploads → use the search_in_document tool.
 
         When external information could improve accuracy, prefer retrieval before answering.
     </tool_strategy>
@@ -129,6 +130,7 @@ omni_light_agent = create_agent(
         get_weather_light,
         load_web_page_light,
         get_realtime_currency_rate_light,
+        search_in_document,
     ],
     system_prompt=LIGHT_AGENT_SYSTEM_PROMPT,
     name="Omni Light",

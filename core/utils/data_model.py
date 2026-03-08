@@ -26,6 +26,7 @@ class QueryRequest(BaseModel):
     thread_id: str | None = None
     follow_up_content: str | None = None
     personalization: Personalization | None = None
+    attached_file_ids: list[dict[str, str]] | None = None
 
 
 class CheckSourceRequest(BaseModel):

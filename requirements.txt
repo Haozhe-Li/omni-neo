@@ -34,5 +34,11 @@ pandas
 matplotlib
 boto3
 
+# cache
 redis
 rapidfuzz
+
+# RAG
+langchain-text-splitters
+langchain-pymupdf4llm
+upstash-search

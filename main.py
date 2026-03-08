@@ -10,6 +10,7 @@ import json
 import ast
 import uuid
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from core.light_agent import omni_light_agent, LIGHT_AGENT_SYSTEM_PROMPT
 
@@ -68,6 +69,21 @@ from core.memories_update_llm import (
 )
 from core.audio_sst import get_text_from_audio
 from core.research_helper import omni_research_helper, RESEARCH_HELPER_SYSTEM_PROMPT
+from core.database.db_user_files import (
+    create_pending_file,
+    get_file_record,
+    update_file_ready,
+    update_file_failed,
+    setup_user_files_table,
+)
+from core.RAG.file_parser import (
+    get_put_presigned_url,
+    get_read_presigned_url,
+    process_uploaded_file,
+)
+
+# Initialize db schemas on load
+setup_user_files_table()
 
 app = FastAPI(title="Omni Agent API")
 
@@ -111,7 +127,59 @@ def _assert_thread_access(thread_id: str | None, user_id: str) -> None:
         )
 
 
-def generate_response(query: str, thread_id: str, personalization: str = ""):
+def _build_message_content(
+    query: str, personalization: str, attached_file_ids: list[dict[str, str]] | None
+) -> str | list:
+    # attached_file_ids is a list of kv pairs {filename: file_id}
+    # looks like [{'Haozhe_Li_FlowCV_Resume_2026-03-02.pdf': 'user_uploads/user_3A6DMxlwpFVD6sZTiUTh0sRIL1t/826f0fe0-004f-40f4-b4ac-b4add1c28073'}]
+    print(attached_file_ids)
+    base_query = f"User Query: {query}\n\nPersonalization: {personalization}\n\n"
+    if not attached_file_ids:
+        return base_query
+
+    multimodal_blocks = []
+    has_documents = False
+    filenames = []
+
+    for file_info in attached_file_ids:
+        for file_id, filename in file_info.items():
+            print(file_id, filename)
+            record = get_file_record(file_id)
+            if not record:
+                continue
+            if record["category"] == "image":
+                url = get_read_presigned_url(file_id)
+                if url:
+                    multimodal_blocks.append(
+                        {"type": "image_url", "image_url": {"url": url}}
+                    )
+            elif record["category"] == "document":
+                has_documents = True
+                filenames.append(filename)
+
+    if has_documents:
+        base_query = (
+            """
+            The user has uploaded these files. Please use them properly.
+            """
+            + "\n".join(filenames)
+            + "\n\n"
+            + base_query
+        )
+
+    if multimodal_blocks:
+        multimodal_blocks.insert(0, {"type": "text", "text": base_query})
+        return multimodal_blocks
+
+    return base_query
+
+
+def generate_response(
+    query: str,
+    thread_id: str,
+    personalization: str = "",
+    attached_file_ids: list[str] | None = None,
+):
     """
     Generator function that streams the agent's output using the existing format logic.
     """
@@ -131,8 +199,11 @@ def generate_response(query: str, thread_id: str, personalization: str = ""):
 
     try:
         config = {"configurable": {"thread_id": thread_id}}
+        final_message_content = _build_message_content(
+            query, personalization, attached_file_ids
+        )
         for content in agent.stream(
-            {"messages": [{"role": "user", "content": query}]},
+            {"messages": [{"role": "user", "content": final_message_content}]},
             subgraphs=True,
             stream_mode="updates",
             config=config,
@@ -465,7 +536,12 @@ async def chat(
     }
     personalization_str = format_personalization(request.personalization)
     return StreamingResponse(
-        generate_response(request.query, request.thread_id, personalization_str),
+        generate_response(
+            request.query,
+            request.thread_id,
+            personalization_str,
+            request.attached_file_ids,
+        ),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -597,17 +673,21 @@ async def light_chat(
         loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
 
     config = {"configurable": {"thread_id": request.thread_id}}
+    print("thread_id at main.py", request.thread_id)
     personalization = format_personalization(request.personalization)
-    message_str = (
-        f"User Query: {request.query}\n\nPersonalization: {personalization}\n\n"
-    )
+    query_text = request.query
     if request.follow_up_content:
-        message_str += f"\n\nFollow up text selection: {request.follow_up_content}"
+        query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
+
+    final_message_content = _build_message_content(
+        query_text, personalization, request.attached_file_ids
+    )
+
     message = {
         "messages": [
             {
                 "role": "user",
-                "content": message_str,
+                "content": final_message_content,
             }
         ]
     }
@@ -620,6 +700,71 @@ async def light_chat(
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+class UploadUrlRequest(BaseModel):
+    filename: str
+    file_type: str
+    file_size_bytes: int
+    thread_id: str | None = None
+
+
+@app.post("/api/upload/url")
+def api_upload_url(
+    request: UploadUrlRequest,
+    user_id: str = Depends(get_current_user),
+):
+    # Use thread_id from request body; generate one only if frontend didn't provide it.
+    thread_id = request.thread_id or str(uuid.uuid4())
+    raw_file_id = str(uuid.uuid4())
+    file_id = f"user_uploads/{user_id}/{raw_file_id}"
+    s3_bucket = os.getenv(
+        "S3_BUCKET_NAME", "omni"
+    )  # Defaulting bucket name to omni if unspecified
+
+    if request.file_type.startswith("image/"):
+        category = "image"
+    elif (
+        request.file_type == "application/pdf"
+        or request.file_type.startswith("text/")
+        or request.file_type
+        in [
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/x-javascript",
+            "application/x-python",
+            "application/x-sh",
+            "application/x-httpd-php",
+            "application/yaml",
+            "application/x-yaml",
+        ]
+    ):
+        # Length determination happens after parsing.
+        category = "document"  # Will be split later into short/long if needed, but handled generically by parser
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+
+    create_pending_file(
+        file_id=file_id,
+        user_id=user_id,
+        thread_id=thread_id,
+        original_filename=request.filename,
+        file_type=request.file_type,
+        file_size_bytes=request.file_size_bytes,
+        s3_bucket=s3_bucket,
+        category=category,
+    )
+
+    url = get_put_presigned_url(s3_bucket, file_id, request.file_type)
+    return {"upload_url": url, "file_id": file_id, "thread_id": thread_id}
+
+
+@app.post("/api/upload/confirm")
+def api_upload_confirm(file_id: str, user_id: str = Depends(get_current_user)):
+    # Run the file parsing asynchronously without event loop collision in worker thread
+    _db_executor.submit(process_uploaded_file, file_id)
+    return {"status": "processing", "file_id": file_id}
 
 
 @app.post("/research_helper")
@@ -643,16 +788,19 @@ async def research_helper(
 
     config = {"configurable": {"thread_id": request.thread_id}}
     personalization = format_personalization(request.personalization)
-    message_str = (
-        f"User Query: {request.query}\n\nPersonalization: {personalization}\n\n"
-    )
+    query_text = request.query
     if request.follow_up_content:
-        message_str += f"\n\nFollow up text selection: {request.follow_up_content}"
+        query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
+
+    final_message_content = _build_message_content(
+        query_text, personalization, request.attached_file_ids
+    )
+
     message = {
         "messages": [
             {
                 "role": "user",
-                "content": message_str,
+                "content": final_message_content,
             }
         ]
     }
