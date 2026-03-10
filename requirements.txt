@@ -17,6 +17,7 @@ spider-client
 tavily-python
 yfinance
 pyowm
+arxiv
 
 # For running agents
 uvicorn

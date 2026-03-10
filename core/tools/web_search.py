@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
 from typing import Literal
 import os
+import arxiv
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
@@ -189,3 +190,40 @@ def google_search_places(query: str, k: int = 3) -> list[dict]:
     search = GoogleSerperAPIWrapper(k=k, type="places")
     res = search.results(query)
     return res.get("places", [])[:k]
+
+
+@l1cache(ttl=3600 * 24 * 90)
+def arxiv_search(query: str, k: int = 3) -> list[dict]:
+    """
+    Perform an arxiv search using Arxiv API.
+
+    Args:
+        query (str): The search query.
+        k (int): The number of results to return. Default is 3. Max is 5.
+
+    Returns:
+        list[dict]: A list of search result dictionaries.
+
+    """
+    k = min(k, 5)
+    search = arxiv.Search(
+        query=query, max_results=k, sort_by=arxiv.SortCriterion.SubmittedDate
+    )
+    results = []
+    for result in search.results():
+        results.append(
+            {
+                "title": result.title,
+                "url": result.pdf_url,
+                "content": result.summary,
+            }
+        )
+    if not results:
+        return [
+            {
+                "title": "No results found, please change your query",
+                "url": "",
+                "content": "",
+            }
+        ]
+    return results

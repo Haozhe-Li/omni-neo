@@ -1,4 +1,4 @@
-from core.tools.web_search import google_search, google_search_places
+from core.tools.web_search import google_search, google_search_places, arxiv_search
 from core.tools.web_page_reader import load_web_page
 from core.tools.weather_tool import get_weather
 from langchain.agents.middleware import (
@@ -19,8 +19,9 @@ You are a Senior Research Sub-Agent reporting exclusively to a Supervisor Agent.
 
 # TOOL USAGE
 - `Google Search`: For broad-to-specific iterative queries.
-- `load_web_page`: For deep reading of high-value sources (Max 2000 chars).
-- `Google Search_places`: For location, venue, or business-specific factual context.
+- `arxiv_search`: For academic papers and research.
+- `load_web_page`: For reading web pages, dive deep into results from google search or arxiv search.
+- `google_search_places`: For location, venue, or business-specific factual context.
 - `get_weather`: For weather data only when it materially impacts the topic.
 
 # CRITICAL: QUERY LANGUAGE STRATEGY
@@ -54,6 +55,7 @@ researcher = {
         load_web_page,
         get_weather,
         google_search_places,
+        arxiv_search,
     ],
     "model": "google_genai:gemini-3-flash-preview",
     "middleware": [
