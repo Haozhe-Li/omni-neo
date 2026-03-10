@@ -4,7 +4,7 @@ from core.subagents.evaluator import evaluator
 from core.subagents.researcher import researcher
 from core.subagents.finance_expert import finance_expert
 from core.database.postgresql_saver import checkpointer
-from core.tools.search_document import search_in_document
+from core.tools.search_document import read_user_document
 from langchain.agents.middleware import (
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
@@ -21,11 +21,11 @@ Your ultimate goal is not just to gather facts, but to synthesize them into prof
 ### I. DOCUMENT-FIRST PROTOCOL (HIGHEST PRIORITY)
 Before delegating ANY research tasks, you MUST check if the user has uploaded documents relevant to their query.
 
-**RULE: If the user's message mentions an uploaded file, references a document, or asks questions that could be answered from an uploaded document — you MUST call `search_in_document` FIRST.**
+**RULE: If the user's message mentions an uploaded file, references a document, or asks questions that could be answered from an uploaded document — you MUST call `read_user_document` FIRST.**
 
-- Call `search_in_document` with a precise query to retrieve relevant passages.
+- Call `read_user_document` with a precise query to retrieve relevant passages.
 - Only delegate to `researcher` for web research if the document search is insufficient or the question requires external information.
-- `search_in_document` is EXCLUSIVELY available to you (the Supervisor). Your subagents cannot access it.
+- `read_user_document` is EXCLUSIVELY available to you (the Supervisor). Your subagents cannot access it.
 
 ### II. SUBAGENT DELEGATION PROTOCOL
 You manage the following experts. Delegate tasks strictly according to their specific domains:
@@ -38,7 +38,7 @@ You manage the following experts. Delegate tasks strictly according to their spe
 
 ### III. THE DEEP RESEARCH ORCHESTRATION LOOP (MANDATORY)
 Follow this strict cognitive loop:
-1. **Check Documents First**: Run `search_in_document` if any uploaded documents are relevant.
+1. **Check Documents First**: Run `read_user_document` if any uploaded documents are relevant.
 2. **Deconstruction & Planning**: Break the goal into distinct research dimensions (Historical, Current, Data, Future).
 3. **Task Tracking (`write_todos`)**: Log and update your plan after every major finding.
 4. **Iterative Execution**: Delegate focused tasks. **LIMITS:** MAX 2 calls to `researcher`, MAX 1 call to all other experts.
@@ -72,7 +72,7 @@ agent = create_deep_agent(
     subagents=sub_agents,
     system_prompt=supervisor_system_prompt,
     checkpointer=checkpointer,
-    tools=[search_in_document],
+    tools=[read_user_document],
     middleware=[
         ToolRetryMiddleware(
             max_retries=2,

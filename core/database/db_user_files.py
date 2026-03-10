@@ -28,6 +28,7 @@ Table schema:
 
 import logging
 from core.database.postgresql_saver import pool
+from core.utils.redis_cache import l1cache
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ def update_file_failed(file_id: str) -> bool:
         return False
 
 
+@l1cache(ttl=3600 * 3)
 def get_thread_files(thread_id: str) -> list[dict]:
     """Fetch all files associated with a thread."""
     sql = "SELECT * FROM user_files WHERE thread_id = %s AND status = 'ready'"

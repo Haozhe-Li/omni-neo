@@ -60,7 +60,7 @@ finance_expert = {
         draw_graph,
         get_realtime_currency_rate,
     ],
-    "model": "google_genai:gemini-3-flash-preview",
+    "model": "google_genai:gemini-flash-lite-latest",
     "middleware": [
         ToolRetryMiddleware(
             max_retries=2,

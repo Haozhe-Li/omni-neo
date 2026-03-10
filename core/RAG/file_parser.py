@@ -75,34 +75,34 @@ def process_uploaded_file(file_id: str):
             file_ext = record["original_filename"].lower()
             if record["file_type"] == "text/x-python" or file_ext.endswith(".py"):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.PYTHON, chunk_size=1000, chunk_overlap=200
+                    language=Language.PYTHON, chunk_size=512, chunk_overlap=128
                 )
             elif record["file_type"] in [
                 "text/markdown",
                 "text/md",
             ] or file_ext.endswith((".md", ".markdown")):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.MARKDOWN, chunk_size=1000, chunk_overlap=200
+                    language=Language.MARKDOWN, chunk_size=512, chunk_overlap=128
                 )
             elif file_ext.endswith((".js", ".jsx", ".ts", ".tsx")):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.JS, chunk_size=1000, chunk_overlap=200
+                    language=Language.JS, chunk_size=512, chunk_overlap=128
                 )
             elif file_ext.endswith(".html"):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.HTML, chunk_size=1000, chunk_overlap=200
+                    language=Language.HTML, chunk_size=512, chunk_overlap=128
                 )
             elif file_ext.endswith((".java")):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.JAVA, chunk_size=1000, chunk_overlap=200
+                    language=Language.JAVA, chunk_size=512, chunk_overlap=128
                 )
             elif file_ext.endswith((".cpp", ".c", ".h", ".hpp")):
                 splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.CPP, chunk_size=1000, chunk_overlap=200
+                    language=Language.CPP, chunk_size=512, chunk_overlap=128
                 )
             else:
                 splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000, chunk_overlap=200
+                    chunk_size=512, chunk_overlap=128
                 )
             chunks = splitter.create_documents([full_text])
 
@@ -127,7 +127,7 @@ def process_uploaded_file(file_id: str):
                 batch = upstash_documents[i : i + batch_size]
                 upstash_index.upsert(documents=batch)
 
-            update_file_ready(file_id, extracted_text=None, is_rag_indexed=True)
+            update_file_ready(file_id, extracted_text=full_text, is_rag_indexed=True)
             logger.info(f"File {file_id} processed and indexed into Upstash Search.")
 
         except Exception as e:

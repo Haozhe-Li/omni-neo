@@ -1,7 +1,6 @@
 from langchain_community.document_loaders import SpiderLoader
 import os
 
-from matplotlib.pyplot import title
 from core.utils.redis_cache import l1cache
 
 
@@ -45,7 +44,7 @@ def load_web_page(
 
     Args:
         url (str): The URL of the web page to load.
-        
+
     Returns:
         dict: A dictionary containing the URL and the content of the web page.
     """

@@ -165,7 +165,16 @@ def google_search(query: str, k: int = 3) -> list[dict]:
                         "content": content,
                     }
                 )
-    return normalized_results[:k]
+    res = normalized_results[:k]
+    if not res:
+        return [
+            {
+                "title": "No results found, please change your query",
+                "url": "",
+                "content": "",
+            }
+        ]
+    return res
 
 
 @l1cache(ttl=3600 * 24 * 90)
