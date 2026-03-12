@@ -8,7 +8,6 @@ from core.tools.search_document import read_user_document
 from langchain.agents.middleware import (
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
-    ModelCallLimitMiddleware,
 )
 from langchain.agents.structured_output import ProviderStrategy
 from core.utils.data_model import SupervisorOutput

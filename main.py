@@ -13,6 +13,10 @@ import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
 from core.light_agent import omni_light_agent, LIGHT_AGENT_SYSTEM_PROMPT
+from core.guided_learning_agent import (
+    omni_guided_learning_agent,
+    GUIDED_LEARNING_SYSTEM_PROMPT,
+)
 
 # Import the agent and formatter from existing codebase
 from core.supervisor import agent, supervisor_system_prompt
@@ -92,6 +96,7 @@ register_sensitive_prompts(
         supervisor_system_prompt,
         LIGHT_AGENT_SYSTEM_PROMPT,
         RESEARCH_HELPER_SYSTEM_PROMPT,
+        GUIDED_LEARNING_SYSTEM_PROMPT,
         auto_select_model_system_prompt,
         get_title_llm_system_prompt,
         memories_update_system_prompt,
@@ -452,9 +457,13 @@ def _extract_light_metadata(
 
         tool_name = getattr(msg, "name", "") or ""
         payload = _parse_tool_payload(getattr(msg, "content", ""))
-        if tool_name in ["google_search_light", "load_web_page_light"]:
+        if tool_name in [
+            "google_search_light",
+            "load_web_page_light",
+            "arxiv_search_light",
+        ]:
             items = []
-            if tool_name == "google_search_light":
+            if tool_name in ["google_search_light", "arxiv_search_light"]:
                 items = (
                     payload
                     if isinstance(payload, list)
@@ -697,6 +706,133 @@ async def light_chat(
     }
     return StreamingResponse(
         light_generate_response(request.query, message, config),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+def guided_learning_generate_response(query_text: str, message: dict, config: dict):
+    if is_harmful(query_text):
+        yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'I’m sorry, but I can’t share that.'})}\n\n"
+        return
+
+    try:
+        seen_tools_emitted = set()
+        all_sources = []
+        structured_data = None
+
+        for data in omni_guided_learning_agent.stream(
+            message, config=config, stream_mode="updates"
+        ):
+            for node_name, node_output in data.items():
+                if isinstance(node_output, dict) and "messages" in node_output:
+                    msgs = node_output["messages"]
+                    if not isinstance(msgs, list):
+                        msgs = [msgs]
+
+                    for msg in msgs:
+                        # Stream Tool Call metadata (the intention to call)
+                        if getattr(msg, "type", None) == "ai":
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                for tc in msg.tool_calls:
+                                    tool_name = tc.get("name")
+                                    args = tc.get("args", {})
+                                    if tool_name == "GuidedLearningOutput":
+                                        structured_data = args
+                                    elif tool_name:
+                                        payload_str = json.dumps(
+                                            {
+                                                "type": "tool_call",
+                                                "tool": tool_name,
+                                                "args": args,
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                        if payload_str not in seen_tools_emitted:
+                                            yield f"data: {payload_str}\n\n"
+                                            seen_tools_emitted.add(payload_str)
+
+                        # Stream Raw Tool Output (the result of the call)
+                        if getattr(msg, "type", None) == "tool":
+                            tool_name = getattr(msg, "name", "unknown_tool")
+                            tool_output = getattr(msg, "content", "")
+                            if tool_name != "GuidedLearningOutput":
+                                payload_str = json.dumps(
+                                    {
+                                        "type": "tool",
+                                        "tool": tool_name,
+                                        "agent": "system",
+                                        "content": tool_output,
+                                        "raw": {"full_output": tool_output},
+                                    },
+                                    ensure_ascii=False,
+                                )
+                                # Ensure we don't spam the same tool output multiple times
+                                if payload_str not in seen_tools_emitted:
+                                    yield f"data: {payload_str}\n\n"
+                                    seen_tools_emitted.add(payload_str)
+
+                        # Extract rich data sources asynchronously
+                        sources, map_results, stock, weather, currency = (
+                            _extract_light_metadata({"messages": msgs}, query_text)
+                        )
+                        if sources:
+                            all_sources.extend(sources)
+        # Final unified payload
+        if structured_data and isinstance(structured_data, dict):
+            final_payload = {
+                "type": "answer",
+                "answer": structured_data.get("response", ""),
+                "sources": all_sources,
+                "questions_for_user": structured_data.get("questions_for_user", []),
+                "flashcard": structured_data.get("flashcard", []),
+                "note": structured_data.get("note", ""),
+            }
+            yield f"data: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': 'No structured output generated.'})}\n\n"
+
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'agent': 'system', 'content': str(e)})}\n\n"
+
+
+@app.post("/guided_learning")
+async def guided_learning(
+    request: QueryRequest,
+    user_id: str = Depends(get_current_user),
+):
+    _assert_thread_access(request.thread_id, user_id)
+    if request.thread_id:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
+
+    config = {"configurable": {"thread_id": request.thread_id}}
+    personalization = format_personalization(request.personalization)
+    query_text = request.query
+    if request.follow_up_content:
+        query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
+
+    final_message_content = _build_message_content(
+        query_text, personalization, request.attached_file_ids
+    )
+
+    message = {
+        "messages": [
+            {
+                "role": "user",
+                "content": final_message_content,
+            }
+        ]
+    }
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(
+        guided_learning_generate_response(request.query, message, config),
         media_type="text/event-stream",
         headers=headers,
     )

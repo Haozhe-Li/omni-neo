@@ -56,6 +56,33 @@ class ResearchHelperOutput(BaseModel):
     )
 
 
+class GuidedLearningQuestion(BaseModel):
+    question: str = Field(description="The question to ask the user.")
+    options: list[str] = Field(description="The options for the question.")
+    answer: int | None = Field(
+        default=None,
+        description="The 0-indexed correct option if this is a quiz. Leave as null if it's just a regular question.",
+    )
+
+
+class GuidedLearningFlashcard(BaseModel):
+    key: str = Field(description="The key or terminology for the flashcard.")
+    value: str = Field(description="The detailed definition or explanation.")
+
+
+class GuidedLearningOutput(BaseModel):
+    response: str = Field(description="The response to the user's query.")
+    questions_for_user: list[GuidedLearningQuestion] = Field(
+        description="Questions for the user to test their knowledge, or quizzes etc."
+    )
+    flashcard: list[GuidedLearningFlashcard] = Field(
+        description="Flashcards for the user to learn the topic."
+    )
+    note: str = Field(
+        description="The detailed markdown note covering the topic when user needs a large amount of notes."
+    )
+
+
 class SupervisorOutput(BaseModel):
     title: str = Field(
         description="A very short title of the report, no more than 5 words."

@@ -4,8 +4,11 @@ from core.database.postgresql_saver import checkpointer
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain.agents.structured_output import ProviderStrategy
 from core.utils.data_model import ResearchHelperOutput
+from langchain_cerebras import ChatCerebras
 
-model = init_chat_model("google_genai:gemini-flash-lite-latest")
+gpt_oss_120b = ChatCerebras(model="gpt-oss-120b", reasoning_effort="low")
+
+gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 
 
 RESEARCH_HELPER_SYSTEM_PROMPT = """
@@ -54,7 +57,7 @@ RESEARCH_HELPER_SYSTEM_PROMPT = """
 
 omni_research_helper = create_agent(
     name="Research Helper",
-    model=model,
+    model=gpt_oss_120b,
     system_prompt=RESEARCH_HELPER_SYSTEM_PROMPT,
     checkpointer=checkpointer,
     middleware=[ModelCallLimitMiddleware(run_limit=2)],
