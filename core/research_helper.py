@@ -57,7 +57,7 @@ RESEARCH_HELPER_SYSTEM_PROMPT = """
 
 omni_research_helper = create_agent(
     name="Research Helper",
-    model=gpt_oss_120b,
+    model=gemini_flash_lite_latest,
     system_prompt=RESEARCH_HELPER_SYSTEM_PROMPT,
     checkpointer=checkpointer,
     middleware=[ModelCallLimitMiddleware(run_limit=2)],
