@@ -33,7 +33,9 @@ from core.utils.data_model import (
     CheckSourceRequest,
     Personalization,
     UpdateMemoriesRequest,
+    AutoCompleteRequest,
 )
+from core.auto_complete import auto_complete
 from core.auth import (
     get_current_user,
     get_current_user_with_rate_limit,
@@ -554,6 +556,18 @@ async def chat(
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@app.post("/auto_complete")
+async def api_auto_complete(request: AutoCompleteRequest):
+    """
+    Endpoint for text autocomplete.
+    """
+    try:
+        results = auto_complete(request.text.strip())
+        return {"texts": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def light_generate_response(query_text: str, message: dict, config: dict):

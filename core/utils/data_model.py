@@ -29,6 +29,10 @@ class QueryRequest(BaseModel):
     attached_file_ids: list[dict[str, str]] | None = None
 
 
+class AutoCompleteRequest(BaseModel):
+    text: str
+
+
 class CheckSourceRequest(BaseModel):
     source: dict  # Check if source is a dict
     text_selection: str
