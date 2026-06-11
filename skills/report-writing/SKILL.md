@@ -12,7 +12,7 @@ Write a report ONLY if at least one of these holds:
 - A complete, high-quality answer would clearly exceed ~500 words AND benefits from
   being a structured document.
 
-Otherwise, answer normally in chat. Most questions do NOT need a report — do not
+Otherwise, answer normally in chat as always. Most questions do NOT need a report — do not
 reach for one by default.
 
 ## How
