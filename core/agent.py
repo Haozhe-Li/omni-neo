@@ -2,14 +2,18 @@
 
 `build_agent("fast")` returns a lean LangChain agent (Groq gpt-oss-20b, few
 turns, no skills). `build_agent("pro")` returns a deepagents deep agent (Gemini,
-generous turns, planning + the `write_report` tool + on-demand skills).
+generous turns, planning + on-demand skills).
 
 Both share ONE base prompt. The difference is purely capability: pro additionally
-gets the report tool and a set of skills (deep-research / report-writing /
-charting) that are surfaced via progressive disclosure — only their name +
-description sit in the prompt; the full instructions are read on demand. This
-keeps pro from over-reaching (writing a report for every little thing) while
-still being able to go deep when the task calls for it.
+gets a set of skills (deep-research / report-writing / charting) that are surfaced
+via progressive disclosure — only their name + description sit in the prompt; the
+full instructions are read on demand. This keeps pro from over-reaching (writing a
+report for every little thing) while still being able to go deep when the task
+calls for it.
+
+Both charts and reports are streamed *inline* as part of the answer (```echarts
+fences and `<report>…</report>` blocks respectively); neither is a tool, so the
+frontend can render them live as they stream.
 """
 
 from __future__ import annotations
@@ -34,7 +38,6 @@ from core.tools.weather_tool import get_weather
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.search_document import read_user_document
-from core.tools.artifact_tools import write_report
 
 Profile = Literal["fast", "pro"]
 
@@ -49,9 +52,9 @@ RETRIEVAL_TOOLS = [
     read_user_document,
 ]
 
-# Report tool — pro only (charting is done inline via ```echarts fences, taught
-# by the charting skill, so it needs no tool).
-REPORT_TOOLS = [write_report]
+# Charts AND reports are produced inline in the answer stream (```echarts fences
+# and `<report>…</report>` blocks), taught by the charting / report-writing
+# skills — so neither needs a tool.
 
 
 # ── Skills (deepagents progressive disclosure) ──────────────────────────────
@@ -154,7 +157,7 @@ def build_agent(profile: Profile):
         return create_deep_agent(
             name="Omni Pro",
             model="google_genai:gemini-flash-latest",
-            tools=RETRIEVAL_TOOLS + REPORT_TOOLS,
+            tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT,
             skills=[SKILLS_SOURCE] if SKILL_FILES else None,
             checkpointer=checkpointer,

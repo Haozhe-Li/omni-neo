@@ -25,8 +25,9 @@ investigation — not a quick factual lookup.
   A handful of strong sources beats exhaustive searching.
 - As soon as you have enough to answer well (or two searches stop adding anything
   new), STOP gathering and write the report. Do not keep searching.
-- You MUST finish by calling `write_report` and then a short chat reply — never run
-  out of steps still searching.
+- You MUST finish by writing the `<report>…</report>` block (see the
+  `report-writing` skill) followed by a short chat reply — never run out of steps
+  still searching.
 
 ## Rules
 - Cite sources naturally in the report.
