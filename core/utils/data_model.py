@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +29,7 @@ class QueryRequest(BaseModel):
     follow_up_content: str | None = None
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
+    mode: Literal["fast", "pro"] = "fast"
 
 
 class AutoCompleteRequest(BaseModel):
