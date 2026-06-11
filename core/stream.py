@@ -14,9 +14,13 @@ Wire protocol (one JSON object per `data:` line):
     sources   {type, sources:[{title,url,content}]}     – accumulated citations
     text      {type, content}                           – streamed answer token(s)
     artifact  {type, id, title, kind, spec}             – chart for the side panel
-    report    {type, id, title, content}                – long report for the panel
-    done      {type, sources, artifacts, reports}       – terminal summary
+    done      {type, sources, artifacts}                – terminal summary
     error     {type, content}
+
+Reports are NOT a distinct event: the agent writes them inline as a
+`<report>…</report>` block within the normal `text` stream (just like charts are
+written inline as ```echarts fences). The frontend parses the block out of the
+answer and renders it live in the side reader.
 """
 
 from __future__ import annotations
@@ -30,13 +34,13 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from core.agent import get_agent, SKILL_FILES
 from core.prompt_guard import is_harmful
 from core.utils.format import _extract_domain_metadata
-from core.tools.artifact_tools import ARTIFACT_SENTINEL, REPORT_SENTINEL
+from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_read_presigned_url
 from core.database.db_user_files import get_file_record
 
-# Tool names whose calls are represented by artifact/report events, not tool_call.
-_ARTIFACT_TOOL_NAMES = {"render_chart", "write_report"}
+# Tool names whose calls are represented by artifact events, not tool_call.
+_ARTIFACT_TOOL_NAMES = {"render_chart"}
 
 _REFUSAL = "I’m sorry, but I can’t help with that."
 
@@ -138,7 +142,6 @@ def _stream_agent(
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
     artifact_ids: list[str] = []
-    report_ids: list[str] = []
     announced_drafts: set = set()
     produced_text = False
 
@@ -209,10 +212,6 @@ def _stream_agent(
                             art = parsed[ARTIFACT_SENTINEL]
                             artifact_ids.append(art["id"])
                             yield _sse({"type": "artifact", **art})
-                        elif isinstance(parsed, dict) and REPORT_SENTINEL in parsed:
-                            rep = parsed[REPORT_SENTINEL]
-                            report_ids.append(rep["id"])
-                            yield _sse({"type": "report", **rep})
                         # else: the tool returned a validation error → leave it
                         # in the model's context so it can retry; nothing to emit.
                         continue
@@ -229,7 +228,7 @@ def _stream_agent(
                     if new_sources:
                         yield _sse({"type": "sources", "sources": new_sources})
 
-    if not produced_text and not artifact_ids and not report_ids:
+    if not produced_text and not artifact_ids:
         yield _sse({"type": "error", "content": "The agent produced no output."})
 
     yield _sse(
@@ -237,7 +236,6 @@ def _stream_agent(
             "type": "done",
             "sources": all_sources,
             "artifacts": artifact_ids,
-            "reports": report_ids,
         }
     )
 

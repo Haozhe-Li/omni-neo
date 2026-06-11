@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: How to publish a long-form report into the side panel with the write_report tool. Use ONLY when the user explicitly asks for a report/document/write-up, during deep research, or when a complete answer would clearly exceed ~500 words and reads better as a structured document. For ordinary questions, answer directly in chat instead — do not write a report.
+description: How to stream a long-form report into the side reader by writing a `<report>…</report>` block inline in your answer. Use ONLY when the user explicitly asks for a report/document/write-up, during deep research, or when a complete answer would clearly exceed ~500 words and reads better as a structured document. For ordinary questions, answer directly in chat instead — do not write a report.
 ---
 
 # Report Writing
@@ -16,11 +16,31 @@ Otherwise, answer normally in chat. Most questions do NOT need a report — do n
 reach for one by default.
 
 ## How
-- Call `write_report(title, markdown)`. The body renders in a side panel; do NOT
-  also paste the full report into the chat.
-- Structure it: `##` / `###` headings, lists, tables. Use `$...$` / `$$...$$` for math.
-- You may embed charts directly in the report markdown using ```echarts fenced
-  blocks (see the charting skill) — they render inline inside the report.
-- After calling `write_report`, you MUST still write a short chat reply (1–3
-  sentences) introducing it and pointing to the panel. Never end your turn with an
-  empty chat message — a tool call alone is not a reply.
+A report is NOT a tool. You stream it inline by wrapping the full document in a
+`<report>…</report>` block — exactly the way a chart is an inline ```echarts
+fence. The frontend pulls the block out of your answer and renders it live in the
+side reader as the words arrive, so just write it out normally.
+
+```
+Here's the report you asked for — it's opening in the reader on the right.
+
+<report title="State of EV Batteries, 2026">
+## Overview
+…the full report body in GitHub-flavoured Markdown…
+
+## Cost Trends
+…
+</report>
+```
+
+## Rules
+- Put a concise `title="…"` (max ~10 words) on the opening tag. It becomes the
+  reader's tab + heading. If you omit it, the first heading is used.
+- Write exactly ONE `<report>` block per turn, and never nest one inside another.
+- The body is normal GFM: `##` / `###` headings, lists, tables, and `$…$` /
+  `$$…$$` for math. Do NOT wrap the whole report in a code fence.
+- You may embed charts directly in the report using ```echarts fenced blocks (see
+  the charting skill) — they render inline inside the report.
+- Outside the block, write a short chat reply (1–3 sentences) that introduces the
+  report and points to the reader. The report body lives ONLY inside the tags —
+  do not also paste it into the chat. Never end your turn with the block alone.
