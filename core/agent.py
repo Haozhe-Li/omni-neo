@@ -21,6 +21,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolRetryMiddleware,
+    TodoListMiddleware,
 )
 from langchain_groq import ChatGroq
 from deepagents import create_deep_agent
@@ -104,6 +105,15 @@ well-organized one (typically several developed paragraphs). Don't pad, but neve
 be lazy or one-liner-ish.
 </quality_bar>
 
+<planning>
+The MOMENT you realize a request needs a tool — web search, reading pages,
+weather/stocks/FX, a user file, or producing a report — you MUST call `write_todos`
+BEFORE that first tool call, to lay out the plan (1–6 concrete steps; even a
+single-step task gets a one-item list). Then work the plan: mark a todo in_progress
+before its work and completed after. Skip todos ONLY for pure chit-chat or an
+answer you can give directly with no tools at all.
+</planning>
+
 <formatting>
 Reply in Markdown. Use `$...$` for inline math and `$$...$$` for display math —
 no other LaTeX delimiters. Warm, direct, natural tone. Don't restate the question.
@@ -133,8 +143,10 @@ def build_agent(profile: Profile):
             name="Omni Fast",
             checkpointer=checkpointer,
             middleware=[
+                # write_todos, so fast can also plan when a task needs tools.
+                TodoListMiddleware(),
                 ToolRetryMiddleware(max_retries=1),
-                ModelCallLimitMiddleware(run_limit=5),
+                ModelCallLimitMiddleware(run_limit=8),
             ],
         )
 
