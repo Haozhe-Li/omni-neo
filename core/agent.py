@@ -26,6 +26,7 @@ from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolRetryMiddleware,
     TodoListMiddleware,
+    ToolCallLimitMiddleware
 )
 from langchain_groq import ChatGroq
 from deepagents import create_deep_agent
@@ -158,7 +159,7 @@ def build_agent(profile: Profile):
                 # write_todos, so fast can also plan when a task needs tools.
                 TodoListMiddleware(),
                 ToolRetryMiddleware(max_retries=1),
-                ModelCallLimitMiddleware(run_limit=8),
+                ToolCallLimitMiddleware(run_limit=8)
             ],
         )
 
@@ -176,9 +177,7 @@ def build_agent(profile: Profile):
                     backoff_factor=2.0,
                     initial_delay=1.0,
                 ),
-                # Generous so the deep-research workflow (plan → many searches →
-                # report) can finish; normal pro answers use only a few.
-                ModelCallLimitMiddleware(run_limit=40),
+                ToolCallLimitMiddleware(run_limit=30)
             ],
         )
 
