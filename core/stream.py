@@ -122,23 +122,33 @@ def _stream_agent(
     mode: str,
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
+    *,
+    rewind_config: dict | None = None,
 ):
     """Drive the agent and yield SSE strings (everything except widgets).
 
     Synchronous because the app uses a sync Postgres checkpointer; it is run in
     a worker thread by ``run_agent_stream``.
+
+    If ``rewind_config`` is provided the agent replays / forks from that
+    LangGraph checkpoint instead of appending a new user message.
     """
     profile = "pro" if mode == "pro" else "fast"
     agent = get_agent(profile)
-    config = {"configurable": {"thread_id": thread_id}}
-    content = build_message_content(query, personalization, attached_file_ids)
 
-    # Pro is a deep agent with a StateBackend: hand it the skill files so the
-    # SkillsMiddleware can surface their metadata and read them on demand.
-    input_state: dict = {"messages": [{"role": "user", "content": content}]}
-    skill_files = PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
-    if skill_files:
-        input_state["files"] = skill_files
+    if rewind_config is not None:
+        # Time-travel: replay from (possibly forked) checkpoint — no new input.
+        config = rewind_config
+        input_state = None
+    else:
+        config = {"configurable": {"thread_id": thread_id}}
+        content = build_message_content(query, personalization, attached_file_ids)
+        # Pro is a deep agent with a StateBackend: hand it the skill files so the
+        # SkillsMiddleware can surface their metadata and read them on demand.
+        input_state = {"messages": [{"role": "user", "content": content}]}
+        skill_files = PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
+        if skill_files:
+            input_state["files"] = skill_files
 
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
@@ -147,7 +157,7 @@ def _stream_agent(
     produced_text = False
 
     for raw in agent.stream(
-        input_state,
+        input_state,  # None on rewind → replay from checkpoint
         config=config,
         stream_mode=["messages", "updates"],
         subgraphs=True,
@@ -249,6 +259,7 @@ async def run_agent_stream(
     attached_file_ids: list[dict[str, str]] | None = None,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
+    rewind_config: dict | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
     if is_harmful(query):
@@ -277,7 +288,8 @@ async def run_agent_stream(
         def run_sync():
             try:
                 for event in _stream_agent(
-                    query, thread_id, mode, personalization, attached_file_ids
+                    query, thread_id, mode, personalization, attached_file_ids,
+                    rewind_config=rewind_config,
                 ):
                     loop.call_soon_threadsafe(queue.put_nowait, event)
             except Exception as exc:

@@ -6,14 +6,18 @@ import asyncio
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.agent import SYSTEM_PROMPTS
-from core.stream import run_agent_stream
+from langchain_core.messages import HumanMessage as LCHumanMessage
+
+from core.agent import SYSTEM_PROMPTS, get_agent
+from core.stream import run_agent_stream, build_message_content
+from core.utils.data_model import Personalization
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.data_model import (
     QueryRequest,
@@ -148,6 +152,81 @@ async def chat(
             attached_file_ids=request.attached_file_ids,
             user_location=p.user_location if p else None,
             user_local_datetime=p.user_local_datetime if p else None,
+        ),
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+class RewindRequest(BaseModel):
+    mode: Literal["fast", "pro"] = "fast"
+    new_query: str | None = None  # None = pure regenerate; set to edit the last user msg
+    personalization: Personalization | None = None
+    attached_file_ids: list[dict[str, str]] | None = None
+
+
+@app.post("/api/threads/{thread_id}/rewind")
+def api_rewind_thread(
+    thread_id: str,
+    body: RewindRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Regenerate or edit-and-resend the last user message in a thread.
+
+    - ``new_query=None``  → pure regenerate: re-run from the same user message.
+    - ``new_query="…"``   → edit: replace the last user message then re-run.
+
+    Uses LangGraph time travel: locates the checkpoint where the last message is a
+    HumanMessage, optionally forks it via ``update_state``, then streams from there.
+    The LangGraph agent state is rewound; the frontend is responsible for trimming
+    its own UI message list before calling this endpoint.
+    """
+    _assert_thread_access(thread_id, user_id)
+
+    profile = "pro" if body.mode == "pro" else "fast"
+    agent = get_agent(profile)
+    lg_config = {"configurable": {"thread_id": thread_id}}
+
+    # Find the most recent checkpoint where the last message is a HumanMessage
+    # (i.e. the point just after the user sent their message, before the agent replied).
+    target = None
+    for state in agent.get_state_history(lg_config):
+        msgs = state.values.get("messages", [])
+        if msgs and isinstance(msgs[-1], LCHumanMessage):
+            target = state
+            break
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="No rewindable checkpoint found.")
+
+    if body.new_query is not None:
+        # Edit mode: replace the last HumanMessage in-place (same id → add_messages
+        # reducer treats it as an update, not an append).
+        personalization_str = format_personalization(body.personalization)
+        new_content = build_message_content(
+            body.new_query, personalization_str, body.attached_file_ids
+        )
+        last_human = target.values["messages"][-1]
+        updated_msg = LCHumanMessage(id=last_human.id, content=new_content)
+        rewind_config = agent.update_state(target.config, {"messages": [updated_msg]})
+    else:
+        # Regenerate mode: replay from the existing checkpoint as-is.
+        rewind_config = target.config
+
+    p = body.personalization
+    personalization_str = format_personalization(p)
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return StreamingResponse(
+        run_agent_stream(
+            query="",  # unused in rewind mode
+            thread_id=thread_id,
+            mode=body.mode,
+            personalization=personalization_str,
+            attached_file_ids=body.attached_file_ids,
+            user_location=p.user_location if p else None,
+            user_local_datetime=p.user_local_datetime if p else None,
+            rewind_config=rewind_config,
         ),
         media_type="text/event-stream",
         headers=headers,
