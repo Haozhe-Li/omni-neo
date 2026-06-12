@@ -32,7 +32,8 @@ from core.tools.weather_tool import get_weather
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.search_document import read_user_document
-from core.llm import gemini_flash_latest, gpt_oss_120b_low
+from core.tools.coding_sandbox import run_python
+from core.llm import gemini_flash_latest, gpt_oss_120b_low, gpt_oss_120b_high
 
 Profile = Literal["fast", "pro"]
 
@@ -45,6 +46,7 @@ RETRIEVAL_TOOLS = [
     get_stock_data,
     get_realtime_currency_rate,
     read_user_document,
+    run_python,
 ]
 
 # Charts AND reports are produced inline in the answer stream (```echarts fences
@@ -116,7 +118,32 @@ be needed. Prefer your tools over memory:
   `get_realtime_currency_rate`.
 - Questions about a user-uploaded file → `read_user_document`.
 Cite what you used naturally in prose.
+
+Search discipline (hard limits — no exceptions):
+- Per question or sub-topic: at most 2 `google_search` calls (one focused query +
+  one reformulation if the first yields nothing useful). Never run a third search
+  on the same sub-topic.
+- Per search result: read at most 2 pages via `load_web_page`. Stop as soon as
+  you have enough to answer — do not read for completeness.
+- If results are still weak after 2 searches, answer with what you have and note
+  the limitation. Do not keep searching.
 </retrieval_policy>
+
+<computation_policy>
+You MUST call `run_python` for ANY of the following — never approximate in your
+head or make up numbers:
+- Arithmetic beyond trivial mental math (multi-step, fractions, large numbers).
+- Statistics, probability, or data analysis of any kind.
+- Unit conversions that require formula application.
+- Numerical algorithms (sorting, searching, optimisation, simulation).
+- Anything the user explicitly asks you to "calculate", "compute", "run",
+  "simulate", or "verify with code".
+
+`run_python` is text-only — it cannot produce charts or images. For visualisations
+use the charting skill. Write one complete, self-contained script per call.
+Do NOT use `run_python` for tasks that need no computation (explaining concepts,
+translating text, etc.).
+</computation_policy>
 
 <quality_bar>
 Give substantive, genuinely useful answers — never terse or perfunctory. Explain

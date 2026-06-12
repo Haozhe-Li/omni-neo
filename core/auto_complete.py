@@ -28,8 +28,9 @@ Output JSON:
 """
 
 
-@l1cache(ttl=3600 * 24 * 90)
+# @l1cache(ttl=3600 * 24 * 90)
 def auto_complete(text: str) -> list[str]:
+    return []
     messages = [
         ("system", system_prompt),
         ("human", text),

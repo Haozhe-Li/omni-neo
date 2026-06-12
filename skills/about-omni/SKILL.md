@@ -24,6 +24,7 @@ Optimized for quick, daily queries and real-time information retrieval. In this 
 ### 2. Pro Mode
 Designed for complex problem-solving, deep research, rigorous thinking, and advanced mathematics. In this mode, Omni features:
 - All capabilities of Fast Mode, augmented by an intensive **Chain-of-Thought (CoT)** reasoning process.
+- **Python code execution** in a secure sandbox — handles arithmetic, statistics, data analysis, numerical algorithms, and simulations with verified results rather than approximations.
 - **Dynamic data visualization** through interactive charts to demonstrate complex ideas.
 - Synthesis of comprehensive, **long-form research reports**.
 

@@ -1,7 +1,23 @@
 from langchain_community.document_loaders import SpiderLoader
 import os
+import signal
 
 from core.utils.redis_cache import l1cache
+
+_TIMEOUT_SECONDS = 5
+_TIMEOUT_RESULT = {
+    "url": "",
+    "content": "Failed to load the web page: request timed out. Do not try the same URL again.",
+    "title": "Timeout",
+}
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise _Timeout()
 
 
 @l1cache(
@@ -16,15 +32,23 @@ def load_web_page_spider(url: str) -> dict:
     Returns:
         dict: The loaded web page content as a dictionary with URL and content keys.
     """
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(_TIMEOUT_SECONDS)
     try:
         loader = SpiderLoader(
             api_key=os.getenv("SPIDER_API_KEY"),
             url=url,
             mode="scrape",
+            params={"request_timeout": _TIMEOUT_SECONDS},
         )
         documents = loader.load()
+    except _Timeout:
+        return {**_TIMEOUT_RESULT, "url": url}
     except Exception:
         return {"url": url, "content": "Failed to load the web page.", "title": "Error"}
+    finally:
+        signal.alarm(0)
+
     if not documents:
         return {
             "url": url,
