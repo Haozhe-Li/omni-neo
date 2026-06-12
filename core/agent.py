@@ -1,19 +1,16 @@
 """Single all-around Omni agent, in two profiles.
 
-`build_agent("fast")` returns a lean LangChain agent (Groq gpt-oss-20b, few
-turns, no skills). `build_agent("pro")` returns a deepagents deep agent (Gemini,
-generous turns, planning + on-demand skills).
+Both profiles use deepagents and share ONE base prompt.  The difference is in
+capability (model, turn budget) and the skill subset each receives:
 
-Both share ONE base prompt. The difference is purely capability: pro additionally
-gets a set of skills (deep-research / report-writing / charting) that are surfaced
-via progressive disclosure — only their name + description sit in the prompt; the
-full instructions are read on demand. This keeps pro from over-reaching (writing a
-report for every little thing) while still being able to go deep when the task
-calls for it.
+- `build_agent("fast")` — gpt-oss-120b, tight turn budget, identity/info skills
+  only (`about-omni`, `about-haozheli`).
+- `build_agent("pro")` — Gemini Flash, generous turn budget, all skills
+  (deep-research, report-writing, charting, …).
 
-Both charts and reports are streamed *inline* as part of the answer (```echarts
-fences and `<report>…</report>` blocks respectively); neither is a tool, so the
-frontend can render them live as they stream.
+Skills are surfaced via progressive disclosure — only their name + description
+sit in the prompt; full instructions are read on demand.  Charts and reports
+stream inline (```echarts fences / `<report>…</report>` blocks).
 """
 
 from __future__ import annotations
@@ -21,14 +18,10 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from langchain.agents import create_agent
 from langchain.agents.middleware import (
-    ModelCallLimitMiddleware,
     ToolRetryMiddleware,
-    TodoListMiddleware,
-    ToolCallLimitMiddleware
+    ToolCallLimitMiddleware,
 )
-from langchain_groq import ChatGroq
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
@@ -60,19 +53,32 @@ RETRIEVAL_TOOLS = [
 
 
 # ── Skills (deepagents progressive disclosure) ──────────────────────────────
-# Loaded from disk at startup and handed to the pro agent's StateBackend at
+# Loaded from disk at startup and handed to each agent's StateBackend at
 # stream time via `files=` (see core/stream.py). Source dir is the virtual
 # "/skills/" path; each skill lives at "/skills/<name>/SKILL.md".
+#
+# Fast profile gets a small allow-list of lightweight identity/info skills.
+# Pro profile gets every skill.
 SKILLS_SOURCE = "/skills/"
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "..", "skills")
 
+# Skills available in the fast profile (subset).
+_FAST_SKILLS = {"about-omni", "about-haozheli"}
 
-def _load_skill_files() -> dict:
+
+def _load_skill_files(only: set[str] | None = None) -> dict:
+    """Load SKILL.md files from disk.
+
+    Args:
+        only: if given, only load skills whose directory name is in this set.
+    """
     files: dict = {}
     base = os.path.abspath(_SKILLS_DIR)
     if not os.path.isdir(base):
         return files
     for name in sorted(os.listdir(base)):
+        if only is not None and name not in only:
+            continue
         md_path = os.path.join(base, name, "SKILL.md")
         if os.path.isfile(md_path):
             with open(md_path, "r", encoding="utf-8") as f:
@@ -80,7 +86,9 @@ def _load_skill_files() -> dict:
     return files
 
 
-SKILL_FILES = _load_skill_files()
+# Pre-loaded at startup; keyed by virtual path for the deepagents `files=` API.
+FAST_SKILL_FILES = _load_skill_files(only=_FAST_SKILLS)
+PRO_SKILL_FILES = _load_skill_files()  # all skills
 
 
 _CHART_POLICY_FAST = (
@@ -161,28 +169,26 @@ SYSTEM_PROMPTS = [
 def build_agent(profile: Profile):
     """Construct an Omni agent for the given profile."""
     if profile == "fast":
-        model = gpt_oss_120b_low
-        return create_agent(
-            model=model,
+        return create_deep_agent(
+            name="Omni Fast",
+            model=gpt_oss_120b_low,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
-            name="Omni Fast",
+            skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
             checkpointer=checkpointer,
             middleware=[
-                # write_todos, so fast can also plan when a task needs tools.
-                TodoListMiddleware(),
                 ToolRetryMiddleware(max_retries=1),
-                ToolCallLimitMiddleware(run_limit=8)
+                ToolCallLimitMiddleware(run_limit=8),
             ],
         )
 
     if profile == "pro":
         return create_deep_agent(
             name="Omni Pro",
-            model = gemini_flash_latest,
+            model=gemini_flash_latest,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
-            skills=[SKILLS_SOURCE] if SKILL_FILES else None,
+            skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
             checkpointer=checkpointer,
             middleware=[
                 ToolRetryMiddleware(
@@ -190,7 +196,7 @@ def build_agent(profile: Profile):
                     backoff_factor=2.0,
                     initial_delay=1.0,
                 ),
-                ToolCallLimitMiddleware(run_limit=30)
+                ToolCallLimitMiddleware(run_limit=30),
             ],
         )
 

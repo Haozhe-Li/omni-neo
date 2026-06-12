@@ -31,7 +31,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from core.agent import get_agent, SKILL_FILES
+from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
 from core.utils.format import _extract_domain_metadata
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
@@ -136,8 +136,9 @@ def _stream_agent(
     # Pro is a deep agent with a StateBackend: hand it the skill files so the
     # SkillsMiddleware can surface their metadata and read them on demand.
     input_state: dict = {"messages": [{"role": "user", "content": content}]}
-    if profile == "pro" and SKILL_FILES:
-        input_state["files"] = SKILL_FILES
+    skill_files = PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
+    if skill_files:
+        input_state["files"] = skill_files
 
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
