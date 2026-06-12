@@ -39,6 +39,7 @@ from core.tools.weather_tool import get_weather
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.search_document import read_user_document
+from core.llm import gemini_flash_latest, gpt_oss_120b_low
 
 Profile = Literal["fast", "pro"]
 
@@ -81,6 +82,15 @@ def _load_skill_files() -> dict:
 
 SKILL_FILES = _load_skill_files()
 
+
+_CHART_POLICY_FAST = (
+    "In this (fast) profile you have no charting ability — do NOT produce any "
+    "diagram or chart at all. Use a Markdown table or describe the data in prose."
+)
+_CHART_POLICY_PRO = (
+    "In this (pro) profile, when a visual genuinely helps, use the charting skill "
+    "to produce a real chart. Never fall back to text art."
+)
 
 _BASE_PROMPT = """
 <identity>
@@ -131,28 +141,31 @@ Once you have a todo list, keep it honest and current — this is strict:
 Reply in Markdown. Use `$...$` for inline math and `$$...$$` for display math —
 no other LaTeX delimiters. Warm, direct, natural tone. Don't restate the question.
 
-NEVER draw charts, plots, graphs, or diagrams as ASCII / text art inside a code
-block — it looks bad. When a visual genuinely helps, use a real chart if you have
-that ability; otherwise use a clean Markdown table or just describe it in prose.
+NEVER include hyperlinks of any form in your response unless the user explicitly
+asks for a link or URL. Don't wrap text in `[text](url)` markdown links, don't
+bare-print URLs, don't cite sources as hyperlinks — reference sources by name in
+prose instead.
+
+NEVER draw charts, plots, graphs, or diagrams as ASCII / UTF-8 text art inside a
+code block — it always looks bad and must not appear. {chart_policy}
 </formatting>
 """
 
 # Registered with the prompt-leakage guard.
-SYSTEM_PROMPTS = [_BASE_PROMPT]
+SYSTEM_PROMPTS = [
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
+]
 
 
 def build_agent(profile: Profile):
     """Construct an Omni agent for the given profile."""
     if profile == "fast":
-        model = ChatGroq(
-            model="openai/gpt-oss-20b",
-            reasoning_effort="medium",
-            api_key=os.getenv("GROQ_API_KEY"),
-        )
+        model = gpt_oss_120b_low
         return create_agent(
             model=model,
             tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT,
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
             name="Omni Fast",
             checkpointer=checkpointer,
             middleware=[
@@ -166,9 +179,9 @@ def build_agent(profile: Profile):
     if profile == "pro":
         return create_deep_agent(
             name="Omni Pro",
-            model="google_genai:gemini-flash-latest",
+            model = gemini_flash_latest,
             tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT,
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
             skills=[SKILLS_SOURCE] if SKILL_FILES else None,
             checkpointer=checkpointer,
             middleware=[

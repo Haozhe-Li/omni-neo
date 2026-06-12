@@ -138,6 +138,7 @@ async def chat(
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
     }
+    p = request.personalization
     return StreamingResponse(
         run_agent_stream(
             query=query_text,
@@ -145,6 +146,8 @@ async def chat(
             mode=request.mode,
             personalization=personalization_str,
             attached_file_ids=request.attached_file_ids,
+            user_location=p.user_location if p else None,
+            user_local_datetime=p.user_local_datetime if p else None,
         ),
         media_type="text/event-stream",
         headers=headers,

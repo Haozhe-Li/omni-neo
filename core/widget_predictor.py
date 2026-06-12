@@ -91,16 +91,34 @@ def _fetch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-async def predict_widgets(query: str) -> list[dict[str, Any]]:
+async def predict_widgets(
+    query: str,
+    user_location: str | None = None,
+    user_local_datetime: str | None = None,
+) -> list[dict[str, Any]]:
     """Classify ``query`` and return a list of ready-to-emit widget payloads.
 
     Each item looks like ``{"widget": "weather", "data": {...}}``. Returns an
     empty list when nothing matches or on any error.
     """
+    context_lines: list[str] = []
+    if user_local_datetime:
+        context_lines.append(f"User's current local date/time: {user_local_datetime}")
+    if user_location:
+        context_lines.append(f"User's current location: {user_location}")
+
+    system_prompt = _PREDICTOR_PROMPT
+    if context_lines:
+        system_prompt += (
+            "\n\nContext about the user (use to resolve relative or implicit "
+            "references such as 'here', 'nearby', 'now', 'today'):\n"
+            + "\n".join(context_lines)
+        )
+
     try:
         resp = await _predictor_model.ainvoke(
             [
-                ("system", _PREDICTOR_PROMPT),
+                ("system", system_prompt),
                 ("user", query),
             ]
         )

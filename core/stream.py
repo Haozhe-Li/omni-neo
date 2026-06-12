@@ -246,6 +246,8 @@ async def run_agent_stream(
     mode: str = "fast",
     personalization: str = "",
     attached_file_ids: list[dict[str, str]] | None = None,
+    user_location: str | None = None,
+    user_local_datetime: str | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
     if is_harmful(query):
@@ -257,7 +259,11 @@ async def run_agent_stream(
 
     async def widget_producer():
         try:
-            for w in await predict_widgets(query):
+            for w in await predict_widgets(
+                query,
+                user_location=user_location,
+                user_local_datetime=user_local_datetime,
+            ):
                 await queue.put(_sse({"type": "widget", **w}))
         except Exception as exc:  # widgets must never break the chat
             print(f"[stream] widget producer error: {exc}")
