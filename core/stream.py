@@ -270,6 +270,10 @@ async def run_agent_stream(
     _DONE = object()
 
     async def widget_producer():
+        if rewind_config is not None:
+            # Rewind replays from a checkpoint — no new query to predict widgets for.
+            await queue.put(_DONE)
+            return
         try:
             for w in await predict_widgets(
                 query,
@@ -306,13 +310,23 @@ async def run_agent_stream(
 
     tasks = [asyncio.create_task(widget_producer()), asyncio.create_task(agent_producer())]
     remaining = len(tasks)
+    # Hold the agent's terminal `done` event until BOTH producers have finished.
+    # The frontend stops reading the stream the instant it sees `done`, so emitting
+    # it while the (slower) widget predictor is still running would drop late
+    # widgets — e.g. the entity card, which makes two Serper calls.
+    final_done: str | None = None
     try:
         while remaining:
             item = await queue.get()
             if item is _DONE:
                 remaining -= 1
                 continue
+            if '"type": "done"' in item:
+                final_done = item
+                continue
             yield item
+        if final_done is not None:
+            yield final_done
     finally:
         for t in tasks:
             if not t.done():

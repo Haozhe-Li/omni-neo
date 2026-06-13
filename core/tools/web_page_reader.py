@@ -1,8 +1,8 @@
 from langchain_community.document_loaders import SpiderLoader
+import concurrent.futures
 import os
-import signal
 
-from core.utils.redis_cache import l1cache
+# from core.utils.redis_cache import l1cache
 
 _TIMEOUT_SECONDS = 5
 _TIMEOUT_RESULT = {
@@ -12,17 +12,19 @@ _TIMEOUT_RESULT = {
 }
 
 
-class _Timeout(Exception):
-    pass
+def _load_spider(url: str):
+    loader = SpiderLoader(
+        api_key=os.getenv("SPIDER_API_KEY"),
+        url=url,
+        mode="scrape",
+        params={"request_timeout": _TIMEOUT_SECONDS},
+    )
+    return loader.load()
 
 
-def _timeout_handler(signum, frame):
-    raise _Timeout()
-
-
-@l1cache(
-    ttl=3600 * 24 * 90
-)  # Cache for 90 days since historical web page content doesn't change
+# @l1cache(
+#     ttl=3600 * 24 * 90
+# )  # Cache for 90 days since historical web page content doesn't change
 def load_web_page_spider(url: str) -> dict:
     """Load a web page and return its content.
 
@@ -32,28 +34,24 @@ def load_web_page_spider(url: str) -> dict:
     Returns:
         dict: The loaded web page content as a dictionary with URL and content keys.
     """
-    signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(_TIMEOUT_SECONDS)
-    try:
-        loader = SpiderLoader(
-            api_key=os.getenv("SPIDER_API_KEY"),
-            url=url,
-            mode="scrape",
-            params={"request_timeout": _TIMEOUT_SECONDS},
-        )
-        documents = loader.load()
-    except _Timeout:
-        return {**_TIMEOUT_RESULT, "url": url}
-    except Exception:
-        return {"url": url, "content": "Failed to load the web page.", "title": "Error"}
-    finally:
-        signal.alarm(0)
+    # A worker-thread-safe timeout. `signal.SIGALRM` only works on the main
+    # thread, but agent tools run inside `asyncio.to_thread` worker threads, so
+    # we enforce the wall-clock limit with a future instead.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_load_spider, url)
+        try:
+            documents = future.result(timeout=_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            return {**_TIMEOUT_RESULT, "url": url}
+        except Exception:
+            return {"url": url, "content": "Failed to load the web page.", "title": "Error"}
 
     if not documents:
         return {
             "url": url,
             "content": "No content found on the web page. This could happen if the firewall blocks the request or the page is empty.",
         }
+    # print(f"length of content: {len(documents[0].page_content)}")
     return {
         "url": url,
         "content": documents[0].page_content,

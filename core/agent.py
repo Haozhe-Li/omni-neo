@@ -198,7 +198,7 @@ def build_agent(profile: Profile):
     if profile == "fast":
         return create_deep_agent(
             name="Omni Fast",
-            model=gpt_oss_120b_high,
+            model=gpt_oss_120b_low,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
             skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
