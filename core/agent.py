@@ -28,7 +28,7 @@ from deepagents.backends.utils import create_file_data
 from core.database.postgresql_saver import checkpointer
 from core.tools.web_search import google_search, google_search_places
 from core.tools.web_page_reader import load_web_page
-from core.tools.weather_tool import get_weather
+from core.tools.weather_tool import get_weather, get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.search_document import read_user_document
@@ -43,6 +43,7 @@ RETRIEVAL_TOOLS = [
     load_web_page,
     google_search_places,
     get_weather,
+    get_weather_forecast,
     get_stock_data,
     get_realtime_currency_rate,
     read_user_document,
@@ -114,8 +115,10 @@ be needed. Prefer your tools over memory:
 - Facts / current events / specifics → `google_search`, then `load_web_page` to
   read the most relevant results.
 - Local places, venues, businesses → `google_search_places`.
-- Weather → `get_weather`. Stocks → `get_stock_data`. FX rates →
-  `get_realtime_currency_rate`.
+- Current weather only → `get_weather`. Forecasts / tomorrow / specific hours
+  today / upcoming conditions → `get_weather_forecast` (returns current +
+  today's 3-hour slots + tomorrow & day-after summaries). Stocks →
+  `get_stock_data`. FX rates → `get_realtime_currency_rate`.
 - Questions about a user-uploaded file → `read_user_document`.
 Cite what you used naturally in prose.
 

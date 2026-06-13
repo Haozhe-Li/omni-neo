@@ -27,7 +27,7 @@ from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 
-from core.tools.weather_tool import get_weather
+from core.tools.weather_tool import get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.web_search import google_search_places
 from core.tools.currency_tool import get_realtime_currency_rate
@@ -158,7 +158,7 @@ def _fetch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch the data payload for a predicted widget (runs in a worker thread)."""
     try:
         if name == "WeatherWidget":
-            return {"widget": "weather", "data": get_weather(args["location"])}
+            return {"widget": "weather", "data": get_weather_forecast(args["location"])}
         if name == "StockWidget":
             return {"widget": "stock", "data": get_stock_data(args["ticker"])}
         if name == "PlaceWidget":
