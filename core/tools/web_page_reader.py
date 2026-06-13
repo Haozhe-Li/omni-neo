@@ -17,7 +17,7 @@ def _load_spider(url: str):
         api_key=os.getenv("SPIDER_API_KEY"),
         url=url,
         mode="scrape",
-        params={"request_timeout": _TIMEOUT_SECONDS},
+        params={"request_timeout": _TIMEOUT_SECONDS, "return_format":"markdown"},
     )
     return loader.load()
 
