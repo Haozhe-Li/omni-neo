@@ -116,7 +116,7 @@ def _normalize_stream_item(item: Any) -> tuple[str | None, Any]:
     return None, item
 
 
-def _stream_agent(
+async def _stream_agent(
     query: str,
     thread_id: str | None,
     mode: str,
@@ -126,9 +126,6 @@ def _stream_agent(
     rewind_config: dict | None = None,
 ):
     """Drive the agent and yield SSE strings (everything except widgets).
-
-    Synchronous because the app uses a sync Postgres checkpointer; it is run in
-    a worker thread by ``run_agent_stream``.
 
     If ``rewind_config`` is provided the agent replays / forks from that
     LangGraph checkpoint instead of appending a new user message.
@@ -142,7 +139,9 @@ def _stream_agent(
         input_state = None
     else:
         config = {"configurable": {"thread_id": thread_id}}
-        content = build_message_content(query, personalization, attached_file_ids)
+        content = await asyncio.to_thread(
+            build_message_content, query, personalization, attached_file_ids
+        )
         # Pro is a deep agent with a StateBackend: hand it the skill files so the
         # SkillsMiddleware can surface their metadata and read them on demand.
         input_state = {"messages": [{"role": "user", "content": content}]}
@@ -156,7 +155,7 @@ def _stream_agent(
     announced_drafts: set = set()
     produced_text = False
 
-    for raw in agent.stream(
+    async for raw in agent.astream(
         input_state,  # None on rewind → replay from checkpoint
         config=config,
         stream_mode=["messages", "updates"],
@@ -286,27 +285,20 @@ async def run_agent_stream(
         finally:
             await queue.put(_DONE)
 
-    loop = asyncio.get_running_loop()
-
     async def agent_producer():
-        def run_sync():
-            try:
-                for event in _stream_agent(
-                    query, thread_id, mode, personalization, attached_file_ids,
-                    rewind_config=rewind_config,
-                ):
-                    loop.call_soon_threadsafe(queue.put_nowait, event)
-            except Exception as exc:
-                import traceback
+        try:
+            async for event in _stream_agent(
+                query, thread_id, mode, personalization, attached_file_ids,
+                rewind_config=rewind_config,
+            ):
+                await queue.put(event)
+        except Exception as exc:
+            import traceback
 
-                traceback.print_exc()
-                loop.call_soon_threadsafe(
-                    queue.put_nowait, _sse({"type": "error", "content": str(exc)})
-                )
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
-
-        await asyncio.to_thread(run_sync)
+            traceback.print_exc()
+            await queue.put(_sse({"type": "error", "content": str(exc)}))
+        finally:
+            await queue.put(_DONE)
 
     tasks = [asyncio.create_task(widget_producer()), asyncio.create_task(agent_producer())]
     remaining = len(tasks)
