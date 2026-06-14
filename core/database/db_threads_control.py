@@ -16,7 +16,7 @@ Retention policy:
 """
 
 import logging
-from core.database.postgresql_saver import pool
+from core.database.postgresql_saver import sync_pool as pool
 
 logger = logging.getLogger(__name__)
 

@@ -27,7 +27,7 @@ Table schema:
 """
 
 import logging
-from core.database.postgresql_saver import pool
+from core.database.postgresql_saver import sync_pool as pool
 from core.utils.redis_cache import l1cache
 
 logger = logging.getLogger(__name__)

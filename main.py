@@ -70,13 +70,10 @@ from core.RAG.file_parser import (
     process_uploaded_file,
 )
 
-# Initialize db schemas on load
-setup_user_files_table()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await setup_checkpointer()
+    setup_user_files_table()
     initialize_agents()
     yield
     await teardown_checkpointer()

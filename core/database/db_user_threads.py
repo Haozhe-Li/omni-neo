@@ -29,7 +29,7 @@ import logging
 import os
 from datetime import date
 
-from core.database.postgresql_saver import pool
+from core.database.postgresql_saver import sync_pool as pool
 
 logger = logging.getLogger(__name__)
 
