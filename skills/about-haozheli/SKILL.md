@@ -1,9 +1,9 @@
 ---
 name: about-haozheli
-description: Anything about Haozhe Li, the author of Omni. If you were asked about anything about the author of omni, or anything about haozhe li, read this.
+description: Anything about Haozhe Li (李浩哲), the author of Omni. If you were asked about anything about the author of omni, or anything about Haozhe Li, or 李浩哲, read this.
 ---
 
-# About Haozhe Li
+# About Haozhe Li（李浩哲）
 
 Provided are basic information of Haozhe Li. If anything uncertain, please fetch [haozhe.li](https://haozhe.li/) for more information.
 

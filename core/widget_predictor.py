@@ -152,6 +152,28 @@ def _fetch_entity(entity_name: str) -> dict[str, Any] | None:
     return {"widget": "entity", "data": data}
 
 
+# ── Easter egg: Haozhe Li entity card ───────────────────────────────────────
+
+_HAOZHE_RE = re.compile(
+    r'李浩哲'
+    r'|haozhe[\s\-]?li'
+    r'|li[\s\-]?haozhe'
+    r'|haozhe',
+    re.IGNORECASE,
+)
+
+_HAOZHE_WIDGET: dict[str, Any] = {
+    "widget": "entity",
+    "data": {
+        "name": "Haozhe Li （李浩哲）",
+        "title": "Haozhe Li （李浩哲）",
+        "type": "AI Engineer who builds Omni. Currently working on Agentic AI in finance.",
+        "image_url": "https://cdn.haozheli.com/DSC03805.jpeg",
+        "source_link": "https://haozhe.li",
+    },
+}
+
+
 # ── Main predictor ───────────────────────────────────────────────────────────
 
 def _fetch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
@@ -188,6 +210,12 @@ async def predict_widgets(
     empty list when nothing matches, the query is too long, or on any error.
     """
     print(f"[widget_predictor] called, query={query!r}, word_count={_word_count(query)}, limit={_WORD_LIMIT}")
+
+    # Easter egg: any mention of Haozhe Li (in any form) → instant card, no LLM.
+    if _HAOZHE_RE.search(query):
+        print("[widget_predictor] haozhe easter egg triggered")
+        return [_HAOZHE_WIDGET]
+
     # Gate: long queries are rarely single-widget requests — skip entirely.
     if _word_count(query) > _WORD_LIMIT:
         return []
