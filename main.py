@@ -3,7 +3,9 @@ import dotenv
 dotenv.load_dotenv()
 
 import asyncio
+import json
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -18,6 +20,17 @@ from langchain_core.messages import HumanMessage as LCHumanMessage
 
 from core.agent import SYSTEM_PROMPTS, get_agent, initialize_agents
 from core.stream import run_agent_stream, build_message_content
+from core.redis_stream import (
+    stream_write,
+    stream_set_status,
+    stream_get_status,
+    stream_is_generating,
+    stream_expire,
+    stream_reset,
+    stream_read,
+    STREAM_TTL_ACTIVE,
+    STREAM_TTL_DONE,
+)
 from core.database.postgresql_saver import setup_checkpointer, teardown_checkpointer
 from core.utils.data_model import Personalization
 from core.prompt_guard import register_sensitive_prompts
@@ -89,6 +102,127 @@ _db_executor = ThreadPoolExecutor(max_workers=4)
 # Active generation cancellation events keyed by thread_id.
 _cancellation_events: dict[str, asyncio.Event] = {}
 
+# Background generation tasks — held here so GC doesn't kill them when the HTTP
+# connection drops.  Tasks remove themselves on completion.
+_generation_tasks: dict[str, asyncio.Task] = {}
+
+# Grace period to let a connected client sync the finished turn to Postgres
+# before the backend writes its own fallback copy (avoids a duplicate write).
+PERSIST_GRACE_SECONDS = 3.0
+
+
+async def _generate_background(
+    thread_id: str,
+    user_id: str,
+    query: str,
+    mode: str,
+    personalization: str,
+    attached_file_ids: list | None,
+    user_location: str | None,
+    user_local_datetime: str | None,
+    cancel_event: asyncio.Event | None,
+) -> None:
+    """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
+    # Accumulate message fields for the final Postgres upsert.
+    text = ""
+    steps: list[dict] = []
+    sources: list[dict] = []
+    artifacts: list[dict] = []
+    widgets: list[dict] = []
+
+    try:
+        async for event_str in run_agent_stream(
+            query=query,
+            thread_id=thread_id,
+            mode=mode,
+            personalization=personalization,
+            attached_file_ids=attached_file_ids,
+            user_location=user_location,
+            user_local_datetime=user_local_datetime,
+            cancellation_event=cancel_event,
+        ):
+            await stream_write(thread_id, event_str)
+
+            try:
+                ev = json.loads(event_str[6:])  # strip "data: "
+            except Exception:
+                continue
+
+            ev_type = ev.get("type")
+            if ev_type == "text":
+                text += ev.get("content", "")
+            elif ev_type == "tool_call":
+                steps.append({
+                    "tool": ev.get("tool"),
+                    "args": ev.get("args", {}),
+                    "timestamp": int(time.time() * 1000),
+                })
+            elif ev_type == "sources":
+                sources.extend(ev.get("sources", []))
+            elif ev_type == "artifact":
+                artifacts.append({
+                    "id": ev["id"],
+                    "title": ev.get("title"),
+                    "kind": "echarts",
+                    "spec": ev.get("spec"),
+                })
+            elif ev_type == "widget":
+                widgets.append({"widget": ev.get("widget"), "data": ev.get("data")})
+
+        # Shrink TTL now that generation is complete.
+        await stream_expire(thread_id)
+        await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
+
+        # Persist to Postgres as a FALLBACK only. A connected client — even one
+        # that navigated away within the SPA — syncs the turn itself on the `done`
+        # event via POST /sync. Writing here unconditionally races that sync and
+        # produces a duplicate assistant message. So we wait a short grace period
+        # for the client to sync, then write only if it didn't (e.g. tab closed).
+        if thread_id and text:
+            await asyncio.sleep(PERSIST_GRACE_SECONDS)
+            existing = await asyncio.to_thread(get_thread_messages, thread_id, user_id) or []
+            # Skip if the client already synced this turn (its text is present),
+            # which also guards against a stale fallback after a rapid next turn.
+            already_synced = any(
+                isinstance(m, dict)
+                and m.get("role") == "assistant"
+                and m.get("content") == text
+                for m in existing
+            )
+            if not already_synced:
+                msgs = list(existing)
+                # The frontend persists the user's question at turn start; only add
+                # one here if it isn't already the trailing message (tab closed
+                # before that early sync landed).
+                if not (msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user"):
+                    msgs.append({"role": "user", "content": query})
+                msgs.append({
+                    "role": "assistant",
+                    "content": text,
+                    "steps": steps,
+                    "sources": sources,
+                    "artifacts": artifacts,
+                    "widgets": widgets,
+                })
+                await asyncio.to_thread(
+                    upsert_thread_messages, thread_id, user_id, msgs,
+                )
+
+    except asyncio.CancelledError:
+        await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
+        await stream_expire(thread_id)
+        raise
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        error_event = f'data: {json.dumps({"type": "error", "content": str(exc)})}\n\n'
+        await stream_write(thread_id, error_event)
+        await stream_set_status(thread_id, "error", STREAM_TTL_DONE)
+        await stream_expire(thread_id)
+    finally:
+        _cancellation_events.pop(thread_id, None)
+        _generation_tasks.pop(thread_id, None)
+
 # Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
@@ -125,10 +259,13 @@ async def chat(
     """
     Stream the Omni agent's response as Server-Sent Events.
 
+    The actual generation runs as a background asyncio task that survives HTTP
+    disconnects — events are buffered in a Redis Stream so the client can
+    reconnect at any time and replay from the beginning.
+
     `request.mode` selects the profile: "fast" (lean, gpt-oss — unmetered) or
     "pro" (deep agent, Gemini, with chart/report artifacts). Only "pro" counts
     against the guest daily quota; "fast" is free and unlimited.
-    Fire-and-forget: update threads_control.updated_at asynchronously.
     """
     # Pro mode is the metered profile: enforce the guest daily cap (fast is free).
     if request.mode == "pro" and user_id.startswith("guest_"):
@@ -140,31 +277,65 @@ async def chat(
             )
 
     _assert_thread_access(request.thread_id, user_id)
-    if request.thread_id:
+    thread_id = request.thread_id
+
+    if thread_id:
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(_db_executor, touch_thread, request.thread_id, user_id)
+        loop.run_in_executor(_db_executor, touch_thread, thread_id, user_id)
+
+    # If this thread already has an active background generation, just reconnect.
+    if thread_id and await stream_is_generating(thread_id):
+        headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        return StreamingResponse(
+            stream_read(thread_id),
+            media_type="text/event-stream",
+            headers=headers,
+        )
 
     query_text = request.query
     if request.follow_up_content:
         query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
 
     personalization_str = format_personalization(request.personalization)
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
     p = request.personalization
-    thread_id = request.thread_id
-    cancel_event: asyncio.Event | None = None
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+
     if thread_id:
+        # ── background task mode: survives HTTP disconnect ─────────────────
         cancel_event = asyncio.Event()
         _cancellation_events[thread_id] = cancel_event
+        # Clear the previous turn's buffer so stream_read doesn't replay it.
+        await stream_reset(thread_id)
+        # Set status *before* starting stream_read so it doesn't exit on an empty stream.
+        await stream_set_status(thread_id, "generating", STREAM_TTL_ACTIVE)
+        task = asyncio.create_task(
+            _generate_background(
+                thread_id=thread_id,
+                user_id=user_id,
+                query=query_text,
+                mode=request.mode,
+                personalization=personalization_str,
+                attached_file_ids=request.attached_file_ids,
+                user_location=p.user_location if p else None,
+                user_local_datetime=p.user_local_datetime if p else None,
+                cancel_event=cancel_event,
+            )
+        )
+        _generation_tasks[thread_id] = task
+        return StreamingResponse(
+            stream_read(thread_id),
+            media_type="text/event-stream",
+            headers=headers,
+        )
 
-    async def _stream_with_cleanup():
+    # ── no thread_id: direct streaming, backward-compatible ───────────────
+    cancel_event = asyncio.Event()
+
+    async def _direct_stream():
         try:
             async for chunk in run_agent_stream(
                 query=query_text,
-                thread_id=thread_id,
+                thread_id=None,
                 mode=request.mode,
                 personalization=personalization_str,
                 attached_file_ids=request.attached_file_ids,
@@ -174,11 +345,10 @@ async def chat(
             ):
                 yield chunk
         finally:
-            if thread_id:
-                _cancellation_events.pop(thread_id, None)
+            pass
 
     return StreamingResponse(
-        _stream_with_cleanup(),
+        _direct_stream(),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -450,14 +620,37 @@ def api_get_threads(user_id: str = Depends(get_current_user)):
 
 
 @app.get("/api/threads/{thread_id}")
-def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
-    """Return the stored ui_messages for a single thread."""
+async def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
+    """Return the stored ui_messages for a single thread, with generation status."""
     messages = get_thread_messages(thread_id, user_id)
     if messages is None:
         raise HTTPException(
             status_code=404, detail="Thread not found or access denied."
         )
-    return {"messages": messages}
+    generating = await stream_is_generating(thread_id)
+    return {"messages": messages, "is_generating": generating}
+
+
+@app.get("/api/threads/{thread_id}/stream")
+async def api_reconnect_stream(
+    thread_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Reconnect SSE endpoint: replays all buffered events then continues live.
+
+    Call this when returning to a thread where is_generating is true.
+    The stream ends with a `done` (or `error`) event, identical to /chat.
+    """
+    _assert_thread_access(thread_id, user_id)
+    status = await stream_get_status(thread_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="No active stream for this thread.")
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return StreamingResponse(
+        stream_read(thread_id),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 @app.post("/api/threads/{thread_id}/sync")
