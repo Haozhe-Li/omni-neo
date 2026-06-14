@@ -37,14 +37,21 @@ def load_web_page_spider(url: str) -> dict:
     # A worker-thread-safe timeout. `signal.SIGALRM` only works on the main
     # thread, but agent tools run inside `asyncio.to_thread` worker threads, so
     # we enforce the wall-clock limit with a future instead.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_load_spider, url)
-        try:
-            documents = future.result(timeout=_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError:
-            return {**_TIMEOUT_RESULT, "url": url}
-        except Exception:
-            return {"url": url, "content": "Failed to load the web page.", "title": "Error"}
+    # Note: avoid using ThreadPoolExecutor as a context manager — its __exit__
+    # calls shutdown(wait=True), which blocks until the worker finishes and
+    # silently defeats the timeout. We call shutdown(wait=False) explicitly so
+    # the function returns on time while the leaked thread drains in the background.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_load_spider, url)
+    try:
+        documents = future.result(timeout=_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return {**_TIMEOUT_RESULT, "url": url}
+    except Exception:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return {"url": url, "content": "Failed to load the web page.", "title": "Error"}
+    pool.shutdown(wait=False)
 
     if not documents:
         return {
