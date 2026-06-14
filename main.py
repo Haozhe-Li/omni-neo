@@ -6,6 +6,7 @@ import asyncio
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
@@ -17,6 +18,7 @@ from langchain_core.messages import HumanMessage as LCHumanMessage
 
 from core.agent import SYSTEM_PROMPTS, get_agent
 from core.stream import run_agent_stream, build_message_content
+from core.database.postgresql_saver import setup_checkpointer, teardown_checkpointer
 from core.utils.data_model import Personalization
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.data_model import (
@@ -71,12 +73,23 @@ from core.RAG.file_parser import (
 # Initialize db schemas on load
 setup_user_files_table()
 
-app = FastAPI(title="Omni Agent API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await setup_checkpointer()
+    yield
+    await teardown_checkpointer()
+
+
+app = FastAPI(title="Omni Agent API", lifespan=lifespan)
 
 register_sensitive_prompts(SYSTEM_PROMPTS)
 
 # Thread pool for fire-and-forget blocking DB calls
 _db_executor = ThreadPoolExecutor(max_workers=4)
+
+# Active generation cancellation events keyed by thread_id.
+_cancellation_events: dict[str, asyncio.Event] = {}
 
 # Enable CORS for all origins
 app.add_middleware(
@@ -143,16 +156,31 @@ async def chat(
         "Connection": "keep-alive",
     }
     p = request.personalization
+    thread_id = request.thread_id
+    cancel_event: asyncio.Event | None = None
+    if thread_id:
+        cancel_event = asyncio.Event()
+        _cancellation_events[thread_id] = cancel_event
+
+    async def _stream_with_cleanup():
+        try:
+            async for chunk in run_agent_stream(
+                query=query_text,
+                thread_id=thread_id,
+                mode=request.mode,
+                personalization=personalization_str,
+                attached_file_ids=request.attached_file_ids,
+                user_location=p.user_location if p else None,
+                user_local_datetime=p.user_local_datetime if p else None,
+                cancellation_event=cancel_event,
+            ):
+                yield chunk
+        finally:
+            if thread_id:
+                _cancellation_events.pop(thread_id, None)
+
     return StreamingResponse(
-        run_agent_stream(
-            query=query_text,
-            thread_id=request.thread_id,
-            mode=request.mode,
-            personalization=personalization_str,
-            attached_file_ids=request.attached_file_ids,
-            user_location=p.user_location if p else None,
-            user_local_datetime=p.user_local_datetime if p else None,
-        ),
+        _stream_with_cleanup(),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -166,7 +194,7 @@ class RewindRequest(BaseModel):
 
 
 @app.post("/api/threads/{thread_id}/rewind")
-def api_rewind_thread(
+async def api_rewind_thread(
     thread_id: str,
     body: RewindRequest,
     user_id: str = Depends(get_current_user),
@@ -178,7 +206,7 @@ def api_rewind_thread(
     - ``new_query="…"``   → edit: replace the last user message then re-run.
 
     Uses LangGraph time travel: locates the checkpoint where the last message is a
-    HumanMessage, optionally forks it via ``update_state``, then streams from there.
+    HumanMessage, optionally forks it via ``aupdate_state``, then streams from there.
     The LangGraph agent state is rewound; the frontend is responsible for trimming
     its own UI message list before calling this endpoint.
     """
@@ -191,7 +219,7 @@ def api_rewind_thread(
     # Find the most recent checkpoint where the last message is a HumanMessage
     # (i.e. the point just after the user sent their message, before the agent replied).
     target = None
-    for state in agent.get_state_history(lg_config):
+    async for state in agent.aget_state_history(lg_config):
         msgs = state.values.get("messages", [])
         if msgs and isinstance(msgs[-1], LCHumanMessage):
             target = state
@@ -204,12 +232,13 @@ def api_rewind_thread(
         # Edit mode: replace the last HumanMessage in-place (same id → add_messages
         # reducer treats it as an update, not an append).
         personalization_str = format_personalization(body.personalization)
-        new_content = build_message_content(
-            body.new_query, personalization_str, body.attached_file_ids
+        new_content = await asyncio.to_thread(
+            build_message_content,
+            body.new_query, personalization_str, body.attached_file_ids,
         )
         last_human = target.values["messages"][-1]
         updated_msg = LCHumanMessage(id=last_human.id, content=new_content)
-        rewind_config = agent.update_state(target.config, {"messages": [updated_msg]})
+        rewind_config = await agent.aupdate_state(target.config, {"messages": [updated_msg]})
     else:
         # Regenerate mode: replay from the existing checkpoint as-is.
         rewind_config = target.config
@@ -217,20 +246,45 @@ def api_rewind_thread(
     p = body.personalization
     personalization_str = format_personalization(p)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    cancel_event = asyncio.Event()
+    _cancellation_events[thread_id] = cancel_event
+
+    async def _rewind_stream_with_cleanup():
+        try:
+            async for chunk in run_agent_stream(
+                query="",  # unused in rewind mode
+                thread_id=thread_id,
+                mode=body.mode,
+                personalization=personalization_str,
+                attached_file_ids=body.attached_file_ids,
+                user_location=p.user_location if p else None,
+                user_local_datetime=p.user_local_datetime if p else None,
+                rewind_config=rewind_config,
+                cancellation_event=cancel_event,
+            ):
+                yield chunk
+        finally:
+            _cancellation_events.pop(thread_id, None)
+
     return StreamingResponse(
-        run_agent_stream(
-            query="",  # unused in rewind mode
-            thread_id=thread_id,
-            mode=body.mode,
-            personalization=personalization_str,
-            attached_file_ids=body.attached_file_ids,
-            user_location=p.user_location if p else None,
-            user_local_datetime=p.user_local_datetime if p else None,
-            rewind_config=rewind_config,
-        ),
+        _rewind_stream_with_cleanup(),
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@app.post("/api/threads/{thread_id}/stop")
+async def stop_generation(
+    thread_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Signal the active generation for this thread to stop."""
+    _assert_thread_access(thread_id, user_id)
+    event = _cancellation_events.get(thread_id)
+    if event:
+        event.set()
+        return {"status": "stopped"}
+    return {"status": "not_running"}
 
 
 @app.post("/auto_complete")

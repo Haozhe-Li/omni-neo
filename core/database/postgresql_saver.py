@@ -1,5 +1,5 @@
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 from psycopg.rows import dict_row
 import os
 
@@ -11,11 +11,20 @@ connection_kwargs = {
     "row_factory": dict_row,
 }
 
-pool = ConnectionPool(
+pool = AsyncConnectionPool(
     conninfo=DB_URI,
     max_size=20,
     kwargs=connection_kwargs,
+    open=False,
 )
 
-checkpointer = PostgresSaver(pool)
-checkpointer.setup()
+checkpointer = AsyncPostgresSaver(pool)
+
+
+async def setup_checkpointer():
+    await pool.open()
+    await checkpointer.setup()
+
+
+async def teardown_checkpointer():
+    await pool.close()
