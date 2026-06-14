@@ -18,11 +18,13 @@ pool = AsyncConnectionPool(
     open=False,
 )
 
-checkpointer = AsyncPostgresSaver(pool)
+checkpointer = None
 
 
 async def setup_checkpointer():
+    global checkpointer
     await pool.open()
+    checkpointer = AsyncPostgresSaver(pool)
     await checkpointer.setup()
 
 

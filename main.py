@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from langchain_core.messages import HumanMessage as LCHumanMessage
 
-from core.agent import SYSTEM_PROMPTS, get_agent
+from core.agent import SYSTEM_PROMPTS, get_agent, initialize_agents
 from core.stream import run_agent_stream, build_message_content
 from core.database.postgresql_saver import setup_checkpointer, teardown_checkpointer
 from core.utils.data_model import Personalization
@@ -77,6 +77,7 @@ setup_user_files_table()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await setup_checkpointer()
+    initialize_agents()
     yield
     await teardown_checkpointer()
 

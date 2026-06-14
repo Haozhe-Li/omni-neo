@@ -25,7 +25,7 @@ from langchain.agents.middleware import (
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
-from core.database.postgresql_saver import checkpointer
+import core.database.postgresql_saver as _db
 from core.tools.web_search import google_search, google_search_places
 from core.tools.web_page_reader import load_web_page
 from core.tools.weather_tool import get_weather, get_weather_forecast
@@ -205,7 +205,7 @@ def build_agent(profile: Profile):
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
             skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
-            checkpointer=checkpointer,
+            checkpointer=_db.checkpointer,
             middleware=[
                 ToolRetryMiddleware(max_retries=1),
                 ToolCallLimitMiddleware(run_limit=8),
@@ -219,7 +219,7 @@ def build_agent(profile: Profile):
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
             skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
-            checkpointer=checkpointer,
+            checkpointer=_db.checkpointer,
             middleware=[
                 ToolRetryMiddleware(
                     max_retries=2,
@@ -233,14 +233,17 @@ def build_agent(profile: Profile):
     raise ValueError(f"Unknown agent profile: {profile!r}")
 
 
-# Eagerly built singletons (agents are stateless across threads thanks to the
-# checkpointer, so one instance per profile is enough).
-fast_agent = build_agent("fast")
-pro_agent = build_agent("pro")
+fast_agent = None
+pro_agent = None
+
+
+def initialize_agents():
+    global fast_agent, pro_agent
+    fast_agent = build_agent("fast")
+    pro_agent = build_agent("pro")
 
 
 def get_agent(profile: Profile):
-    """Return the prebuilt agent for ``profile``."""
     if profile == "pro":
         return pro_agent
     return fast_agent
