@@ -124,6 +124,7 @@ async def _stream_agent(
     attached_file_ids: list[dict[str, str]] | None,
     *,
     rewind_config: dict | None = None,
+    cancellation_event: asyncio.Event | None = None,
 ):
     """Drive the agent and yield SSE strings (everything except widgets).
 
@@ -161,6 +162,9 @@ async def _stream_agent(
         stream_mode=["messages", "updates"],
         subgraphs=True,
     ):
+        if cancellation_event and cancellation_event.is_set():
+            return
+
         mode_name, data = _normalize_stream_item(raw)
 
         # ── streamed answer tokens ──────────────────────────────────────────
@@ -259,6 +263,7 @@ async def run_agent_stream(
     user_location: str | None = None,
     user_local_datetime: str | None = None,
     rewind_config: dict | None = None,
+    cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
     if is_harmful(query):
@@ -290,6 +295,7 @@ async def run_agent_stream(
             async for event in _stream_agent(
                 query, thread_id, mode, personalization, attached_file_ids,
                 rewind_config=rewind_config,
+                cancellation_event=cancellation_event,
             ):
                 await queue.put(event)
         except Exception as exc:
@@ -313,6 +319,9 @@ async def run_agent_stream(
             if item is _DONE:
                 remaining -= 1
                 continue
+            if cancellation_event and cancellation_event.is_set():
+                yield _sse({"type": "stopped"})
+                return
             if '"type": "done"' in item:
                 final_done = item
                 continue

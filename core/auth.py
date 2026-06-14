@@ -21,7 +21,7 @@ from core.database.db_user_threads import check_and_increment_guest_usage, get_g
 logger = logging.getLogger(__name__)
 
 CLERK_JWKS_URL: str = os.getenv("CLERK_JWKS_URL", "")
-GUEST_DAILY_LIMIT: int = int(os.getenv("GUEST_DAILY_LIMIT", "3"))
+GUEST_DAILY_LIMIT: int = int(os.getenv("GUEST_DAILY_LIMIT", "10"))
 
 # Lazily initialised – avoids network calls at import time
 _jwks_client: PyJWKClient | None = None

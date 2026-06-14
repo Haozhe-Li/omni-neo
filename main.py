@@ -88,6 +88,9 @@ register_sensitive_prompts(SYSTEM_PROMPTS)
 # Thread pool for fire-and-forget blocking DB calls
 _db_executor = ThreadPoolExecutor(max_workers=4)
 
+# Active generation cancellation events keyed by thread_id.
+_cancellation_events: dict[str, asyncio.Event] = {}
+
 # Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
@@ -153,16 +156,31 @@ async def chat(
         "Connection": "keep-alive",
     }
     p = request.personalization
+    thread_id = request.thread_id
+    cancel_event: asyncio.Event | None = None
+    if thread_id:
+        cancel_event = asyncio.Event()
+        _cancellation_events[thread_id] = cancel_event
+
+    async def _stream_with_cleanup():
+        try:
+            async for chunk in run_agent_stream(
+                query=query_text,
+                thread_id=thread_id,
+                mode=request.mode,
+                personalization=personalization_str,
+                attached_file_ids=request.attached_file_ids,
+                user_location=p.user_location if p else None,
+                user_local_datetime=p.user_local_datetime if p else None,
+                cancellation_event=cancel_event,
+            ):
+                yield chunk
+        finally:
+            if thread_id:
+                _cancellation_events.pop(thread_id, None)
+
     return StreamingResponse(
-        run_agent_stream(
-            query=query_text,
-            thread_id=request.thread_id,
-            mode=request.mode,
-            personalization=personalization_str,
-            attached_file_ids=request.attached_file_ids,
-            user_location=p.user_location if p else None,
-            user_local_datetime=p.user_local_datetime if p else None,
-        ),
+        _stream_with_cleanup(),
         media_type="text/event-stream",
         headers=headers,
     )
@@ -228,20 +246,45 @@ async def api_rewind_thread(
     p = body.personalization
     personalization_str = format_personalization(p)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    cancel_event = asyncio.Event()
+    _cancellation_events[thread_id] = cancel_event
+
+    async def _rewind_stream_with_cleanup():
+        try:
+            async for chunk in run_agent_stream(
+                query="",  # unused in rewind mode
+                thread_id=thread_id,
+                mode=body.mode,
+                personalization=personalization_str,
+                attached_file_ids=body.attached_file_ids,
+                user_location=p.user_location if p else None,
+                user_local_datetime=p.user_local_datetime if p else None,
+                rewind_config=rewind_config,
+                cancellation_event=cancel_event,
+            ):
+                yield chunk
+        finally:
+            _cancellation_events.pop(thread_id, None)
+
     return StreamingResponse(
-        run_agent_stream(
-            query="",  # unused in rewind mode
-            thread_id=thread_id,
-            mode=body.mode,
-            personalization=personalization_str,
-            attached_file_ids=body.attached_file_ids,
-            user_location=p.user_location if p else None,
-            user_local_datetime=p.user_local_datetime if p else None,
-            rewind_config=rewind_config,
-        ),
+        _rewind_stream_with_cleanup(),
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@app.post("/api/threads/{thread_id}/stop")
+async def stop_generation(
+    thread_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Signal the active generation for this thread to stop."""
+    _assert_thread_access(thread_id, user_id)
+    event = _cancellation_events.get(thread_id)
+    if event:
+        event.set()
+        return {"status": "stopped"}
+    return {"status": "not_running"}
 
 
 @app.post("/auto_complete")
