@@ -270,7 +270,7 @@ async def run_agent_stream(
         yield _sse({"type": "error", "content": _REFUSAL})
         return
 
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
     _DONE = object()
 
     async def widget_producer():

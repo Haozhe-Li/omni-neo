@@ -22,6 +22,7 @@ from core.agent import SYSTEM_PROMPTS, get_agent, initialize_agents
 from core.stream import run_agent_stream, build_message_content
 from core.redis_stream import (
     stream_write,
+    stream_write_batch,
     stream_set_status,
     stream_get_status,
     stream_is_generating,
@@ -110,6 +111,17 @@ _generation_tasks: dict[str, asyncio.Task] = {}
 # before the backend writes its own fallback copy (avoids a duplicate write).
 PERSIST_GRACE_SECONDS = 3.0
 
+# Redis write batching — text tokens are accumulated and flushed together to
+# reduce round-trips from 2×N (xadd + expire per event) down to ~1×ceil(N/15).
+# Non-text events (tool calls, artifacts, done …) bypass the batch and flush
+# immediately so the frontend doesn't wait for them.
+_FLUSH_IMMEDIATELY: frozenset[str] = frozenset({
+    "tool_call", "artifact", "sources", "done", "error", "stopped",
+    "widget", "drafting", "reasoning",
+})
+_BATCH_SIZE = 15        # flush when this many events are pending
+_BATCH_TIMEOUT_S = 0.03 # flush after 30 ms even if batch isn't full (slow models)
+
 
 async def _generate_background(
     thread_id: str,
@@ -130,6 +142,16 @@ async def _generate_background(
     artifacts: list[dict] = []
     widgets: list[dict] = []
 
+    batch: list[str] = []
+    last_flush = time.monotonic()
+
+    async def _flush() -> None:
+        nonlocal batch, last_flush
+        if batch:
+            await stream_write_batch(thread_id, batch)
+            batch = []
+        last_flush = time.monotonic()
+
     try:
         async for event_str in run_agent_stream(
             query=query,
@@ -141,12 +163,10 @@ async def _generate_background(
             user_local_datetime=user_local_datetime,
             cancellation_event=cancel_event,
         ):
-            await stream_write(thread_id, event_str)
-
             try:
                 ev = json.loads(event_str[6:])  # strip "data: "
             except Exception:
-                continue
+                ev = {}
 
             ev_type = ev.get("type")
             if ev_type == "text":
@@ -168,6 +188,16 @@ async def _generate_background(
                 })
             elif ev_type == "widget":
                 widgets.append({"widget": ev.get("widget"), "data": ev.get("data")})
+
+            batch.append(event_str)
+            if (
+                ev_type in _FLUSH_IMMEDIATELY
+                or len(batch) >= _BATCH_SIZE
+                or time.monotonic() - last_flush >= _BATCH_TIMEOUT_S
+            ):
+                await _flush()
+
+        await _flush()  # drain any remaining buffered events
 
         # Shrink TTL now that generation is complete.
         await stream_expire(thread_id)
@@ -209,6 +239,7 @@ async def _generate_background(
                 )
 
     except asyncio.CancelledError:
+        await _flush()
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
         await stream_expire(thread_id)
         raise
@@ -216,7 +247,8 @@ async def _generate_background(
         import traceback
         traceback.print_exc()
         error_event = f'data: {json.dumps({"type": "error", "content": str(exc)})}\n\n'
-        await stream_write(thread_id, error_event)
+        batch.append(error_event)
+        await _flush()
         await stream_set_status(thread_id, "error", STREAM_TTL_DONE)
         await stream_expire(thread_id)
     finally:

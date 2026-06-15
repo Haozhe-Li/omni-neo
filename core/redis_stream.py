@@ -32,11 +32,25 @@ def _stk(thread_id: str) -> str:
     return f"omni:stream:{thread_id}:status"
 
 
-async def stream_write(thread_id: str, event: str) -> None:
+async def stream_write_batch(thread_id: str, events: list[str]) -> None:
+    """Write multiple SSE events to the Redis Stream in a single pipeline round-trip.
+
+    Combines all xadd calls plus one expire into one TCP request, eliminating the
+    2×RTT-per-event bottleneck that throttles fast models like Cerebras.
+    """
+    if not events:
+        return
     r = _get_redis()
     key = _sk(thread_id)
-    await r.xadd(key, {"data": event}, maxlen=10000)
-    await r.expire(key, STREAM_TTL_ACTIVE)
+    pipe = r.pipeline(transaction=False)
+    for event in events:
+        pipe.xadd(key, {"data": event}, maxlen=10000)
+    pipe.expire(key, STREAM_TTL_ACTIVE)
+    await pipe.execute()
+
+
+async def stream_write(thread_id: str, event: str) -> None:
+    await stream_write_batch(thread_id, [event])
 
 
 async def stream_set_status(thread_id: str, status: str, ttl: int) -> None:
