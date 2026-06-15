@@ -31,7 +31,7 @@ Designed for complex problem-solving, deep research, rigorous thinking, and adva
 > ⚠️ **Disclaimer:** As an AI system, Omni may occasionally generate inaccurate information (hallucinations). Users should always double-check critical data.
 
 ## Tech Stack
-- **Core LLM:** gpt-oss-120b
+- **Core LLM:** OpenAI gpt-oss-120b, Z.AI GLM 4.7
 - **Integrated Tools:** Google Search API, Web Fetcher, OpenWeather API, Yahoo Finance API, etc.
 - **Backend Architecture:** Built with **Python (FastAPI + LangChain)**, containerized via Docker, and deployed on **Google Cloud Platform (GCP)**.
 - **Frontend Architecture:** Developed using **Next.js** and hosted on **Vercel**.
