@@ -33,7 +33,7 @@ from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.search_document import read_user_document
 from core.tools.coding_sandbox import run_python
-from core.llm import gemini_flash_latest, gpt_oss_120b_low, gpt_oss_120b_high
+from core.llm import *
 
 Profile = Literal["fast", "pro"]
 
@@ -215,7 +215,7 @@ def build_agent(profile: Profile):
     if profile == "pro":
         return create_deep_agent(
             name="Omni Pro",
-            model=gemini_flash_latest,
+            model=glm_4_7,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
             skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
