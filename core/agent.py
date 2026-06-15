@@ -226,7 +226,7 @@ def build_agent(profile: Profile):
     if profile == "pro":
         return create_deep_agent(
             name="Omni Pro",
-            model=glm_4_7,
+            model=gpt_oss_120b_high,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
             skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
