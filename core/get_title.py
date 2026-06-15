@@ -1,4 +1,5 @@
 from langchain_groq import ChatGroq
+from langsmith import tracing_context
 import os
 import dotenv
 
@@ -47,5 +48,6 @@ def get_title(query: str) -> str:
             f"The query is: {query}",
         ),
     ]
-    res = get_title_llm.invoke(messages).content
+    with tracing_context(project_name="title"):
+        res = get_title_llm.invoke(messages).content
     return res

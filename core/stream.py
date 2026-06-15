@@ -30,6 +30,7 @@ import json
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langsmith import tracing_context
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
@@ -156,102 +157,103 @@ async def _stream_agent(
     announced_drafts: set = set()
     produced_text = False
 
-    async for raw in agent.astream(
-        input_state,  # None on rewind → replay from checkpoint
-        config=config,
-        stream_mode=["messages", "updates"],
-        subgraphs=True,
-    ):
-        if cancellation_event and cancellation_event.is_set():
-            return
+    with tracing_context(project_name=profile):
+        async for raw in agent.astream(
+            input_state,  # None on rewind → replay from checkpoint
+            config=config,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+        ):
+            if cancellation_event and cancellation_event.is_set():
+                return
 
-        mode_name, data = _normalize_stream_item(raw)
+            mode_name, data = _normalize_stream_item(raw)
 
-        # ── streamed answer tokens ──────────────────────────────────────────
-        if mode_name == "messages":
-            chunk = data[0] if isinstance(data, tuple) else data
-            if isinstance(chunk, AIMessageChunk):
-                # Detect an artifact/report tool call the moment the model starts
-                # emitting it, so the UI can show "drafting…" before it finishes.
-                for tcc in getattr(chunk, "tool_call_chunks", None) or []:
-                    name = tcc.get("name")
-                    if name in _ARTIFACT_TOOL_NAMES:
-                        key = (name, tcc.get("index"))
-                        if key not in announced_drafts:
-                            announced_drafts.add(key)
-                            yield _sse({"type": "drafting", "tool": name})
-                text = _text_of(chunk.content)
-                if text:
-                    produced_text = True
-                    yield _sse({"type": "text", "content": text})
-            continue
-
-        # ── tool calls, tool results, artifacts, reports, sources ───────────
-        if mode_name != "updates" or not isinstance(data, dict):
-            continue
-
-        for node_output in data.values():
-            if not isinstance(node_output, dict):
+            # ── streamed answer tokens ──────────────────────────────────────────
+            if mode_name == "messages":
+                chunk = data[0] if isinstance(data, tuple) else data
+                if isinstance(chunk, AIMessageChunk):
+                    # Detect an artifact/report tool call the moment the model starts
+                    # emitting it, so the UI can show "drafting…" before it finishes.
+                    for tcc in getattr(chunk, "tool_call_chunks", None) or []:
+                        name = tcc.get("name")
+                        if name in _ARTIFACT_TOOL_NAMES:
+                            key = (name, tcc.get("index"))
+                            if key not in announced_drafts:
+                                announced_drafts.add(key)
+                                yield _sse({"type": "drafting", "tool": name})
+                    text = _text_of(chunk.content)
+                    if text:
+                        produced_text = True
+                        yield _sse({"type": "text", "content": text})
                 continue
-            messages = node_output.get("messages")
-            if messages is None:
-                continue
-            if not isinstance(messages, list):
-                messages = [messages]
 
-            for msg in messages:
-                # Agent's intent to call a (non-artifact) tool
-                if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                    for tc in msg.tool_calls:
-                        name = tc.get("name")
-                        if not name or name in _ARTIFACT_TOOL_NAMES:
+            # ── tool calls, tool results, artifacts, reports, sources ───────────
+            if mode_name != "updates" or not isinstance(data, dict):
+                continue
+
+            for node_output in data.values():
+                if not isinstance(node_output, dict):
+                    continue
+                messages = node_output.get("messages")
+                if messages is None:
+                    continue
+                if not isinstance(messages, list):
+                    messages = [messages]
+
+                for msg in messages:
+                    # Agent's intent to call a (non-artifact) tool
+                    if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                        for tc in msg.tool_calls:
+                            name = tc.get("name")
+                            if not name or name in _ARTIFACT_TOOL_NAMES:
+                                continue
+                            yield _sse(
+                                {"type": "tool_call", "tool": name, "args": tc.get("args", {})}
+                            )
+
+                    # Tool results: artifact / report sentinels, else sources
+                    if isinstance(msg, ToolMessage):
+                        name = getattr(msg, "name", "") or ""
+                        raw_content = msg.content
+
+                        if name in _ARTIFACT_TOOL_NAMES:
+                            parsed = None
+                            if isinstance(raw_content, str):
+                                try:
+                                    parsed = json.loads(raw_content)
+                                except json.JSONDecodeError:
+                                    parsed = None
+                            if isinstance(parsed, dict) and ARTIFACT_SENTINEL in parsed:
+                                art = parsed[ARTIFACT_SENTINEL]
+                                artifact_ids.append(art["id"])
+                                yield _sse({"type": "artifact", **art})
+                            # else: the tool returned a validation error → leave it
+                            # in the model's context so it can retry; nothing to emit.
                             continue
-                        yield _sse(
-                            {"type": "tool_call", "tool": name, "args": tc.get("args", {})}
-                        )
 
-                # Tool results: artifact / report sentinels, else sources
-                if isinstance(msg, ToolMessage):
-                    name = getattr(msg, "name", "") or ""
-                    raw_content = msg.content
+                        # Regular tool → surface citations
+                        meta = _extract_domain_metadata(name, raw_content)
+                        new_sources = []
+                        for s in meta.get("sources", []):
+                            key = (s.get("title"), s.get("url"), s.get("content"))
+                            if key not in seen_sources:
+                                seen_sources.add(key)
+                                all_sources.append(s)
+                                new_sources.append(s)
+                        if new_sources:
+                            yield _sse({"type": "sources", "sources": new_sources})
 
-                    if name in _ARTIFACT_TOOL_NAMES:
-                        parsed = None
-                        if isinstance(raw_content, str):
-                            try:
-                                parsed = json.loads(raw_content)
-                            except json.JSONDecodeError:
-                                parsed = None
-                        if isinstance(parsed, dict) and ARTIFACT_SENTINEL in parsed:
-                            art = parsed[ARTIFACT_SENTINEL]
-                            artifact_ids.append(art["id"])
-                            yield _sse({"type": "artifact", **art})
-                        # else: the tool returned a validation error → leave it
-                        # in the model's context so it can retry; nothing to emit.
-                        continue
+        if not produced_text and not artifact_ids:
+            yield _sse({"type": "error", "content": "The agent produced no output."})
 
-                    # Regular tool → surface citations
-                    meta = _extract_domain_metadata(name, raw_content)
-                    new_sources = []
-                    for s in meta.get("sources", []):
-                        key = (s.get("title"), s.get("url"), s.get("content"))
-                        if key not in seen_sources:
-                            seen_sources.add(key)
-                            all_sources.append(s)
-                            new_sources.append(s)
-                    if new_sources:
-                        yield _sse({"type": "sources", "sources": new_sources})
-
-    if not produced_text and not artifact_ids:
-        yield _sse({"type": "error", "content": "The agent produced no output."})
-
-    yield _sse(
-        {
-            "type": "done",
-            "sources": all_sources,
-            "artifacts": artifact_ids,
-        }
-    )
+        yield _sse(
+            {
+                "type": "done",
+                "sources": all_sources,
+                "artifacts": artifact_ids,
+            }
+        )
 
 
 async def run_agent_stream(

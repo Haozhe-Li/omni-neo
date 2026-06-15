@@ -25,6 +25,7 @@ from typing import Any
 
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_groq import ChatGroq
+from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.tools.weather_tool import get_weather_forecast
@@ -235,12 +236,13 @@ async def predict_widgets(
         )
 
     try:
-        resp = await _predictor_model.ainvoke(
-            [
-                ("system", system_prompt),
-                ("user", query),
-            ]
-        )
+        with tracing_context(project_name="widget-predictor"):
+            resp = await _predictor_model.ainvoke(
+                [
+                    ("system", system_prompt),
+                    ("user", query),
+                ]
+            )
     except Exception as exc:
         print(f"[widget_predictor] classification failed: {exc}")
         return []

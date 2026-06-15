@@ -1,4 +1,5 @@
 from langchain_groq import ChatGroq
+from langsmith import tracing_context
 import os
 import dotenv
 from core.utils.data_model import Memories
@@ -42,7 +43,8 @@ async def get_update_memories(query: str, current_memories: Memories) -> Memorie
         ),
     ]
     try:
-        res = await model_with_structure.ainvoke(messages)
+        with tracing_context(project_name="memories"):
+            res = await model_with_structure.ainvoke(messages)
         return res
     except Exception as e:
         print(e)
