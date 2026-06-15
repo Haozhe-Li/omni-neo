@@ -1,5 +1,5 @@
 ---
-name: question
+name: ask-question
 description: use this skill when you need input from the user before you can proceed, e.g. quiz, clarifying questions, or gathering preferences.
 ---
 

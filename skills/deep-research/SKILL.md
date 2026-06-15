@@ -5,135 +5,74 @@ description: Use for deep, multi-faceted research requests — when the user ask
 
 # Deep Research
 
-Use this skill when a question is broad or complex enough to need systematic
-investigation across multiple sources — not a quick factual lookup.
+## Step 0 — Clarify
+
+If you don't know enough to research the right thing, **stop and use the `ask-question` skill** before proceeding.
 
 ---
 
-## Workflow
+## Step 1 — Plan
 
-### Step 0 — Clarify (if needed)
+Call `write_todos` before any search. Structure as a research arc:
 
-Before planning, ask yourself: *Do I know enough to research the right thing?*
+1. **Orient** — one broad search to map the landscape (key players, sub-topics, timeframe).
+2. **Dive** — one todo per major sub-topic or angle (3–5 dives). Each narrow enough to answer in 2–3 searches.
+3. **Compare** — if the task involves options or tradeoffs, add an explicit synthesis todo.
+4. **Report** — always the final todo.
 
-If the request is ambiguous — scope too broad, key parameters missing (region,
-timeframe, use case, budget, audience…), or multiple valid interpretations
-exist — **stop and use the `question` skill** to ask the user one focused
-clarifying question. End the turn there. Do not guess and proceed.
-
-Once the user answers, resume from Step 1 with their answer in hand.
-
-**Skip this step** if the request is specific enough to plan without
-ambiguity. Do not ask questions just to seem thorough.
+Aim for **6–10 todos**. Fewer is fine for tight scope.
 
 ---
 
-### Step 1 — Plan
-
-Call `write_todos` before any search. Structure the plan as a research arc:
-
-1. **Orient** — one broad search to understand the landscape (key players,
-   sub-topics, controversies, timeframe). This shapes everything else.
-2. **Dive** — one todo per major sub-topic or angle (typically 3–5 dives).
-   Each should be narrow enough to answer in 2–3 searches.
-3. **Compare / contrast** — if the task involves options, tradeoffs, or
-   competing claims, add an explicit synthesis todo here.
-4. **Report** — the final todo is always writing the report.
-
-Good example for "compare electric SUVs in 2024":
-- Orient: survey the EV SUV market
-- Gather: Tesla Model Y specs & reviews
-- Gather: Ford Mustang Mach-E specs & reviews
-- Gather: Hyundai Ioniq 5 specs & reviews
-- Gather: charging infrastructure & real-world range data
-- Compare: price / range / charging / reliability tradeoffs
-- Report
-
-Aim for **6–10 todos**. Fewer is fine if the scope is tight.
-
----
-
-### Step 2 — Gather
-
-Work through the todos in order.
+## Step 2 — Gather
 
 **Searching:**
-- Start each sub-topic with one targeted `google_search`.
-- Scan the result titles and snippets. Only `load_web_page` on results that
-  are clearly relevant and not paywalled.
-- Read 2–4 pages per sub-topic — stop when two consecutive pages add nothing
-  new to that sub-topic.
-- **Hard cap: at most 2 searches per todo item** (one initial + one reformulation if the first is weak). Never run a third search on the same sub-topic — move on with what you have.
+- One targeted `google_search` per sub-topic. `load_web_page` only on clearly relevant, non-paywalled results.
+- Read 2–4 pages per sub-topic. Stop when two consecutive pages add nothing new.
+- **Hard cap: 2 searches per todo** (initial + one reformulation). Never a third — move on.
 
 **Computing:**
-- When the research involves numbers — statistics, comparisons, unit conversions,
-  derived metrics, or verifying a quantitative claim — use `run_python` rather
-  than approximating in prose. Accurate numbers make the report more credible.
-- Keep scripts self-contained; include results in the report as plain text or a
-  table. Do not attempt to plot inside `run_python` — use the charting skill for
-  that.
+- For numbers, comparisons, or quantitative verification, use `run_python` — don't approximate in prose.
 
-**Source quality:**
-- Prefer primary sources (official docs, studies, manufacturer specs) and
-  established outlets over aggregator summaries.
-- When sources contradict each other, note the disagreement explicitly — do
-  not silently pick one; the report should surface it.
+**Sources:**
+- Prefer primary sources and established outlets over aggregator summaries.
+- If sources contradict, surface the disagreement — don't silently pick one.
 
 **Todo hygiene (strict):**
-- Mark a todo `in_progress` immediately before you start its work.
-- The very next action after finishing a todo's work must be a `write_todos`
-  call marking it `completed` — before any other tool call or text.
-- Never carry a finished todo as uncompleted into the next step.
+- Mark todo `in_progress` immediately before starting its work.
+- The very next action after finishing must be `write_todos` marking it `completed` — before any other tool call or text.
+- **Per-todo tool cap: 5 tool calls max** (e.g., 2 searches + 1–2 page loads + 1 compute). If the cap is reached with no result, mark the todo `completed` and move on — do not linger.
 
 ---
 
-### Step 3 — Reflect (lightweight)
+## Step 3 — Reflect
 
-After every 2–3 dives, ask: *Is there a significant angle I planned to cover
-that the sources haven't addressed yet?* If yes, add a new todo and continue.
-If no, proceed.
-
-This reflection is a quick gut-check — not a reason to keep searching. If you
-have enough to write a strong report, stop gathering.
+After every 2–3 dives: *Is there a significant angle the sources haven't addressed?* If yes, add a todo. If no, proceed. This is a quick gut-check, not a reason to keep searching.
 
 ---
 
-### Step 4 — Report
+## Step 4 — Report
 
-When all gather todos are complete:
-
-1. Mark the gather todos `completed`.
-2. Mark the report todo `in_progress`.
-3. Write the full report using the `report-writing` skill (follow that skill's
-   structure and formatting rules exactly).
-4. Embed charts using the `charting` skill wherever data is clearer shown than
-   told — trends, comparisons, distributions.
-5. Mark the report todo `completed`.
-6. Follow the report with a short chat reply (2–4 sentences) summarizing the
-   key finding and pointing the user to the report panel.
-
-Every todo must be `completed` before you write the final chat reply.
+1. Mark all gather todos `completed`.
+2. Mark report todo `in_progress`.
+3. Write the full report using the `report-writing` skill. The report body **must be at least 1000 words**.
+4. Embed **at least 2 charts** using the `charting` skill. Place them where data is clearer shown than told — comparisons, trends, distributions.
+5. Mark report todo `completed`.
+6. Follow with a short chat reply (2–4 sentences) summarizing the key finding.
 
 ---
 
 ## Budget
 
-- **Sources**: 6–12 quality sources total. A handful of strong sources beats
-  exhaustive searching.
-- **Stopping signal**: stop gathering the moment two consecutive searches on
-  the same sub-topic yield no new facts or perspectives. Do not search for
-  completeness — search for understanding.
-- **Hard stop**: if you are approaching the tool-call limit, skip remaining
-  gather todos and write the report with what you have. A partial but honest
-  report beats running out of steps mid-search.
+- **Sources**: 6–12 total. A handful of strong sources beats exhaustive searching.
+- **Stop signal**: two consecutive searches on the same sub-topic yield nothing new — stop gathering.
+- **Hard stop**: if approaching the tool-call limit, skip remaining gather todos and write the report with what you have. A partial honest report beats running out of steps mid-search.
 
 ---
 
 ## Rules
 
-- Cite sources naturally in prose — author, outlet, or document name. No
-  bare URLs.
 - Surface contradictions between sources; do not silently resolve them.
-- Depth and accuracy over length — do not pad with filler paragraphs.
-- Never end the turn still searching. Always finish with the report +
-  chat reply.
+- If current knowledge does not support you from answering the question, be honest and say I don't know, and explain what information you have gathered could be useful. 
+- Depth and accuracy over length — no filler paragraphs.
+- Never end the turn still searching. Always finish with the report + chat reply.

@@ -1,6 +1,6 @@
 ---
 name: report-writing
-description: How to stream a long-form report into the side reader by writing a `<report>…</report>` block inline in your answer. Use ONLY when the user explicitly asks for a report/document/write-up, during deep research, or when a complete answer would clearly exceed ~500 words and reads better as a structured document. For ordinary questions, answer directly in chat instead — do not write a report.
+description: Stream a long-form report. Always use this when the answer involves research, structured analysis, or output could be longer than 400 words.
 ---
 
 # Report Writing

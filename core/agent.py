@@ -99,9 +99,14 @@ _CHART_POLICY_FAST = (
     "diagram or chart at all. Use a Markdown table or describe the data in prose."
 )
 _CHART_POLICY_PRO = (
-    "In this (pro) profile, when a visual genuinely helps, use the charting skill "
-    "to produce a real chart. Never fall back to text art."
+    "In this (pro) profile, default to a chart over prose whenever the answer "
+    "involves numbers, trends, comparisons, or distributions — use the charting "
+    "skill. Never fall back to text art or a plain table when a chart is clearer."
 )
+
+_ARTIFACT_POLICY_FAST = ""
+
+_ARTIFACT_POLICY_PRO = "" # skip for now
 
 _BASE_PROMPT = """
 <identity>
@@ -187,12 +192,12 @@ prose instead.
 NEVER draw charts, plots, graphs, or diagrams as ASCII / UTF-8 text art inside a
 code block — it always looks bad and must not appear. {chart_policy}
 </formatting>
-"""
+{artifact_policy}"""
 
 # Registered with the prompt-leakage guard.
 SYSTEM_PROMPTS = [
-    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
-    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
 ]
 
 
@@ -203,7 +208,7 @@ def build_agent(profile: Profile):
             name="Omni Fast",
             model=gpt_oss_120b_low,
             tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST),
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
             skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
             checkpointer=_db.checkpointer,
             middleware=[
@@ -215,9 +220,9 @@ def build_agent(profile: Profile):
     if profile == "pro":
         return create_deep_agent(
             name="Omni Pro",
-            model=glm_4_7,
+            model=gpt_oss_120b_high,
             tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO),
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
             skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
             checkpointer=_db.checkpointer,
             middleware=[

@@ -1,6 +1,6 @@
 ---
 name: charting
-description: How to draw interactive charts inline with ECharts. Use when a chart communicates the data better than prose — trends over time, comparisons, distributions, proportions. Skip it for just one or two numbers.
+description: draw interactive charts inline with ECharts. Always use this when there's comparison, trends, or distributions or anytime a chart would be more effective than prose.
 ---
 
 # Charting
