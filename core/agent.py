@@ -19,9 +19,11 @@ import os
 from typing import Literal
 
 from langchain.agents.middleware import (
+    AgentMiddleware,
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
 )
+from langchain_core.messages import AIMessage
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
@@ -36,6 +38,49 @@ from core.tools.coding_sandbox import run_python
 from core.llm import *
 
 Profile = Literal["fast", "pro"]
+
+
+def _message_text(content) -> str:
+    """Coerce an AIMessage's `content` (str or content-block list) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+class SilentToolCallsMiddleware(AgentMiddleware):
+    """Enforce `<tool_call_discipline>` (no text before a tool call) in code.
+
+    The model occasionally violates that rule itself: it writes the final
+    user-facing answer (or a `<report>` block) and then tacks on a trailing
+    tool call — usually a `write_todos` cleanup marking the last step
+    completed. Because that message still carries `tool_calls`, the ReAct
+    loop treats it as non-terminal and runs one more model turn, which has
+    regenerated (duplicated) the whole answer instead of just doing the
+    cleanup. Once a message already has user-facing text, drop any tool
+    calls attached to it so the turn ends there. Stale todos are reconciled
+    by the frontend instead.
+    """
+
+    def after_model(self, state, runtime):  # noqa: ARG002 - runtime unused
+        messages = state.get("messages") or []
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if not isinstance(msg, AIMessage):
+                continue
+            if not msg.tool_calls or not _message_text(msg.content).strip():
+                return None
+            updated = msg.model_copy(update={"tool_calls": []})
+            new_messages = list(messages)
+            new_messages[i] = updated
+            return {"messages": new_messages}
+        return None
+
 
 # Retrieval tools shared by both profiles.
 RETRIEVAL_TOOLS = [
@@ -184,6 +229,10 @@ Once you have a todo list, keep it honest and current — this is strict:
   with a finished step still left unchecked, and never mark a step completed before
   its work is actually finished.
 - By the time you write the final answer/report, every todo must be `completed`.
+- The message containing your final answer/report must be a pure text message:
+  no tool calls of any kind attached to it, including `write_todos`. Finish all
+  todo bookkeeping strictly BEFORE you start writing that message — once you
+  begin the final answer, do not call any tool again for the rest of the turn.
 </planning>
 
 <formatting>
@@ -220,6 +269,7 @@ def build_agent(profile: Profile):
             middleware=[
                 ToolRetryMiddleware(max_retries=1),
                 ToolCallLimitMiddleware(run_limit=8),
+                SilentToolCallsMiddleware(),
             ],
         )
 
@@ -238,6 +288,7 @@ def build_agent(profile: Profile):
                     initial_delay=1.0,
                 ),
                 ToolCallLimitMiddleware(run_limit=30),
+                SilentToolCallsMiddleware(),
             ],
         )
 
