@@ -53,12 +53,16 @@ After every 2–3 dives: *Is there a significant angle the sources haven't addre
 
 ## Step 4 — Report
 
-1. Mark all gather todos `completed`.
-2. Mark report todo `in_progress`.
-3. IMPORTANT: immediately load `charting` and `report-writing` skills!
-4. Explicitly follow the report-writing and charting rules! Then write a high quality report ~ 1000 words. Place at least 2 charts in the report. Place them where data is clearer shown than told — comparisons, trends, distributions.
-5. Mark report todo `completed`.
-6. Follow with a short chat reply (2–4 sentences) summarizing the key finding.
+This is the LAST step. Do not call `write_todos` or any other tool as part of it
+— the todo list is reconciled for you automatically once this step starts.
+
+1. IMPORTANT: immediately load the `charting` and `report-writing` skills.
+2. Explicitly follow the report-writing and charting rules! Write a high quality
+   report ~1000 words. Place at least 2 charts in the report, where data is
+   clearer shown than told — comparisons, trends, distributions.
+3. Follow with a short chat reply (2–4 sentences) summarizing the key finding.
+4. Stop. This message is the final output of the turn — no further tool calls,
+   no further thinking, no further text after the chat reply.
 
 ---
 
