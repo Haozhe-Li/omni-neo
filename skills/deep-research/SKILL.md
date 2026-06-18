@@ -18,7 +18,7 @@ Call `write_todos` before any search. Structure as a research arc:
 1. **Orient** — one broad search to map the landscape (key players, sub-topics, timeframe).
 2. **Dive** — one todo per major sub-topic or angle (3–5 dives). Each narrow enough to answer in 2–3 searches.
 3. **Compare** — if the task involves options or tradeoffs, add an explicit synthesis todo.
-4. **Report** — always the final todo.
+4. **Report** — always the final todo. **Important:** for this step, explicitly write down use `charting` and `report-writing` skills!
 
 Aim for **6–10 todos**. Fewer is fine for tight scope.
 
@@ -55,8 +55,8 @@ After every 2–3 dives: *Is there a significant angle the sources haven't addre
 
 1. Mark all gather todos `completed`.
 2. Mark report todo `in_progress`.
-3. Write the full report using the `report-writing` skill. The report body **must be at least 1000 words**.
-4. Embed **at least 2 charts** using the `charting` skill. Place them where data is clearer shown than told — comparisons, trends, distributions.
+3. IMPORTANT: immediately load `charting` and `report-writing` skills!
+4. Explicitly follow the report-writing and charting rules! Then write a high quality report ~ 1000 words. Place at least 2 charts in the report. Place them where data is clearer shown than told — comparisons, trends, distributions.
 5. Mark report todo `completed`.
 6. Follow with a short chat reply (2–4 sentences) summarizing the key finding.
 
