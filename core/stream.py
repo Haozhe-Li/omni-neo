@@ -50,6 +50,27 @@ def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def _is_final_todos_call(tool_calls: list[dict]) -> bool:
+    """True if these tool calls are a closing `write_todos` (every todo done).
+
+    Used to detect the message where the model batches its final answer with the
+    last todo tick — the cue that the next assistant turn is a duplicate answer.
+    A planning/progress `write_todos` (some todo still pending/in_progress) does
+    NOT qualify, so mid-run updates never arm the guard.
+    """
+    saw_todos = False
+    for tc in tool_calls or []:
+        if tc.get("name") != "write_todos":
+            continue
+        saw_todos = True
+        todos = (tc.get("args") or {}).get("todos") or []
+        if not todos:
+            return False
+        if any(t.get("status") != "completed" for t in todos if isinstance(t, dict)):
+            return False
+    return saw_todos
+
+
 def _text_of(content: Any) -> str:
     """Coerce a message's `content` (str or content-block list) to plain text."""
     if isinstance(content, str):
@@ -157,6 +178,18 @@ async def _stream_agent(
     announced_drafts: set = set()
     produced_text = False
 
+    # Duplicate-answer guard. The deep agent often batches its final answer text
+    # into the SAME assistant message as the closing `write_todos(...completed)`
+    # call. Because that message carries a tool call, the ReAct loop must run the
+    # model once more after the tool returns — and with no work left it simply
+    # re-emits the answer, so the UI shows it twice. When we detect that batched
+    # message (via `updates`, which lands before the next turn's tokens) we arm
+    # this guard and drop the text of the immediately following assistant message
+    # (the re-emission). The first, already-streamed copy is what the user keeps.
+    suppress_armed = False
+    armed_after_id: str | None = None
+    suppress_msg_id: str | None = None
+
     with tracing_context(project_name=profile):
         async for raw in agent.astream(
             input_state,  # None on rewind → replay from checkpoint
@@ -184,6 +217,18 @@ async def _stream_agent(
                                 yield _sse({"type": "drafting", "tool": name})
                     text = _text_of(chunk.content)
                     if text:
+                        mid = getattr(chunk, "id", None)
+                        # Drop the answer the model re-emits right after batching
+                        # it with the closing `write_todos` tick (see guard above).
+                        if suppress_armed and mid is not None and mid != armed_after_id:
+                            if suppress_msg_id is None:
+                                suppress_msg_id = mid
+                            if mid == suppress_msg_id:
+                                produced_text = True  # a (suppressed) answer DID arrive
+                                continue
+                            # A further, distinct message — stop suppressing.
+                            suppress_armed = False
+                            suppress_msg_id = None
                         produced_text = True
                         yield _sse({"type": "text", "content": text})
                 continue
@@ -204,6 +249,16 @@ async def _stream_agent(
                 for msg in messages:
                     # Agent's intent to call a (non-artifact) tool
                     if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                        # Arm the duplicate-answer guard when the model batches its
+                        # final answer text into the same message as a closing
+                        # `write_todos` whose todos are all completed. The next
+                        # assistant turn is then a pointless re-emission to drop.
+                        if _text_of(msg.content).strip() and _is_final_todos_call(
+                            msg.tool_calls
+                        ):
+                            suppress_armed = True
+                            armed_after_id = getattr(msg, "id", None)
+                            suppress_msg_id = None
                         for tc in msg.tool_calls:
                             name = tc.get("name")
                             if not name or name in _ARTIFACT_TOOL_NAMES:
