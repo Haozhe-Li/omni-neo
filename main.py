@@ -327,6 +327,8 @@ async def chat(
     query_text = request.query
     if request.follow_up_content:
         query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
+    if request.skill:
+        query_text += f"\n\nUser explicitly asked for the '{request.skill}' skill. Please first activate this skill."
 
     personalization_str = format_personalization(request.personalization)
     p = request.personalization

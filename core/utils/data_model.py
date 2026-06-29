@@ -30,6 +30,7 @@ class QueryRequest(BaseModel):
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
     mode: Literal["fast", "pro"] = "fast"
+    skill: str | None = None
 
 
 class AutoCompleteRequest(BaseModel):

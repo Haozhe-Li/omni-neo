@@ -1,5 +1,5 @@
 ---
-name: trip advisor
+name: trip-advisor
 description: plan a complete trip for the user — itinerary, flights, hotels, restaurants, weather, maps, and a day-by-day report. Use when the user asks to plan a trip, vacation, travel itinerary, or anything involving travel to a destination.
 ---
 
