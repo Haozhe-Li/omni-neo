@@ -7,7 +7,9 @@ description: Use for deep, multi-faceted research requests — when the user ask
 
 ## Step 0 — Clarify
 
-If you don't know enough to research the right thing, **stop and use the `ask-question` skill** before proceeding.
+If the scope, angle, or goal is ambiguous, **immediately load the `ask question` skill** and emit a `<question>` block before proceeding. Ask only what is genuinely needed to research the right thing — do not ask for information you can reasonably assume. One focused `<question>` block with 1–3 questions is enough; do not stack multiple blocks.
+
+Skip this step entirely if the request is already specific enough to plan directly.
 
 ---
 

@@ -30,7 +30,6 @@ from pydantic import BaseModel, Field
 
 from core.tools.weather_tool import get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
-from core.tools.web_search import google_search_places
 from core.tools.currency_tool import get_realtime_currency_rate
 
 
@@ -64,11 +63,6 @@ class StockWidget(BaseModel):
     ticker: str = Field(description="Ticker symbol, e.g. 'AAPL'.")
 
 
-class PlaceWidget(BaseModel):
-    """Show a places/map card. Use only when the user asks about venues, businesses, or locations to visit."""
-    query: str = Field(description="Place search query, e.g. 'coffee shops in Seattle'.")
-
-
 class CurrencyWidget(BaseModel):
     """Show an FX rate card. Use only when the user asks to convert or compare two currencies."""
     base_currency: str = Field(description="Base currency code, e.g. 'USD'.")
@@ -82,7 +76,7 @@ class EntityWidget(BaseModel):
     entity_name: str = Field(description="The canonical name of the entity, e.g. 'Donald Trump' or 'LangChain'.")
 
 
-_WIDGET_TOOLS = [WeatherWidget, StockWidget, PlaceWidget, CurrencyWidget, EntityWidget]
+_WIDGET_TOOLS = [WeatherWidget, StockWidget, CurrencyWidget, EntityWidget]
 
 _PREDICTOR_PROMPT = (
     "You route a user query to live-data widgets. Call every widget tool that the "
@@ -184,8 +178,6 @@ def _fetch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
             return {"widget": "weather", "data": get_weather_forecast(args["location"])}
         if name == "StockWidget":
             return {"widget": "stock", "data": get_stock_data(args["ticker"])}
-        if name == "PlaceWidget":
-            return {"widget": "place", "data": google_search_places(args["query"])}
         if name == "CurrencyWidget":
             return {
                 "widget": "currency",
