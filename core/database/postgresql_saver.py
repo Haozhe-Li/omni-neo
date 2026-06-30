@@ -9,13 +9,24 @@ connection_kwargs = {
     "autocommit": True,
     "prepare_threshold": None,
     "row_factory": dict_row,
+    # TCP keepalives so a connection killed by a middlebox/DB idle timeout is
+    # detected quickly instead of surfacing as "SSL error: unexpected eof" mid-query.
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
 }
 
 # Async pool — used exclusively by AsyncPostgresSaver (LangGraph checkpointer).
+# `check` validates a connection right before handing it out (psycopg_pool only
+# does this on its periodic background sweep otherwise), so a connection the
+# server/network already closed gets discarded and replaced instead of being
+# handed to the checkpointer and failing with an SSL EOF.
 pool = AsyncConnectionPool(
     conninfo=DB_URI,
     max_size=20,
     kwargs=connection_kwargs,
+    check=AsyncConnectionPool.check_connection,
     open=False,
 )
 
@@ -26,6 +37,7 @@ sync_pool = ConnectionPool(
     conninfo=DB_URI,
     max_size=10,
     kwargs=connection_kwargs,
+    check=ConnectionPool.check_connection,
     open=False,
 )
 
