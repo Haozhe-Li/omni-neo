@@ -17,7 +17,6 @@ Table schema:
         category VARCHAR(50) NOT NULL,
 
         extracted_text TEXT,
-        is_rag_indexed BOOLEAN DEFAULT FALSE,
 
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -28,7 +27,6 @@ Table schema:
 
 import logging
 from core.database.postgresql_saver import sync_pool as pool
-from core.utils.redis_cache import l1cache
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +45,6 @@ def setup_user_files_table() -> None:
             s3_bucket VARCHAR(255),
             category VARCHAR(50) NOT NULL,
             extracted_text TEXT,
-            is_rag_indexed BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
@@ -122,22 +119,19 @@ def get_file_record(file_id: str) -> dict | None:
         return None
 
 
-def update_file_ready(
-    file_id: str, extracted_text: str | None = None, is_rag_indexed: bool = False
-) -> bool:
-    """Update file status to 'ready' after parsing/indexing."""
+def update_file_ready(file_id: str, extracted_text: str | None = None) -> bool:
+    """Update file status to 'ready' after parsing."""
     sql = """
-        UPDATE user_files 
+        UPDATE user_files
         SET status = 'ready',
             extracted_text = %s,
-            is_rag_indexed = %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE file_id = %s
     """
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (extracted_text, is_rag_indexed, file_id))
+                cur.execute(sql, (extracted_text, file_id))
                 return cur.rowcount > 0
     except Exception as e:
         logger.error(f"[db_user_files] update_file_ready error: {e}")
@@ -157,16 +151,27 @@ def update_file_failed(file_id: str) -> bool:
         return False
 
 
-@l1cache(ttl=3600 * 3)
-def get_thread_files(thread_id: str) -> list[dict]:
-    """Fetch all files associated with a thread."""
-    sql = "SELECT * FROM user_files WHERE thread_id = %s AND status = 'ready'"
+def count_prior_ready_files_with_name(thread_id: str, filename: str, file_id: str, created_at) -> int:
+    """Count ready files in a thread sharing `filename`, ordered strictly before
+    (`created_at`, `file_id`).
+
+    Used to assign Finder-style suffixes (name.ext, name(1).ext, name(2).ext, ...)
+    when mounting documents into the agent's virtual filesystem, so re-uploads of
+    a same-named file don't collide. Ordering by (created_at, file_id) rather than
+    created_at alone gives a strict total order even when two files share a
+    timestamp, so files in the same upload batch don't double-count each other.
+    """
+    sql = """
+        SELECT COUNT(*) AS count FROM user_files
+        WHERE thread_id = %s AND original_filename = %s AND status = 'ready'
+          AND (created_at, file_id) < (%s, %s)
+    """
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (thread_id,))
-                rows = cur.fetchall()
-                return [dict(r) for r in rows]
+                cur.execute(sql, (thread_id, filename, created_at, file_id))
+                row = cur.fetchone()
+                return row["count"] if row else 0
     except Exception as e:
-        logger.error(f"[db_user_files] get_thread_files error: {e}")
-        return []
+        logger.error(f"[db_user_files] count_prior_ready_files_with_name error: {e}")
+        return 0

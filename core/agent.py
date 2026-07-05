@@ -19,6 +19,7 @@ import os
 from typing import Literal
 
 from langchain.agents.middleware import (
+    AgentMiddleware,
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
 )
@@ -31,7 +32,6 @@ from core.tools.web_page_reader import load_web_page
 from core.tools.weather_tool import get_weather, get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
-from core.tools.search_document import read_user_document
 from core.tools.coding_sandbox import run_python
 from core.llm import *
 
@@ -46,7 +46,6 @@ RETRIEVAL_TOOLS = [
     get_weather_forecast,
     get_stock_data,
     get_realtime_currency_rate,
-    read_user_document,
     run_python,
 ]
 
@@ -124,7 +123,8 @@ be needed. Prefer your tools over memory:
   today / upcoming conditions → `get_weather_forecast` (returns current +
   today's 3-hour slots + tomorrow & day-after summaries). Stocks →
   `get_stock_data`. FX rates → `get_realtime_currency_rate`.
-- Questions about a user-uploaded file → `read_user_document`.
+- Questions about a user-uploaded document → it's mounted at `/uploads/` in your
+  filesystem; use `ls`, `read_file`, or `grep` to explore and read it.
 Cite what you used naturally in prose.
 
 Search discipline (hard limits — no exceptions):
@@ -207,6 +207,37 @@ SYSTEM_PROMPTS = [
 ]
 
 
+def _messages_have_image(messages) -> bool:
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "image_url" for b in content
+        ):
+            return True
+    return False
+
+
+class FastVisionModelMiddleware(AgentMiddleware):
+    """Fast profile only: swap to a vision-capable model whenever an image
+    appears anywhere in the conversation, not just the latest turn — the
+    default fast model (gpt-oss-120b) is text-only and would error on
+    multimodal content if a later turn re-references an earlier image."""
+
+    def __init__(self, vision_model):
+        super().__init__()
+        self.vision_model = vision_model
+
+    def wrap_model_call(self, request, handler):
+        if _messages_have_image(request.messages):
+            request = request.override(model=self.vision_model)
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):
+        if _messages_have_image(request.messages):
+            request = request.override(model=self.vision_model)
+        return await handler(request)
+
+
 def build_agent(profile: Profile):
     """Construct an Omni agent for the given profile."""
     if profile == "fast":
@@ -220,6 +251,7 @@ def build_agent(profile: Profile):
             middleware=[
                 ToolRetryMiddleware(max_retries=1),
                 ToolCallLimitMiddleware(run_limit=8),
+                FastVisionModelMiddleware(gemma_4_31b),
             ],
         )
 

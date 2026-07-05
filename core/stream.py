@@ -27,18 +27,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langsmith import tracing_context
+from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
 from core.utils.format import _extract_domain_metadata
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
-from core.RAG.file_parser import get_read_presigned_url
-from core.database.db_user_files import get_file_record
+from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
+from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
 
 # Tool names whose calls are represented by artifact events, not tool_call.
 _ARTIFACT_TOOL_NAMES = {"render_chart"}
@@ -63,39 +65,86 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+def _dedupe_document_name(
+    thread_id: str | None, filename: str, file_id: str, created_at, file_type: str
+) -> str:
+    """Finder-style name collision handling: name.ext, name(1).ext, name(2).ext, ...
+
+    Rank is the count of other ready same-named files in the thread ordered
+    strictly before this one (by created_at, file_id) — a single DB-derived
+    total order, so files attached in the same batch are ranked correctly
+    against each other without double-counting. Ranking is keyed to the
+    original filename/extension (as stored in Postgres) even though binary
+    formats get an ``.md`` display extension below, since that's what was
+    actually re-uploaded.
+    """
+    display_name = filename
+    if file_type in MARKDOWN_SOURCE_TYPES:
+        stem, ext = os.path.splitext(filename)
+        # Fold the original extension into the stem (report.pdf -> report_pdf.md)
+        # so a same-named .pdf and .docx don't collide once both become .md.
+        display_name = f"{stem}_{ext.lstrip('.')}.md" if ext else f"{stem}.md"
+
+    if not thread_id:
+        return display_name
+    rank = count_prior_ready_files_with_name(thread_id, filename, file_id, created_at)
+    if rank == 0:
+        return display_name
+    stem, ext = os.path.splitext(display_name)
+    return f"{stem}({rank}){ext}"
+
+
 def build_message_content(
-    query: str, personalization: str, attached_file_ids: list[dict[str, str]] | None
-) -> str | list:
-    """Build the user message, inlining images and naming attached documents."""
+    query: str,
+    personalization: str,
+    attached_file_ids: list[dict[str, str]] | None,
+    thread_id: str | None = None,
+) -> tuple[str | list, dict]:
+    """Build the user message, inlining images and mounting documents as files.
+
+    Returns ``(content, files)``. ``files`` holds virtual-path -> FileData
+    entries for ready documents, to be merged into the agent's filesystem
+    state (``input_state["files"]``) so it can `read_file`/`grep` them.
+    """
     base_query = f"User Query: {query}\n\nPersonalization: {personalization}\n\n"
     if not attached_file_ids:
-        return base_query
+        return base_query, {}
 
     image_blocks: list[dict] = []
-    document_names: list[str] = []
+    document_notes: list[str] = []
+    files: dict[str, dict] = {}
     for file_info in attached_file_ids:
         for file_id, filename in file_info.items():
             record = get_file_record(file_id)
             if not record:
                 continue
             if record["category"] == "image":
-                url = get_read_presigned_url(file_id)
-                if url:
-                    image_blocks.append({"type": "image_url", "image_url": {"url": url}})
+                data_url = get_image_base64_data_url(file_id)
+                if data_url:
+                    image_blocks.append({"type": "image_url", "image_url": {"url": data_url}})
             elif record["category"] == "document":
-                document_names.append(filename)
+                if record["status"] != "ready":
+                    document_notes.append(f"{filename} (still being processed, not readable yet)")
+                    continue
+                mounted_name = _dedupe_document_name(
+                    thread_id, filename, file_id, record["created_at"], record["file_type"]
+                )
+                path = f"/uploads/{mounted_name}"
+                files[path] = create_file_data(record.get("extracted_text") or "")
+                document_notes.append(f"{filename} -> mounted at {path}")
 
-    if document_names:
+    if document_notes:
         base_query = (
-            "The user has uploaded these files. Use them via read_user_document when relevant:\n"
-            + "\n".join(document_names)
+            "The user has uploaded these files, available in your filesystem. "
+            "Use `ls`, `read_file`, or `grep` to read them:\n"
+            + "\n".join(document_notes)
             + "\n\n"
             + base_query
         )
 
     if image_blocks:
-        return [{"type": "text", "text": base_query}, *image_blocks]
-    return base_query
+        return [{"type": "text", "text": base_query}, *image_blocks], files
+    return base_query, files
 
 
 def _normalize_stream_item(item: Any) -> tuple[str | None, Any]:
@@ -141,15 +190,19 @@ async def _stream_agent(
         input_state = None
     else:
         config = {"configurable": {"thread_id": thread_id}}
-        content = await asyncio.to_thread(
-            build_message_content, query, personalization, attached_file_ids
+        content, doc_files = await asyncio.to_thread(
+            build_message_content, query, personalization, attached_file_ids, thread_id
         )
-        # Pro is a deep agent with a StateBackend: hand it the skill files so the
-        # SkillsMiddleware can surface their metadata and read them on demand.
+        # Both profiles are deep agents with a StateBackend: hand them the skill
+        # files (so SkillsMiddleware can surface/read them) plus any uploaded
+        # documents mounted this turn (so FilesystemMiddleware's read_file/grep
+        # can see them). The files channel merges additively across turns, so
+        # documents mounted once stay visible for the rest of the thread.
         input_state = {"messages": [{"role": "user", "content": content}]}
         skill_files = PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
-        if skill_files:
-            input_state["files"] = skill_files
+        files = {**skill_files, **doc_files}
+        if files:
+            input_state["files"] = files
 
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []

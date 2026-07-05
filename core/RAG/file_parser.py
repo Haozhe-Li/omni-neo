@@ -1,10 +1,12 @@
 import os
 import boto3
+import base64
 import tempfile
 import logging
-from upstash_search import Search
 from langchain_pymupdf4llm import PyMuPDF4LLMLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
+from docx import Document as DocxDocument
+from docx.table import Table as DocxTable
+from docx.text.paragraph import Paragraph as DocxParagraph
 from core.database.db_user_files import (
     update_file_ready,
     get_file_record,
@@ -12,6 +14,13 @@ from core.database.db_user_files import (
 )
 
 logger = logging.getLogger(__name__)
+
+DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# Formats we parse into text before mounting — `read_file` in the agent's
+# filesystem only understands text, so binary formats must never be handed
+# to it as-is; the raw file is only ever used to produce `extracted_text`.
+MARKDOWN_SOURCE_TYPES = {"application/pdf", DOCX_MIME_TYPE}
 
 # Initialize S3 Client
 s3_client = boto3.client(
@@ -22,17 +31,63 @@ s3_client = boto3.client(
     region_name="auto",  # Often needed for R2/Custom endpoints
 )
 
-# Initialize Upstash Search Client
-try:
-    upstash_client = Search.from_env()
-    upstash_index = upstash_client.index("omni-documents")
-except Exception as e:
-    logger.error(f"Failed to initialize Upstash Search: {e}")
-    upstash_index = None
-
 
 def _download_from_s3(bucket: str, key: str, local_path: str):
     s3_client.download_file(bucket, key, local_path)
+
+
+def _iter_docx_blocks(document: DocxDocument):
+    """Yield paragraphs and tables in document order (python-docx exposes them
+    as separate lists, which would put every table at the end)."""
+    for child in document.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            yield DocxParagraph(child, document)
+        elif child.tag.endswith("}tbl"):
+            yield DocxTable(child, document)
+
+
+def _docx_paragraph_to_markdown(paragraph: DocxParagraph) -> str:
+    text = paragraph.text.strip()
+    if not text:
+        return ""
+    style = (paragraph.style.name or "").lower()
+    if style.startswith("heading"):
+        try:
+            level = int(style.replace("heading", "").strip())
+        except ValueError:
+            level = 1
+        return f"{'#' * max(1, min(level, 6))} {text}"
+    if style.startswith("list bullet"):
+        return f"- {text}"
+    if style.startswith("list number"):
+        return f"1. {text}"
+    return text
+
+
+def _docx_table_to_markdown(table: DocxTable) -> str:
+    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+    if not rows:
+        return ""
+    lines = [
+        "| " + " | ".join(rows[0]) + " |",
+        "| " + " | ".join("---" for _ in rows[0]) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    return "\n".join(lines)
+
+
+def _parse_docx_to_markdown(local_path: str) -> str:
+    document = DocxDocument(local_path)
+    parts = []
+    for block in _iter_docx_blocks(document):
+        md = (
+            _docx_paragraph_to_markdown(block)
+            if isinstance(block, DocxParagraph)
+            else _docx_table_to_markdown(block)
+        )
+        if md:
+            parts.append(md)
+    return "\n\n".join(parts)
 
 
 def process_uploaded_file(file_id: str):
@@ -61,97 +116,36 @@ def process_uploaded_file(file_id: str):
                 loader = PyMuPDF4LLMLoader(local_path)
                 docs = loader.load()
                 full_text = "\n".join([doc.page_content for doc in docs])
+            elif record["file_type"] == DOCX_MIME_TYPE:
+                full_text = _parse_docx_to_markdown(local_path)
             else:
                 with open(local_path, "r", encoding="utf-8") as f:
                     full_text = f.read()
 
-            print(f"Full text length: {len(full_text)}")
-            if not upstash_index:
-                logger.error("Upstash Index not initialized, marking file as failed.")
-                update_file_failed(file_id)
-                return
-
-            # Setup splitting
-            file_ext = record["original_filename"].lower()
-            if record["file_type"] == "text/x-python" or file_ext.endswith(".py"):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.PYTHON, chunk_size=512, chunk_overlap=128
-                )
-            elif record["file_type"] in [
-                "text/markdown",
-                "text/md",
-            ] or file_ext.endswith((".md", ".markdown")):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.MARKDOWN, chunk_size=512, chunk_overlap=128
-                )
-            elif file_ext.endswith((".js", ".jsx", ".ts", ".tsx")):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.JS, chunk_size=512, chunk_overlap=128
-                )
-            elif file_ext.endswith(".html"):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.HTML, chunk_size=512, chunk_overlap=128
-                )
-            elif file_ext.endswith((".java")):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.JAVA, chunk_size=512, chunk_overlap=128
-                )
-            elif file_ext.endswith((".cpp", ".c", ".h", ".hpp")):
-                splitter = RecursiveCharacterTextSplitter.from_language(
-                    language=Language.CPP, chunk_size=512, chunk_overlap=128
-                )
-            else:
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=512, chunk_overlap=128
-                )
-            chunks = splitter.create_documents([full_text])
-
-            upstash_documents = []
-            for i, chunk in enumerate(chunks):
-                chunk_id = f"{file_id}-{i}"
-                upstash_documents.append(
-                    {
-                        "id": chunk_id,
-                        "content": {"text": chunk.page_content},
-                        "metadata": {
-                            "thread_id": record["thread_id"],
-                            "user_id": record["user_id"],
-                            "filename": record["original_filename"],
-                        },
-                    }
-                )
-
-            # Upsert into Upstash Search in batches of 100
-            batch_size = 100
-            for i in range(0, len(upstash_documents), batch_size):
-                batch = upstash_documents[i : i + batch_size]
-                upstash_index.upsert(documents=batch)
-
-            update_file_ready(file_id, extracted_text=full_text, is_rag_indexed=True)
-            logger.info(f"File {file_id} processed and indexed into Upstash Search.")
+            update_file_ready(file_id, extracted_text=full_text)
+            logger.info(f"File {file_id} processed ({len(full_text)} chars).")
 
         except Exception as e:
-            logger.error(f"Parsing/Indexing failed for {file_id}: {e}")
+            logger.error(f"Parsing failed for {file_id}: {e}")
             update_file_failed(file_id)
-            import traceback
-
-            traceback.print_exc()
 
 
-def get_read_presigned_url(file_id: str) -> str | None:
-    """Generate a short-lived presigned URL for LLM Vision models to read images"""
+def get_image_base64_data_url(file_id: str) -> str | None:
+    """Download an image from S3 and inline it as a base64 data URI.
+
+    Vision models get the bytes directly rather than a remote (presigned) URL —
+    no dependency on the model provider being able to fetch an external link.
+    """
     record = get_file_record(file_id)
     if not record or not record.get("s3_bucket"):
         return None
     try:
-        url = s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": record["s3_bucket"], "Key": file_id},
-            ExpiresIn=3600,
-        )
-        return url
+        obj = s3_client.get_object(Bucket=record["s3_bucket"], Key=file_id)
+        data = obj["Body"].read()
+        encoded = base64.b64encode(data).decode("utf-8")
+        return f"data:{record['file_type']};base64,{encoded}"
     except Exception as e:
-        logger.error(f"Generate presigned URL failed: {e}")
+        logger.error(f"Download/encode image failed for {file_id}: {e}")
         return None
 
 

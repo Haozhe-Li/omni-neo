@@ -82,6 +82,7 @@ from core.database.db_user_files import (
 from core.RAG.file_parser import (
     get_put_presigned_url,
     process_uploaded_file,
+    DOCX_MIME_TYPE,
 )
 
 @asynccontextmanager
@@ -434,13 +435,16 @@ async def api_rewind_thread(
         # Edit mode: replace the last HumanMessage in-place (same id → add_messages
         # reducer treats it as an update, not an append).
         personalization_str = format_personalization(body.personalization)
-        new_content = await asyncio.to_thread(
+        new_content, doc_files = await asyncio.to_thread(
             build_message_content,
-            body.new_query, personalization_str, body.attached_file_ids,
+            body.new_query, personalization_str, body.attached_file_ids, thread_id,
         )
         last_human = target.values["messages"][-1]
         updated_msg = LCHumanMessage(id=last_human.id, content=new_content)
-        rewind_config = await agent.aupdate_state(target.config, {"messages": [updated_msg]})
+        state_update = {"messages": [updated_msg]}
+        if doc_files:
+            state_update["files"] = doc_files
+        rewind_config = await agent.aupdate_state(target.config, state_update)
     else:
         # Regenerate mode: replay from the existing checkpoint as-is.
         rewind_config = target.config
@@ -526,6 +530,7 @@ def api_upload_url(
         category = "image"
     elif (
         request.file_type == "application/pdf"
+        or request.file_type == DOCX_MIME_TYPE
         or request.file_type.startswith("text/")
         or request.file_type
         in [
