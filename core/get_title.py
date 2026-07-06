@@ -1,14 +1,6 @@
-from langchain_groq import ChatGroq
 from langsmith import tracing_context
-import os
-import dotenv
 
-dotenv.load_dotenv()
-
-get_title_llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=os.getenv("GROQ_API_KEY"),
-)
+from core.llm import get_title_llm
 
 get_title_llm_system_prompt = """
 You are a title generator for chat/query titles.

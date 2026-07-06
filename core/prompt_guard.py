@@ -1,15 +1,7 @@
-from langchain_groq import ChatGroq
-import os
-import dotenv
 import re
 from typing import Iterable
 
-dotenv.load_dotenv()
-
-rewriter_llm = ChatGroq(
-    model="meta-llama/llama-prompt-guard-2-86m",
-    api_key=os.getenv("GROQ_API_KEY"),
-)
+from core.llm import prompt_guard_llm
 
 
 _LEAKAGE_PATTERNS = [
@@ -161,7 +153,7 @@ async def is_harmful(query: str) -> bool:
                 query,
             ),
         ]
-        res = float((await rewriter_llm.ainvoke(messages)).content)
+        res = float((await prompt_guard_llm.ainvoke(messages)).content)
         return res > 0.5
     except Exception as e:
         print(e)
