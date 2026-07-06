@@ -1,7 +1,6 @@
 from langchain_groq import ChatGroq
 import os
 import dotenv
-from core.utils.redis_cache import l1cache
 import re
 from typing import Iterable
 
@@ -152,8 +151,9 @@ def sanitize_output_text(
     return text, False
 
 
-@l1cache(ttl=3600 * 24 * 90)
-def is_harmful(query: str) -> bool:
+async def is_harmful(query: str) -> bool:
+    if len(query) > 50:
+        return False
     try:
         messages = [
             (
@@ -161,7 +161,7 @@ def is_harmful(query: str) -> bool:
                 query,
             ),
         ]
-        res = float(rewriter_llm.invoke(messages).content)
+        res = float((await rewriter_llm.ainvoke(messages)).content)
         return res > 0.5
     except Exception as e:
         print(e)

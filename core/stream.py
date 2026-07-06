@@ -123,6 +123,9 @@ def build_message_content(
                 if data_url:
                     image_blocks.append({"type": "image_url", "image_url": {"url": data_url}})
             elif record["category"] == "document":
+                if record["status"] == "failed":
+                    document_notes.append(f"{filename} (failed to process — ask the user to re-upload it)")
+                    continue
                 if record["status"] != "ready":
                     document_notes.append(f"{filename} (still being processed, not readable yet)")
                     continue
@@ -321,7 +324,7 @@ async def run_agent_stream(
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
-    if is_harmful(query):
+    if await is_harmful(query):
         yield _sse({"type": "error", "content": _REFUSAL})
         return
 

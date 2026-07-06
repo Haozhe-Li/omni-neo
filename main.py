@@ -78,6 +78,7 @@ from core.database.db_threads_control import (
 from core.database.db_user_files import (
     create_pending_file,
     setup_user_files_table,
+    get_file_record,
 )
 from core.RAG.file_parser import (
     get_put_presigned_url,
@@ -566,9 +567,20 @@ def api_upload_url(
 
 @app.post("/api/upload/confirm")
 def api_upload_confirm(file_id: str, user_id: str = Depends(get_current_user)):
-    # Run the file parsing asynchronously without event loop collision in worker thread
-    _db_executor.submit(process_uploaded_file, file_id)
-    return {"status": "processing", "file_id": file_id}
+    # Sync route — FastAPI/Starlette already runs this off the event loop in
+    # its own thread pool, so blocking here doesn't stall other requests.
+    # Blocking (not fire-and-forget) so the caller only gets a response once
+    # the file is actually ready/failed — no more racing a later /chat call
+    # against parsing that hasn't finished yet.
+    process_uploaded_file(file_id)
+    record = get_file_record(file_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found.")
+    if record["status"] == "failed":
+        # Non-2xx so a normal fetch/axios caller can't mistake this for success
+        # by only checking the HTTP status and ignoring the response body.
+        raise HTTPException(status_code=422, detail="File processing failed.")
+    return {"status": record["status"], "file_id": file_id}
 
 
 # ---------------------------------------------------------------------------
