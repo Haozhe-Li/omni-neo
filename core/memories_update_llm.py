@@ -1,16 +1,7 @@
-from langchain_groq import ChatGroq
 from langsmith import tracing_context
-import os
-import dotenv
+
+from core.llm import update_memories_llm
 from core.utils.data_model import Memories
-
-
-dotenv.load_dotenv()
-
-update_memories_llm = ChatGroq(
-    model="openai/gpt-oss-20b",
-    api_key=os.getenv("GROQ_API_KEY"),
-)
 
 
 model_with_structure = update_memories_llm.with_structured_output(Memories)

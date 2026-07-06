@@ -19,15 +19,14 @@ an empty list. Long queries are almost never single-widget requests.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from typing import Any
 
 from langchain_community.utilities import GoogleSerperAPIWrapper
-from langchain_groq import ChatGroq
 from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
+from core.llm import widget_predictor_llm
 from core.tools.weather_tool import get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
@@ -85,12 +84,7 @@ _PREDICTOR_PROMPT = (
     "currency conversion, or a single named entity, call NOTHING. Do not guess. Be fast."
 )
 
-# Low reasoning effort: this is a latency-critical pre-flight classifier.
-_predictor_model = ChatGroq(
-    model="openai/gpt-oss-120b",
-    reasoning_effort="low",
-    api_key=os.getenv("GROQ_API_KEY"),
-).bind_tools(_WIDGET_TOOLS)
+_predictor_model = widget_predictor_llm.bind_tools(_WIDGET_TOOLS)
 
 
 # ── Entity knowledge-graph fetcher ──────────────────────────────────────────
