@@ -61,9 +61,12 @@ from core.database.db_user_threads import (
     register_thread,
     update_thread_title,
     delete_user_thread,
+    delete_user_threads_bulk,
     pin_user_thread,
     merge_guest_to_user,
     count_user_threads,
+    search_user_threads,
+    setup_thread_search,
     GUEST_MAX_THREADS,
 )
 from core.database.db_threads_control import (
@@ -71,6 +74,7 @@ from core.database.db_threads_control import (
     touch_thread,
     cleanup_old_threads,
     delete_thread as delete_thread_state,
+    delete_threads_bulk as delete_threads_state_bulk,
     reassign_threads_user,
     pin_thread as pin_thread_state,
     get_thread_owner,
@@ -90,6 +94,7 @@ from core.RAG.file_parser import (
 async def lifespan(app: FastAPI):
     await setup_checkpointer()
     setup_user_files_table()
+    setup_thread_search()
     initialize_agents()
     yield
     await teardown_checkpointer()
@@ -668,6 +673,47 @@ def api_get_threads(user_id: str = Depends(get_current_user)):
         if hasattr(t.get("updated_at"), "isoformat"):
             t["updated_at"] = t["updated_at"].isoformat()
     return {"threads": threads}
+
+
+@app.get("/api/threads/search")
+def api_search_threads(
+    q: str,
+    limit: int = 20,
+    user_id: str = Depends(get_current_user),
+):
+    """Fuzzy-search the current user's own threads by title and message content."""
+    q = q.strip()
+    if not q:
+        return {"results": []}
+    if len(q) > 200:
+        raise HTTPException(status_code=400, detail="Query too long.")
+    results = search_user_threads(user_id, q, limit)
+    for r in results:
+        if hasattr(r.get("updated_at"), "isoformat"):
+            r["updated_at"] = r["updated_at"].isoformat()
+    return {"results": results}
+
+
+class BatchDeleteRequest(BaseModel):
+    thread_ids: list[str]
+
+
+@app.post("/api/threads/batch-delete")
+def api_batch_delete_threads(
+    body: BatchDeleteRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Hard-delete multiple threads owned by the current user in one call.
+    Ids that don't exist or aren't owned by the caller are skipped, not errored.
+    """
+    thread_ids = list(dict.fromkeys(body.thread_ids))[:100]
+    if not thread_ids:
+        return {"deleted": [], "not_found": []}
+    deleted = delete_user_threads_bulk(thread_ids, user_id)
+    delete_threads_state_bulk(deleted)
+    not_found = [t for t in thread_ids if t not in deleted]
+    return {"deleted": deleted, "not_found": not_found}
 
 
 @app.get("/api/threads/{thread_id}")
