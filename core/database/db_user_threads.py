@@ -310,6 +310,27 @@ def delete_user_thread(thread_id: str, user_id: str) -> bool:
         return False
 
 
+def delete_user_threads_bulk(thread_ids: list[str], user_id: str) -> list[str]:
+    """
+    Delete multiple threads from user_threads in one round trip, scoped to user_id.
+    Returns the subset of thread_ids that were actually owned and deleted; ids that
+    don't exist or belong to another user are silently skipped.
+    The caller is responsible for also calling delete_threads_bulk() in
+    db_threads_control to clean up the LangGraph state for the returned ids.
+    """
+    if not thread_ids:
+        return []
+    sql = "DELETE FROM user_threads WHERE user_id = %s AND thread_id = ANY(%s) RETURNING thread_id"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id, thread_ids))
+                return [r["thread_id"] for r in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"[db_user_threads] delete_user_threads_bulk error: {e}")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Pin / unpin
 # ---------------------------------------------------------------------------

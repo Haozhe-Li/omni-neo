@@ -116,6 +116,27 @@ def delete_thread(thread_id: str) -> bool:
         return False
 
 
+def delete_threads_bulk(thread_ids: list[str]) -> None:
+    """
+    Hard-delete multiple threads from threads_control AND all LangGraph checkpoint
+    tables in one round trip. Ownership must already be verified by the caller
+    (pass only ids confirmed deleted from user_threads).
+    """
+    if not thread_ids:
+        return
+    checkpoint_tables = ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                for table in checkpoint_tables:
+                    cur.execute(f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (thread_ids,))
+                cur.execute(
+                    "DELETE FROM threads_control WHERE thread_id = ANY(%s)", (thread_ids,)
+                )
+    except Exception as e:
+        logger.error(f"[db_threads_control] delete_threads_bulk error for {thread_ids}: {e}")
+
+
 def reassign_threads_user(old_user_id: str, new_user_id: str) -> int:
     """
     Update user_id in threads_control when guest threads are merged into a real account.
