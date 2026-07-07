@@ -685,7 +685,8 @@ def api_search_threads(
     q = q.strip()
     if not q:
         return {"results": []}
-    limit = max(1, min(limit, 50))
+    if len(q) > 200:
+        raise HTTPException(status_code=400, detail="Query too long.")
     results = search_user_threads(user_id, q, limit)
     for r in results:
         if hasattr(r.get("updated_at"), "isoformat"):
