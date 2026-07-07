@@ -64,6 +64,8 @@ from core.database.db_user_threads import (
     pin_user_thread,
     merge_guest_to_user,
     count_user_threads,
+    search_user_threads,
+    setup_thread_search,
     GUEST_MAX_THREADS,
 )
 from core.database.db_threads_control import (
@@ -90,6 +92,7 @@ from core.RAG.file_parser import (
 async def lifespan(app: FastAPI):
     await setup_checkpointer()
     setup_user_files_table()
+    setup_thread_search()
     initialize_agents()
     yield
     await teardown_checkpointer()
@@ -668,6 +671,24 @@ def api_get_threads(user_id: str = Depends(get_current_user)):
         if hasattr(t.get("updated_at"), "isoformat"):
             t["updated_at"] = t["updated_at"].isoformat()
     return {"threads": threads}
+
+
+@app.get("/api/threads/search")
+def api_search_threads(
+    q: str,
+    limit: int = 20,
+    user_id: str = Depends(get_current_user),
+):
+    """Fuzzy-search the current user's own threads by title and message content."""
+    q = q.strip()
+    if not q:
+        return {"results": []}
+    limit = max(1, min(limit, 50))
+    results = search_user_threads(user_id, q, limit)
+    for r in results:
+        if hasattr(r.get("updated_at"), "isoformat"):
+            r["updated_at"] = r["updated_at"].isoformat()
+    return {"results": results}
 
 
 @app.get("/api/threads/{thread_id}")

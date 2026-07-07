@@ -7,11 +7,14 @@ Table schemas (post-migration):
         user_id VARCHAR(255) NOT NULL,
         title VARCHAR(255),
         ui_messages JSONB DEFAULT '[]',
+        search_text TEXT NOT NULL DEFAULT '',
         is_pinned BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_user_threads_user_id ON user_threads(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);
+    CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);
 
     CREATE TABLE IF NOT EXISTS guest_usage (
         guest_id VARCHAR(255) PRIMARY KEY,
@@ -34,6 +37,10 @@ from core.database.postgresql_saver import sync_pool as pool
 logger = logging.getLogger(__name__)
 
 GUEST_MAX_THREADS: int = int(os.getenv("GUEST_MAX_THREADS", "5"))
+
+# Caps how much text per thread gets indexed/stored for search, guarding
+# against pathologically long threads bloating the trigram index.
+SEARCH_TEXT_MAX_CHARS = 50_000
 
 
 # ---------------------------------------------------------------------------
@@ -97,30 +104,152 @@ def count_user_threads(user_id: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Search indexing helpers
+# ---------------------------------------------------------------------------
+
+def _extract_search_text(messages: list) -> str:
+    """Flatten a ui_messages list into plain text for trigram indexing."""
+    parts = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+    text = "\n".join(parts)
+    return text[:SEARCH_TEXT_MAX_CHARS]
+
+
+def _escape_like(term: str) -> str:
+    """Escape ILIKE wildcards so a literal '%' or '_' in the query is matched literally."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _make_snippet(text: str, query: str, radius: int = 40) -> str:
+    """Return a short excerpt of `text` centered on the first case-insensitive match of `query`."""
+    if not text:
+        return ""
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        return text[:80]
+    start = max(0, idx - radius)
+    end = min(len(text), idx + len(query) + radius)
+    snippet = text[start:end]
+    return ("…" if start > 0 else "") + snippet + ("…" if end < len(text) else "")
+
+
+def setup_thread_search() -> None:
+    """
+    Idempotently enable pg_trgm and add the search_text column + trigram
+    indexes needed for /api/threads/search. Safe to call on every startup.
+    Also backfills search_text for rows written before this column existed.
+    """
+    ddl = [
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+        "ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT '';",
+        "CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);",
+        "CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);",
+    ]
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                for stmt in ddl:
+                    cur.execute(stmt)
+                cur.execute(
+                    "SELECT thread_id, ui_messages FROM user_threads "
+                    "WHERE search_text = '' AND ui_messages != '[]'::jsonb"
+                )
+                stale = cur.fetchall()
+            for row in stale:
+                msgs = row["ui_messages"]
+                if isinstance(msgs, str):
+                    msgs = json.loads(msgs)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE user_threads SET search_text = %s WHERE thread_id = %s",
+                        (_extract_search_text(msgs), row["thread_id"]),
+                    )
+            if stale:
+                logger.info(f"[db_user_threads] backfilled search_text for {len(stale)} threads")
+    except Exception as e:
+        logger.error(f"[db_user_threads] setup_thread_search error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Thread creation / update
 # ---------------------------------------------------------------------------
 
 def upsert_thread_messages(thread_id: str, user_id: str, messages: list) -> bool:
     """
-    Insert or update a thread's ui_messages.
+    Insert or update a thread's ui_messages (and derived search_text).
     Only updates if the row's user_id matches (prevents overwriting another user's data).
     """
     sql = """
-        INSERT INTO user_threads (thread_id, user_id, ui_messages, updated_at)
-        VALUES (%s, %s, %s::jsonb, NOW())
+        INSERT INTO user_threads (thread_id, user_id, ui_messages, search_text, updated_at)
+        VALUES (%s, %s, %s::jsonb, %s, NOW())
         ON CONFLICT (thread_id) DO UPDATE
             SET ui_messages = EXCLUDED.ui_messages,
+                search_text = EXCLUDED.search_text,
                 updated_at = NOW()
             WHERE user_threads.user_id = EXCLUDED.user_id
     """
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id, json.dumps(messages)))
+                cur.execute(
+                    sql,
+                    (thread_id, user_id, json.dumps(messages), _extract_search_text(messages)),
+                )
                 return cur.rowcount > 0
     except Exception as e:
         logger.error(f"[db_user_threads] upsert_thread_messages error: {e}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]:
+    """
+    Fuzzy-search a user's own threads by title and message content.
+    Uses the pg_trgm GIN indexes for both matching (ILIKE) and ranking (similarity).
+    Returns threads ordered by relevance, each with a short match snippet.
+    """
+    like = f"%{_escape_like(query)}%"
+    sql = """
+        SELECT thread_id, title, is_pinned, updated_at, search_text,
+               GREATEST(similarity(title, %s), similarity(search_text, %s)) AS rank
+        FROM user_threads
+        WHERE user_id = %s
+          AND (title ILIKE %s OR search_text ILIKE %s)
+        ORDER BY rank DESC NULLS LAST, updated_at DESC
+        LIMIT %s
+    """
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (query, query, user_id, like, like, limit))
+                rows = cur.fetchall()
+                results = []
+                for r in rows:
+                    results.append({
+                        "thread_id": r["thread_id"],
+                        "title": r["title"],
+                        "is_pinned": r["is_pinned"],
+                        "updated_at": r["updated_at"],
+                        "snippet": _make_snippet(r["search_text"], query),
+                    })
+                return results
+    except Exception as e:
+        logger.error(f"[db_user_threads] search_user_threads error: {e}")
+        return []
 
 
 def register_thread(thread_id: str, user_id: str) -> bool:
