@@ -225,7 +225,7 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
     like = f"%{_escape_like(query)}%"
     sql = """
         SELECT thread_id, title, is_pinned, updated_at, search_text,
-               GREATEST(similarity(title, %s), similarity(search_text, %s)) AS rank
+               GREATEST(similarity(COALESCE(title, ''), %s), similarity(search_text, %s)) AS rank
         FROM user_threads
         WHERE user_id = %s
           AND (title ILIKE %s OR search_text ILIKE %s)
