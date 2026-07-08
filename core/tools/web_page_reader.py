@@ -2,6 +2,8 @@ from langchain_community.document_loaders import SpiderLoader
 import concurrent.futures
 import os
 
+from core.utils.citations import register_citation
+
 # from core.utils.redis_cache import l1cache
 
 _TIMEOUT_SECONDS = 5
@@ -75,6 +77,13 @@ def load_web_page(
         url (str): The URL of the web page to load.
 
     Returns:
-        dict: A dictionary containing the URL and the content of the web page.
+        dict: A dictionary with the URL, title, content, and a `n` field —
+        cite it inline as [n] when you use this page's content in your answer.
     """
-    return load_web_page_spider(url)
+    result = load_web_page_spider(url)
+    n = register_citation(
+        result.get("title", ""), result.get("url", "") or url, result.get("content", "")
+    )
+    if n is not None:
+        result["n"] = n
+    return result

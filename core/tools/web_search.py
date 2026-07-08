@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from core.utils.redis_cache import l1cache
+from core.utils.citations import register_citation
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
@@ -115,20 +116,10 @@ def tavily_search(
 
 
 @l1cache(ttl=3600 * 24 * 3)
-def google_search(query: str, k: int = 3) -> list[dict]:
-    """
-    Perform an google search using Google Serper API.
-
-    Args:
-        query (str): The search query.
-        k (int): The number of results to return. Default is 3. Max is 10.
-        k (int): The number of results to return per query. Default is 5. Max is 10.
-
-    Returns:
-        list[dict]: A list of search result dictionaries.
-
-    """
-    k = min(k, 10)
+def _google_search_cached(query: str, k: int) -> list[dict]:
+    """Cached Serper call, kept separate from citation numbering below —
+    numbers must be assigned fresh on every call (they're scoped to the
+    current agent turn), even when the search itself is served from cache."""
     search = GoogleSerperAPIWrapper(k=k, type="search")
     res = search.results(query)
     normalized_results = []
@@ -176,6 +167,31 @@ def google_search(query: str, k: int = 3) -> list[dict]:
             }
         ]
     return res
+
+
+def google_search(query: str, k: int = 3) -> list[dict]:
+    """
+    Perform an google search using Google Serper API.
+
+    Args:
+        query (str): The search query.
+        k (int): The number of results to return. Default is 3. Max is 10.
+        k (int): The number of results to return per query. Default is 5. Max is 10.
+
+    Returns:
+        list[dict]: A list of search result dictionaries. Each carries a `n`
+        field — cite it inline as [n] when you use that result in your answer.
+    """
+    k = min(k, 10)
+    results = _google_search_cached(query, k)
+    out = []
+    for item in results:
+        item = dict(item)
+        n = register_citation(item.get("title", ""), item.get("url", ""), item.get("content", ""))
+        if n is not None:
+            item["n"] = n
+        out.append(item)
+    return out
 
 
 @l1cache(ttl=3600 * 24 * 90)
