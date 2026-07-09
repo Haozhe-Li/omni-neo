@@ -33,6 +33,7 @@ from core.tools.weather_tool import get_weather, get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.coding_sandbox import run_python
+from core.tools.navigation_tool import get_navigation
 from core.llm import *
 
 Profile = Literal["fast", "pro"]
@@ -47,6 +48,11 @@ RETRIEVAL_TOOLS = [
     get_stock_data,
     get_realtime_currency_rate,
     run_python,
+]
+
+# Pro-profile-only tools (heavier/niche capabilities not exposed to fast).
+PRO_ONLY_TOOLS = [
+    get_navigation,
 ]
 
 # Charts AND reports are produced inline in the answer stream (```echarts fences
@@ -107,6 +113,13 @@ _ARTIFACT_POLICY_FAST = ""
 
 _ARTIFACT_POLICY_PRO = "" # skip for now
 
+_NAVIGATION_POLICY_FAST = ""
+_NAVIGATION_POLICY_PRO = (
+    "\n- Directions between two points (driving / walking / cycling) → "
+    "`get_navigation` (needs each point's lat/lng, e.g. from "
+    "`google_search_places`)."
+)
+
 _BASE_PROMPT = """
 <identity>
 You are Omni, a capable, friendly, and thorough AI assistant. You answer clearly
@@ -125,7 +138,7 @@ tool backs it up. Route by topic:
 - Current weather only → `get_weather`. Forecasts / tomorrow / specific hours
   today / upcoming conditions → `get_weather_forecast` (returns current +
   today's 3-hour slots + tomorrow & day-after summaries). Stocks →
-  `get_stock_data`. FX rates → `get_realtime_currency_rate`.
+  `get_stock_data`. FX rates → `get_realtime_currency_rate`.{navigation_policy}
 - Questions about a user-uploaded document → it's mounted at `/uploads/` in your
   filesystem; use `ls`, `read_file`, or `grep` to explore and read it.
 - Exceptions (no search needed): pure computation/reasoning (see
@@ -224,8 +237,8 @@ code block — it always looks bad and must not appear. {chart_policy}
 
 # Registered with the prompt-leakage guard.
 SYSTEM_PROMPTS = [
-    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
-    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST, navigation_policy=_NAVIGATION_POLICY_FAST),
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO, navigation_policy=_NAVIGATION_POLICY_PRO),
 ]
 
 
@@ -267,7 +280,7 @@ def build_agent(profile: Profile):
             name="Omni Fast",
             model=gemma_4_31b,
             tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST, navigation_policy=_NAVIGATION_POLICY_FAST),
             skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
             checkpointer=_db.checkpointer,
             middleware=[
@@ -281,8 +294,8 @@ def build_agent(profile: Profile):
         return create_deep_agent(
             name="Omni Pro",
             model=pro_llm,
-            tools=RETRIEVAL_TOOLS,
-            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
+            tools=RETRIEVAL_TOOLS + PRO_ONLY_TOOLS,
+            system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO, navigation_policy=_NAVIGATION_POLICY_PRO),
             skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
             checkpointer=_db.checkpointer,
             middleware=[

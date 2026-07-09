@@ -43,6 +43,7 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     stock_payload = {}
     weather_payload = {}
     currency_payload = {}
+    navigation_payload = {}
     assets_payload = []
 
     # Handle search results
@@ -119,6 +120,10 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     ]:
         currency_payload = parsed_payload
 
+    # Handle navigation/directions data
+    elif tool_name in ["get_navigation", "get_navigation_light"]:
+        navigation_payload = parsed_payload
+
     # Handle graph generation
     elif tool_name == "draw_graph":
         if isinstance(parsed_payload, dict):
@@ -149,6 +154,8 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
         res["weather"] = weather_payload
     if currency_payload:
         res["currency"] = currency_payload
+    if navigation_payload:
+        res["navigation"] = navigation_payload
     if assets_payload:
         res["assets"] = assets_payload
     return res

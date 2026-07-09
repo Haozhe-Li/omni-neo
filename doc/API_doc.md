@@ -413,6 +413,52 @@ https://example.com/1, https://example.com/2
 
 ---
 
+##### `tool: "get_navigation"` — 导航/路线规划
+
+```json
+{
+  "type": "tool",
+  "tool": "get_navigation",
+  "agent": "Sub-agent",
+  "content": "Tool Calling",
+  "raw": {
+    "args": {
+      "origin_lat": 37.7749,
+      "origin_lng": -122.4194,
+      "destination_lat": 37.8199,
+      "destination_lng": -122.4783,
+      "mode": "driving"
+    },
+    "id": "call_..."
+  }
+}
+```
+
+展示：`Getting directions (driving)...`
+
+工具结果会额外附带一条 `type: "navigation"` 事件（与 `weather`/`stock`/`currency` 同机制，从工具返回值里提取），前端可直接用它渲染导航卡片，不需要自己解析 `tool` 事件里的原始输出：
+
+```json
+{
+  "type": "navigation",
+  "agent": "Sub-agent",
+  "navigation": {
+    "mode": "driving",
+    "distance_km": 5.2,
+    "duration_min": 14,
+    "route_summary": [
+      "Head north on Main St (300 m)",
+      "Turn right onto Oak Ave (1.2 km)",
+      "Arrive at destination"
+    ]
+  }
+}
+```
+
+失败时 `navigation.error` 会是一个字符串（例如 OSRM 找不到路线），此时没有 `distance_km`/`duration_min`/`route_summary` 字段，前端应展示一个"暂时无法获取导航信息"之类的兜底文案。
+
+---
+
 ##### `tool: "run_python_tool"` — 运行 Python 代码
 
 ```json

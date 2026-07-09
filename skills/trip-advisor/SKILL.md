@@ -73,6 +73,20 @@ Execute todos in the order planned. Apply strict todo hygiene (identical to deep
 - Use `google_search_places` — query `"best restaurants in [city]"` or `"[cuisine] restaurants in [city]"`.
 - Match results to the user's dietary constraints and budget tier.
 
+### Getting around (whenever the itinerary involves driving/walking/cycling)
+- Any time the plan has the traveler go from one specific point to another by
+  car, on foot, or by bike (hotel → attraction, attraction → restaurant, etc.),
+  call `get_navigation` with the two points' coordinates and the travel mode to
+  get real distance/time — never guess or estimate travel time yourself.
+- Coordinates come from the `google_search_places` results you already have for
+  those venues (each result includes lat/lng) — no extra search needed.
+- Use the returned `distance_km` / `duration_min` in the day-by-day prose (e.g.
+  "a 15-minute walk (1.2 km) from the hotel"). The `route_summary` is a rough
+  turn list — only mention it if the directions are genuinely non-obvious;
+  don't dump it verbatim into the itinerary.
+- If a leg is a flight/train/transit hop instead, skip this — `get_navigation`
+  only covers driving/walking/cycling.
+
 ---
 
 ## Step 3 — Report (final step)
@@ -119,6 +133,11 @@ Write a `<report>` following the report-writing skill rules. Target **~1500 word
   restaurants, hotels, attractions. All pins must come from your research
   (google_search_places or web search results). Never invent venue names.
 - Place each map directly after the prose that introduces those locations.
+- **Navigation/route maps** (optional, only when you called `get_navigation`
+  for a leg worth visualizing): use the mapping skill's `"mode": "route"`
+  schema instead of pins. Never mix pins and a route in the same map block —
+  a map is either a set of recommended places OR a single A→B route, never
+  both. If a day needs both, use two separate map blocks.
 
 ### After the report
 
