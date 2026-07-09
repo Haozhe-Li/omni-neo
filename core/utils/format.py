@@ -60,7 +60,10 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
                 url = str(item.get("url") or item.get("link") or "").strip()
                 content = str(item.get("content") or item.get("snippet") or "").strip()
                 if title or url or content:
-                    sources.append({"title": title, "url": url, "content": content})
+                    src = {"title": title, "url": url, "content": content}
+                    if item.get("n") is not None:
+                        src["n"] = item["n"]
+                    sources.append(src)
 
     # Handle direct page loads
     elif tool_name in ["load_web_page", "load_web_page_light"]:
@@ -77,7 +80,10 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
             if len(content) > 100:
                 content = content[:100] + "..."
             if title or url or content:
-                sources.append({"title": title, "url": url, "content": content})
+                src = {"title": title, "url": url, "content": content}
+                if parsed_payload.get("n") is not None:
+                    src["n"] = parsed_payload["n"]
+                sources.append(src)
 
     # Handle map results
     elif tool_name in ["google_search_places", "google_search_places_light"]:

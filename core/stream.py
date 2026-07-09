@@ -11,7 +11,9 @@ Wire protocol (one JSON object per `data:` line):
     reasoning {type, content}                           – status / thinking note
     tool_call {type, tool, args}                        – agent is calling a tool
     tool      {type, tool, content}                     – raw tool result
-    sources   {type, sources:[{title,url,content}]}     – accumulated citations
+    sources   {type, sources:[{n,title,url,content}]}    – accumulated citations;
+                                                            `n` matches the [n]
+                                                            markers in the text
     text      {type, content}                           – streamed answer token(s)
     artifact  {type, id, title, kind, spec}             – chart for the side panel
     done      {type, sources, artifacts}                – terminal summary
@@ -28,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -37,6 +40,7 @@ from deepagents.backends.utils import create_file_data
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
 from core.utils.format import _extract_domain_metadata
+from core.utils.citations import reset_citation_registry
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -44,6 +48,11 @@ from core.database.db_user_files import get_file_record, count_prior_ready_files
 
 # Tool names whose calls are represented by artifact events, not tool_call.
 _ARTIFACT_TOOL_NAMES = {"render_chart"}
+
+# Matches an unclosed citation marker at the very end of the buffered text,
+# e.g. "...as reported" + "[1" — held back so we never split "[1]" across
+# two `text` SSE events.
+_TRAILING_CITE_RE = re.compile(r"\[\d*$")
 
 _REFUSAL = "I’m sorry, but I can’t help with that."
 
@@ -207,11 +216,14 @@ async def _stream_agent(
         if files:
             input_state["files"] = files
 
+    reset_citation_registry()
+
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
     artifact_ids: list[str] = []
     announced_drafts: set = set()
     produced_text = False
+    pending_text = ""  # holds back a trailing unclosed "[n" citation marker
 
     with tracing_context(project_name=profile):
         async for raw in agent.astream(
@@ -241,7 +253,15 @@ async def _stream_agent(
                     text = _text_of(chunk.content)
                     if text:
                         produced_text = True
-                        yield _sse({"type": "text", "content": text})
+                        pending_text += text
+                        m = _TRAILING_CITE_RE.search(pending_text)
+                        safe, pending_text = (
+                            (pending_text[: m.start()], pending_text[m.start() :])
+                            if m
+                            else (pending_text, "")
+                        )
+                        if safe:
+                            yield _sse({"type": "text", "content": safe})
                 continue
 
             # ── tool calls, tool results, artifacts, reports, sources ───────────
@@ -299,6 +319,9 @@ async def _stream_agent(
                                 new_sources.append(s)
                         if new_sources:
                             yield _sse({"type": "sources", "sources": new_sources})
+
+        if pending_text:
+            yield _sse({"type": "text", "content": pending_text})
 
         if not produced_text and not artifact_ids:
             yield _sse({"type": "error", "content": "The agent produced no output."})
