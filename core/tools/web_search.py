@@ -116,7 +116,7 @@ def tavily_search(
 
 
 @l1cache(ttl=3600 * 24 * 3)
-def _google_search_cached(query: str, k: int) -> list[dict]:
+def _google_search_cached(query: str, k: int=5) -> list[dict]:
     """Cached Serper call, kept separate from citation numbering below —
     numbers must be assigned fresh on every call (they're scoped to the
     current agent turn), even when the search itself is served from cache."""
@@ -169,14 +169,13 @@ def _google_search_cached(query: str, k: int) -> list[dict]:
     return res
 
 
-def google_search(query: str, k: int = 3) -> list[dict]:
+def google_search(query: str, k: int = 5) -> list[dict]:
     """
     Perform an google search using Google Serper API.
 
     Args:
         query (str): The search query.
-        k (int): The number of results to return. Default is 3. Max is 10.
-        k (int): The number of results to return per query. Default is 5. Max is 10.
+        k (int): The number of results to return. Default is 5. Max is 10.
 
     Returns:
         list[dict]: A list of search result dictionaries. Each carries a `n`
@@ -195,7 +194,7 @@ def google_search(query: str, k: int = 3) -> list[dict]:
 
 
 @l1cache(ttl=3600 * 24 * 90)
-def google_search_places(query: str, k: int = 3) -> list[dict]:
+def google_search_places(query: str, k: int = 5) -> list[dict]:
     """
     Use Google Search for places, restaurants, etc.
 
@@ -209,7 +208,7 @@ def google_search_places(query: str, k: int = 3) -> list[dict]:
 
 
 @l1cache(ttl=3600 * 24 * 90)
-def arxiv_search(query: str, k: int = 3) -> list[dict]:
+def arxiv_search(query: str, k: int = 5) -> list[dict]:
     """
     Perform an arxiv search using Arxiv API.
 

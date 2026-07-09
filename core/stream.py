@@ -49,10 +49,50 @@ from core.database.db_user_files import get_file_record, count_prior_ready_files
 # Tool names whose calls are represented by artifact events, not tool_call.
 _ARTIFACT_TOOL_NAMES = {"render_chart"}
 
-# Matches an unclosed citation marker at the very end of the buffered text,
-# e.g. "...as reported" + "[1" — held back so we never split "[1]" across
-# two `text` SSE events.
-_TRAILING_CITE_RE = re.compile(r"\[\d*$")
+# A single citation marker in any bracket style the model might emit.
+_CITE_MARKER = r"(?:\[\d+\]|［\d+］|【\d+】)"
+
+# Held back at the end of the buffer so a marker never leaks to the frontend
+# half-written or in the wrong position:
+#  - an unclosed opener, e.g. "...as reported" + "[1" — the close might be in
+#    the next chunk.
+#  - a run of *closed* markers, each optionally trailed by sentence punctuation
+#    and whitespace, e.g. "...noted[2]" or "...noted[2]. " or "...noted[2].\n"
+#    — the next chunk might bring the punctuation (which must land BEFORE the
+#    marker) and/or another marker for the same paragraph-end cluster (which
+#    must merge into the same stack, per <citation_policy>). Once a chunk is
+#    flushed as its own SSE event neither fix-up can happen anymore, so all of
+#    this is held until real content (not marker/punct/whitespace) shows up.
+_TRAILING_CITE_RE = re.compile(
+    rf"(?:[\[［【]\d*|(?:(?:{_CITE_MARKER})+[.!?。！？]?\s*)+)$"
+)
+
+# Closed full-width citation markers to normalize to the ASCII form the
+# frontend actually matches on: 【1】 / [1] -> [1].
+_FULLWIDTH_CITE_RE = re.compile(r"[［【](\d+)[］】]")
+
+# A citation marker (or run of stacked markers, [1][2]) sitting immediately
+# before sentence-ending punctuation, plus any further markers trailing after
+# it separated only by whitespace/newlines (no real content in between — the
+# model split one paragraph-end cluster across a line break), all get merged
+# into one stack right after the punctuation:
+# "claim[1]." -> "claim.[1]"; "claim[1].\n[2]" -> "claim.[1][2]".
+# Only sentence-enders qualify (., !, ?, 。, ！, ？) — commas and other
+# mid-sentence punctuation are left alone.
+_CITE_CLUSTER_RE = re.compile(
+    rf"((?:\[\d+\])+)([.!?。！？])((?:\s*(?:\[\d+\])+[.!?。！？]?)*)"
+)
+
+
+def _merge_citation_cluster(m: "re.Match[str]") -> str:
+    punct = m.group(2)
+    markers = re.findall(r"\[\d+\]", m.group(1) + m.group(3))
+    return punct + "".join(markers)
+
+
+def _normalize_citations(text: str) -> str:
+    text = _FULLWIDTH_CITE_RE.sub(r"[\1]", text)
+    return _CITE_CLUSTER_RE.sub(_merge_citation_cluster, text)
 
 _REFUSAL = "I’m sorry, but I can’t help with that."
 
@@ -261,7 +301,7 @@ async def _stream_agent(
                             else (pending_text, "")
                         )
                         if safe:
-                            yield _sse({"type": "text", "content": safe})
+                            yield _sse({"type": "text", "content": _normalize_citations(safe)})
                 continue
 
             # ── tool calls, tool results, artifacts, reports, sources ───────────
@@ -321,7 +361,7 @@ async def _stream_agent(
                             yield _sse({"type": "sources", "sources": new_sources})
 
         if pending_text:
-            yield _sse({"type": "text", "content": pending_text})
+            yield _sse({"type": "text", "content": _normalize_citations(pending_text)})
 
         if not produced_text and not artifact_ids:
             yield _sse({"type": "error", "content": "The agent produced no output."})
