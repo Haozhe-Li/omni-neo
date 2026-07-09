@@ -17,6 +17,7 @@ Retention policy:
 
 import logging
 from core.database.postgresql_saver import sync_pool as pool
+from core.utils import redis_sources
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,10 @@ def delete_thread(thread_id: str) -> bool:
                 cur.execute(
                     "DELETE FROM threads_control WHERE thread_id = %s", (thread_id,)
                 )
+        try:
+            redis_sources.delete_thread_sources(thread_id)
+        except Exception as e:
+            logger.error(f"[db_threads_control] redis source cleanup error for {thread_id}: {e}")
         return True
     except Exception as e:
         logger.error(f"[db_threads_control] delete_thread error for {thread_id}: {e}")
@@ -133,6 +138,10 @@ def delete_threads_bulk(thread_ids: list[str]) -> None:
                 cur.execute(
                     "DELETE FROM threads_control WHERE thread_id = ANY(%s)", (thread_ids,)
                 )
+        try:
+            redis_sources.delete_threads_sources_bulk(thread_ids)
+        except Exception as e:
+            logger.error(f"[db_threads_control] redis source cleanup error for {thread_ids}: {e}")
     except Exception as e:
         logger.error(f"[db_threads_control] delete_threads_bulk error for {thread_ids}: {e}")
 

@@ -44,3 +44,4 @@ rapidfuzz
 # RAG
 langchain-pymupdf4llm
 python-docx
+langchain-text-splitters

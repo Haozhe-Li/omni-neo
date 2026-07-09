@@ -39,7 +39,9 @@ from core.utils.data_model import (
     QueryRequest,
     UpdateMemoriesRequest,
     AutoCompleteRequest,
+    CheckSourceRequest,
 )
+from core.utils import redis_sources
 from core.utils.utils import format_personalization
 from core.auto_complete import auto_complete
 from core.auth import (
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     await setup_checkpointer()
     setup_user_files_table()
     setup_thread_search()
+    redis_sources.setup_source_search_index()
     initialize_agents()
     yield
     await teardown_checkpointer()
@@ -507,6 +510,31 @@ async def api_auto_complete(request: AutoCompleteRequest):
         return {"texts": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/check_source")
+async def check_source(
+    request: CheckSourceRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Find the source passage a piece of highlighted answer text came from.
+
+    Searches every source this thread has ever surfaced (persisted in Redis,
+    not just the current turn's), so a highlight can resolve to a source read
+    two turns ago. Returns the single best-matching chunk, or `match: null`
+    if nothing scores high enough to be a confident hit.
+    """
+    _assert_thread_access(request.thread_id, user_id)
+
+    text_selection = request.text_selection.strip()
+    if len(text_selection) < 10:
+        return {"error": "Text selection is too short"}
+
+    match = await asyncio.to_thread(
+        redis_sources.search_chunks, request.thread_id, text_selection
+    )
+    return {"match": match}
 
 
 # ---------------------------------------------------------------------------

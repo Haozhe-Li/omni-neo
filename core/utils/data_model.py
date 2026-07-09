@@ -38,7 +38,7 @@ class AutoCompleteRequest(BaseModel):
 
 
 class CheckSourceRequest(BaseModel):
-    source: dict  # Check if source is a dict
+    thread_id: str
     text_selection: str
 
 

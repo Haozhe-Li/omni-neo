@@ -154,8 +154,11 @@ line break — only split a paragraph's citations into more than one cluster if
 it makes two genuinely unrelated claims that a reader needs to tell apart.
 
 Always ASCII `[`/`]`, never full-width (【】/［］), even in Chinese. Only use
-`n` values from this turn's tool results — never invent one or reuse across
-turns.
+`n` values that came from an actual `google_search`/`load_web_page` result —
+either this turn's or an earlier turn's in this same conversation. You do NOT
+need to re-run a search just to cite a source you already have a `[n]` for;
+reuse that number. Never invent a number that wasn't given to you by a tool
+result.
 </citation_policy>
 
 <computation_policy>
