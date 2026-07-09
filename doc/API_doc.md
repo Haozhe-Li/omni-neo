@@ -568,23 +568,32 @@ Content-Type: multipart/form-data
 
 ### `POST /check_source`
 
-验证一段文字与给定来源的相关性。
+给定一段（前端勾选的）回答文字，在这个 thread 曾经出现过的所有 source 里（不限于当前这一轮，持久化在 Redis 里，按 thread_id 存取），找到与之最匹配的原文片段，供前端高亮展示。
 
-**鉴权：** 无需
+**鉴权：** 必须（Bearer Token）。thread 归属校验同 `/api/threads/{thread_id}` 系列接口——thread 未被认领时任何人可查，一旦被其他用户认领则拒绝。
 
 **Request Body**
 ```json
 {
-  "source": {
-    "sources": [
-      { "title": "Tesla Q4 Report", "url": "https://...", "content": "..." }
-    ]
-  },
+  "thread_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "text_selection": "特斯拉 2025 年第四季度营收同比增长 20%"
 }
 ```
 
 > `text_selection` 长度必须 ≥ 10 个字符，否则返回 `{ "error": "Text selection is too short" }`。
+
+**Response** — 命中最佳匹配片段，或 `match: null`（没有足够可信的匹配）
+```json
+{
+  "match": {
+    "n": 3,
+    "title": "Tesla Q4 Report",
+    "url": "https://...",
+    "chunk": "...命中的原文片段（web page 已按 ~800 字切块，google 搜索 snippet 通常整段即一块）...",
+    "score": 0.87
+  }
+}
+```
 
 ---
 

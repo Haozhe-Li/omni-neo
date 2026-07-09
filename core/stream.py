@@ -256,7 +256,7 @@ async def _stream_agent(
         if files:
             input_state["files"] = files
 
-    reset_citation_registry()
+    reset_citation_registry(thread_id)
 
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
