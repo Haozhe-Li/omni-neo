@@ -29,8 +29,8 @@ from upstash_search import AsyncSearch, Search
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_SIZE = 128
-_CHUNK_OVERLAP = 20
+_CHUNK_SIZE = 256
+_CHUNK_OVERLAP = 128
 _INDEX_NAME = "omni_chunks"
 _MIN_SCORE = 0.7
 _QUERY_LIMIT = 100

@@ -40,7 +40,7 @@ from deepagents.backends.utils import create_file_data
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
 from core.utils.format import _extract_domain_metadata
-from core.utils.citations import reset_citation_registry
+from core.utils.citations import reset_citation_registry, register_document_citation
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -148,20 +148,30 @@ def build_message_content(
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
     thread_id: str | None = None,
-) -> tuple[str | list, dict]:
+) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
 
-    Returns ``(content, files)``. ``files`` holds virtual-path -> FileData
-    entries for ready documents, to be merged into the agent's filesystem
-    state (``input_state["files"]``) so it can `read_file`/`grep` them.
+    Returns ``(content, files, doc_sources)``. ``files`` holds virtual-path ->
+    FileData entries for ready documents, to be merged into the agent's
+    filesystem state (``input_state["files"]``) so it can `read_file`/`grep`
+    them. ``doc_sources`` carries one citation record per newly-mounted
+    document (``{n, title, url: "", content}``, `url` always empty — the
+    frontend treats that as "uploaded document, not a link"). A document is
+    never read via a tool call, so it never flows through the ToolMessage
+    citation path — the caller must fold `doc_sources` into the `sources` SSE
+    stream itself.
+
+    Must be called after `reset_citation_registry(thread_id, turn)` —
+    `register_document_citation` below needs that context already set up.
     """
     base_query = f"User Query: {query}\n\nPersonalization: {personalization}\n\n"
     if not attached_file_ids:
-        return base_query, {}
+        return base_query, {}, []
 
     image_blocks: list[dict] = []
     document_notes: list[str] = []
     files: dict[str, dict] = {}
+    doc_sources: list[dict] = []
     for file_info in attached_file_ids:
         for file_id, filename in file_info.items():
             record = get_file_record(file_id)
@@ -182,8 +192,16 @@ def build_message_content(
                     thread_id, filename, file_id, record["created_at"], record["file_type"]
                 )
                 path = f"/uploads/{mounted_name}"
-                files[path] = create_file_data(record.get("extracted_text") or "")
-                document_notes.append(f"{filename} -> mounted at {path}")
+                full_text = record.get("extracted_text") or ""
+                files[path] = create_file_data(full_text)
+                n = register_document_citation(
+                    title=filename,
+                    file_id=file_id,
+                    content=full_text[:1000],
+                    index_content=full_text[:10000],
+                )
+                doc_sources.append({"n": n, "title": filename, "url": "", "content": full_text[:1000]})
+                document_notes.append(f"{filename} -> mounted at {path}, cite as [{n}] when you use it")
 
     if document_notes:
         base_query = (
@@ -195,8 +213,8 @@ def build_message_content(
         )
 
     if image_blocks:
-        return [{"type": "text", "text": base_query}, *image_blocks], files
-    return base_query, files
+        return [{"type": "text", "text": base_query}, *image_blocks], files, doc_sources
+    return base_query, files, doc_sources
 
 
 def _normalize_stream_item(item: Any) -> tuple[str | None, Any]:
@@ -227,23 +245,34 @@ async def _stream_agent(
     *,
     turn: int | None = None,
     rewind_config: dict | None = None,
+    extra_sources: list[dict] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Drive the agent and yield SSE strings (everything except widgets).
 
     If ``rewind_config`` is provided the agent replays / forks from that
-    LangGraph checkpoint instead of appending a new user message.
+    LangGraph checkpoint instead of appending a new user message. In that
+    case ``build_message_content`` isn't called here — the rewind endpoint
+    already called it itself (to fold a possible new attachment into the
+    forked checkpoint) — so any document citations it produced are passed in
+    via ``extra_sources`` instead of being computed fresh below.
     """
     profile = "pro" if mode == "pro" else "fast"
     agent = get_agent(profile)
+
+    # Must run before build_message_content: mounting a document assigns it a
+    # citation number via register_document_citation, which needs the
+    # thread/turn context this sets up.
+    reset_citation_registry(thread_id, turn)
 
     if rewind_config is not None:
         # Time-travel: replay from (possibly forked) checkpoint — no new input.
         config = rewind_config
         input_state = None
+        doc_sources: list[dict] = []
     else:
         config = {"configurable": {"thread_id": thread_id}}
-        content, doc_files = await asyncio.to_thread(
+        content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content, query, personalization, attached_file_ids, thread_id
         )
         # Both profiles are deep agents with a StateBackend: hand them the skill
@@ -257,14 +286,25 @@ async def _stream_agent(
         if files:
             input_state["files"] = files
 
-    reset_citation_registry(thread_id, turn)
-
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
     artifact_ids: list[str] = []
     announced_drafts: set = set()
     produced_text = False
     pending_text = ""  # holds back a trailing unclosed "[n" citation marker
+
+    # Documents never go through a tool call, so they never hit the
+    # ToolMessage-sourced citation path below — surface them the same way
+    # tool-fetched sources are: dedup, accumulate, and push an SSE event now.
+    new_doc_sources = []
+    for s in [*doc_sources, *(extra_sources or [])]:
+        key = (s.get("title"), s.get("url"), s.get("content"))
+        if key not in seen_sources:
+            seen_sources.add(key)
+            all_sources.append(s)
+            new_doc_sources.append(s)
+    if new_doc_sources:
+        yield _sse({"type": "sources", "sources": new_doc_sources})
 
     with tracing_context(project_name=profile):
         async for raw in agent.astream(
@@ -386,6 +426,7 @@ async def run_agent_stream(
     user_local_datetime: str | None = None,
     turn: int | None = None,
     rewind_config: dict | None = None,
+    extra_sources: list[dict] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
@@ -419,6 +460,7 @@ async def run_agent_stream(
                 query, thread_id, mode, personalization, attached_file_ids,
                 turn=turn,
                 rewind_config=rewind_config,
+                extra_sources=extra_sources,
                 cancellation_event=cancellation_event,
             ):
                 await queue.put(event)

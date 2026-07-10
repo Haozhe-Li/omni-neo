@@ -42,6 +42,7 @@ from core.utils.data_model import (
     CheckSourceRequest,
 )
 from core.utils import vector_sources, source_rerank
+from core.utils.citations import reset_citation_registry
 from core.utils.utils import format_personalization
 from core.auto_complete import auto_complete
 from core.auth import (
@@ -444,11 +445,16 @@ async def api_rewind_thread(
     if target is None:
         raise HTTPException(status_code=404, detail="No rewindable checkpoint found.")
 
+    doc_sources: list[dict] = []
     if body.new_query is not None:
         # Edit mode: replace the last HumanMessage in-place (same id → add_messages
         # reducer treats it as an update, not an append).
         personalization_str = format_personalization(body.personalization)
-        new_content, doc_files = await asyncio.to_thread(
+        # build_message_content assigns a citation number to any newly-attached
+        # document via register_document_citation, which needs the thread/turn
+        # context this sets up — same ordering requirement as in _stream_agent.
+        reset_citation_registry(thread_id, body.turn)
+        new_content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             body.new_query, personalization_str, body.attached_file_ids, thread_id,
         )
@@ -480,6 +486,7 @@ async def api_rewind_thread(
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=body.turn,
                 rewind_config=rewind_config,
+                extra_sources=doc_sources,
                 cancellation_event=cancel_event,
             ):
                 yield chunk

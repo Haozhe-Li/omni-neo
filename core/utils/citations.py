@@ -15,9 +15,9 @@ in main.py) keep the old run-scoped-only behavior.
 Every new citation also carries the `turn` it was first introduced in (given
 by the caller, ultimately the frontend — see `reset_citation_registry`), so
 `/check_source` can later confine a claim from turn N to sources visible by
-turn N. Reused citations (same URL cited again in a later turn) keep their
-original `turn`, which is exactly the semantics we want: a source is valid
-for every turn from the one it first appeared in onward.
+turn N. Reused citations (same dedup key cited/mounted again in a later turn)
+keep their original `turn`, which is exactly the semantics we want: a source
+is valid for every turn from the one it first appeared in onward.
 """
 from __future__ import annotations
 
@@ -56,25 +56,36 @@ def reset_citation_registry(thread_id: str | None = None, turn: int | None = Non
     _registry.set([])
 
 
-def register_citation(title: str, url: str, content: str) -> int | None:
-    """Assign (or reuse) the 1-based citation number for `url` in this thread.
+def _register(
+    key_field: str,
+    key_value: str,
+    title: str,
+    url: str,
+    content: str,
+    index_content: str | None = None,
+) -> int:
+    """Shared implementation behind `register_citation` and
+    `register_document_citation`. Dedupes on `record[key_field] == key_value`
+    — `url` for web sources, `file_id` for uploaded documents (which all
+    share `url == ""`, so deduping those on `url` would collapse every
+    document into one entry).
 
-    Returns None if `url` is empty — there's nothing for the frontend to link
-    to, so no number is worth giving the model.
+    `index_content` lets the vector index get a different (typically longer)
+    slice of the source than what's persisted to Redis / shown to the
+    frontend — used for documents, where the citation's display `content` is
+    capped much shorter than what's worth chunking for search.
     """
-    if not url:
-        return None
     reg = _registry.get()
     if reg is None:
-        # Defensive: register_citation called without a preceding
-        # reset_citation_registry (e.g. a tool invoked outside _stream_agent).
+        # Defensive: called without a preceding reset_citation_registry
+        # (e.g. a tool invoked outside _stream_agent).
         reg = []
         _registry.set(reg)
 
     is_new = False
     with _lock:
         for item in reg:
-            if item["url"] == url:
+            if item.get(key_field) == key_value:
                 n = item["n"]
                 break
         else:
@@ -86,6 +97,8 @@ def register_citation(title: str, url: str, content: str) -> int | None:
                 "content": content,
                 "turn": _turn.get(),
             }
+            if key_field != "url":
+                record[key_field] = key_value
             reg.append(record)
             is_new = True
 
@@ -99,11 +112,38 @@ def register_citation(title: str, url: str, content: str) -> int | None:
                 # for this run even if Redis is briefly unavailable.
                 pass
             try:
-                vector_sources.enqueue_source_indexing(thread_id, record)
+                index_record = (
+                    record if index_content is None else {**record, "content": index_content}
+                )
+                vector_sources.enqueue_source_indexing(thread_id, index_record)
             except Exception:
                 # Same best-effort contract: indexing must never break citing.
                 pass
     return n
+
+
+def register_citation(title: str, url: str, content: str) -> int | None:
+    """Assign (or reuse) the 1-based citation number for `url` in this thread.
+
+    Returns None if `url` is empty — there's nothing for the frontend to link
+    to, so no number is worth giving the model.
+    """
+    if not url:
+        return None
+    return _register("url", url, title, url, content)
+
+
+def register_document_citation(
+    title: str, file_id: str, content: str, index_content: str | None = None
+) -> int:
+    """Assign (or reuse) the citation number for an uploaded document.
+
+    Deduped by `file_id` (not `url` — documents don't have one; the frontend
+    treats `url == ""` as "uploaded document, not a link"). `content` is
+    what's persisted to Redis and shown to the user; pass `index_content` to
+    chunk a longer slice into the vector index than what's displayed.
+    """
+    return _register("file_id", file_id, title, "", content, index_content)
 
 
 def all_citations() -> list[dict]:
