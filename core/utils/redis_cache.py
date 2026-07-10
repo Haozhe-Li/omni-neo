@@ -145,6 +145,34 @@ class L1Cache:
         :param ttl: 该函数的过期时间，优先级高于默认 ttl
         """
         def decorator(func: Callable) -> Callable:
+            if inspect.iscoroutinefunction(func):
+                @functools.wraps(func)
+                async def async_wrapper(*args, **kwargs) -> Any:
+                    cache_key = self._build_cache_key(func, args, kwargs)
+
+                    # 尝试从 Redis 获取
+                    cached = self.redis.get(cache_key)
+                    if cached is not None:
+                        try:
+                            return json.loads(cached)
+                        except json.JSONDecodeError:
+                            # 缓存损坏，删除并重新计算
+                            self.redis.delete(cache_key)
+
+                    # 缓存 miss，执行函数
+                    result = await func(*args, **kwargs)
+
+                    # 存入 Redis
+                    ttl_to_use = ttl or self.default_ttl
+                    if ttl_to_use:
+                        self.redis.setex(cache_key, ttl_to_use, json.dumps(result, default=str, ensure_ascii=False))
+                    else:
+                        self.redis.set(cache_key, json.dumps(result, default=str, ensure_ascii=False))
+
+                    return result
+
+                return async_wrapper
+
             @functools.wraps(func)
             def wrapper(*args, **kwargs) -> Any:
                 cache_key = self._build_cache_key(func, args, kwargs)
