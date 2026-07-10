@@ -78,9 +78,13 @@ _FULLWIDTH_CITE_RE = re.compile(r"[［【](\d+)[］】]")
 # into one stack right after the punctuation:
 # "claim[1]." -> "claim.[1]"; "claim[1].\n[2]" -> "claim.[1][2]".
 # Only sentence-enders qualify (., !, ?, 。, ！, ？) — commas and other
-# mid-sentence punctuation are left alone.
+# mid-sentence punctuation are left alone. The `\s*` between the first marker
+# run and the punctuation tolerates a stray space the model sometimes emits
+# there (e.g. "claim[1] ." — otherwise "[1]" and "." never merge with a
+# trailing "[2]", producing exactly the "claim[1] .[2]" split the frontend
+# renders as two citation chips with the period stuck between them).
 _CITE_CLUSTER_RE = re.compile(
-    rf"((?:\[\d+\])+)([.!?。！？])((?:\s*(?:\[\d+\])+[.!?。！？]?)*)"
+    rf"((?:\[\d+\])+)\s*([.!?。！？])((?:\s*(?:\[\d+\])+[.!?。！？]?)*)"
 )
 
 
