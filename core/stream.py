@@ -52,6 +52,16 @@ _ARTIFACT_TOOL_NAMES = {"render_chart"}
 # A single citation marker in any bracket style the model might emit.
 _CITE_MARKER = r"(?:\[\d+\]|［\d+］|【\d+】)"
 
+# Kill switch for citation *reordering* (the cluster merge below and the
+# aggressive hold-back that serves it). Off by default: the model's marker
+# placement streams through verbatim, and only an unclosed opener ("[1") is
+# held so a marker is never split across two SSE events. Set CITATION_NORM=true
+# to enable the merge. Full-width -> ASCII marker conversion ([1] -> [1]) is
+# NOT gated — the frontend only links the ASCII form.
+CITATION_NORM = os.getenv("CITATION_NORM", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
 # Held back at the end of the buffer so a marker never leaks to the frontend
 # half-written or in the wrong position:
 #  - an unclosed opener, e.g. "...as reported" + "[1" — the close might be in
@@ -71,9 +81,15 @@ _CITE_MARKER = r"(?:\[\d+\]|［\d+］|【\d+】)"
 # "[6]" on its own — stranding it before punctuation that hasn't arrived yet
 # and producing the "claim[6]。[8][9]" split this whole regex exists to
 # prevent.
-_TRAILING_CITE_RE = re.compile(
-    rf"(?:(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)*"
-    rf"(?:[\[［【]\d*|(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)$"
+_TRAILING_CITE_RE = (
+    re.compile(
+        rf"(?:(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)*"
+        rf"(?:[\[［【]\d*|(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)$"
+    )
+    if CITATION_NORM
+    # Merge disabled: hold only an unclosed opener. Holding punctuation and
+    # closed runs would add latency for a fix-up that will never run.
+    else re.compile(r"[\[［【]\d*$")
 )
 
 # Closed full-width citation markers to normalize to the ASCII form the
@@ -105,6 +121,8 @@ def _merge_citation_cluster(m: "re.Match[str]") -> str:
 
 def _normalize_citations(text: str) -> str:
     text = _FULLWIDTH_CITE_RE.sub(r"[\1]", text)
+    if not CITATION_NORM:
+        return text
     return _CITE_CLUSTER_RE.sub(_merge_citation_cluster, text)
 
 _REFUSAL = "I’m sorry, but I can’t help with that."
