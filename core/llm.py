@@ -15,7 +15,7 @@ gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2)
 llama_guard_2 = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
 
 fast_llm = gpt_oss_120b_high
-pro_llm = qwen_3_6_27b
+pro_llm = gemini_flash
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = llama_guard_2
 update_memories_llm = gpt_oss_20b
