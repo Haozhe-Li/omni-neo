@@ -63,8 +63,17 @@ _CITE_MARKER = r"(?:\[\d+\]|［\d+］|【\d+】)"
 #    must merge into the same stack, per <citation_policy>). Once a chunk is
 #    flushed as its own SSE event neither fix-up can happen anymore, so all of
 #    this is held until real content (not marker/punct/whitespace) shows up.
+#
+# The two alternatives must compose: a closed run FOLLOWED BY an unclosed
+# opener ("[6][", "[6][8]。[") is one hold, not a hold of just the opener.
+# Tokenizers routinely emit "][" as a single token, so the buffer passes
+# through "...[6][" constantly; matching only the trailing "[" there flushes
+# "[6]" on its own — stranding it before punctuation that hasn't arrived yet
+# and producing the "claim[6]。[8][9]" split this whole regex exists to
+# prevent.
 _TRAILING_CITE_RE = re.compile(
-    rf"(?:[\[［【]\d*|(?:(?:{_CITE_MARKER})+[.!?。！？]?\s*)+)$"
+    rf"(?:(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)*"
+    rf"(?:[\[［【]\d*|(?:{_CITE_MARKER})+\s*[.!?。！？]?\s*)$"
 )
 
 # Closed full-width citation markers to normalize to the ASCII form the
