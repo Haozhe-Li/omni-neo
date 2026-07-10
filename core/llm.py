@@ -6,7 +6,7 @@ gpt_oss_120b_low = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, reason
 gpt_oss_120b_high = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="high")
 gpt_oss_120b_medium = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
-qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16,384)
+qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview")
 llama3_1_8b = ChatGroq(model="llama-3.1-8b-instant")
