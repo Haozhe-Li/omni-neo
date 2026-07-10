@@ -3,7 +3,7 @@ from __future__ import annotations
 from core.utils import source_rerank, vector_sources
 from core.utils.redis_cache import l1cache
 
-_CHECK_SOURCE_CACHE_TTL = 60 * 10
+_CHECK_SOURCE_CACHE_TTL = 60 * 60 * 24 * 10
 
 
 @l1cache(ttl=_CHECK_SOURCE_CACHE_TTL)
