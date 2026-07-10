@@ -39,9 +39,11 @@ boto3
 
 # cache
 redis
-rapidfuzz
 
 # RAG
 langchain-pymupdf4llm
 python-docx
 langchain-text-splitters
+
+# semantic source search (backs /check_source)
+upstash-search

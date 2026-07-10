@@ -31,6 +31,12 @@ class QueryRequest(BaseModel):
     attached_file_ids: list[dict[str, str]] | None = None
     mode: Literal["fast", "pro"] = "fast"
     skill: str | None = None
+    # 1-indexed turn number for this exchange, assigned by the frontend
+    # (the backend has no other source of truth for turn ordering). Every
+    # citation produced during this turn is stamped with it, so
+    # `/check_source` can later confine a claim to sources that existed by
+    # its turn — see `core/utils/citations.py`.
+    turn: int | None = None
 
 
 class AutoCompleteRequest(BaseModel):
@@ -40,6 +46,9 @@ class AutoCompleteRequest(BaseModel):
 class CheckSourceRequest(BaseModel):
     thread_id: str
     text_selection: str
+    # The turn the checked claim belongs to. Only sources introduced at or
+    # before this turn are eligible matches — None disables the cutoff.
+    turn: int | None = None
 
 
 class Decision(BaseModel):

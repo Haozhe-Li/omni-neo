@@ -41,7 +41,7 @@ from core.utils.data_model import (
     AutoCompleteRequest,
     CheckSourceRequest,
 )
-from core.utils import redis_sources
+from core.utils import vector_sources, source_rerank
 from core.utils.utils import format_personalization
 from core.auto_complete import auto_complete
 from core.auth import (
@@ -97,7 +97,6 @@ async def lifespan(app: FastAPI):
     await setup_checkpointer()
     setup_user_files_table()
     setup_thread_search()
-    redis_sources.setup_source_search_index()
     initialize_agents()
     yield
     await teardown_checkpointer()
@@ -142,6 +141,7 @@ async def _generate_background(
     attached_file_ids: list | None,
     user_location: str | None,
     user_local_datetime: str | None,
+    turn: int | None,
     cancel_event: asyncio.Event | None,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
@@ -171,6 +171,7 @@ async def _generate_background(
             attached_file_ids=attached_file_ids,
             user_location=user_location,
             user_local_datetime=user_local_datetime,
+            turn=turn,
             cancellation_event=cancel_event,
         ):
             try:
@@ -362,6 +363,7 @@ async def chat(
                 attached_file_ids=request.attached_file_ids,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
+                turn=request.turn,
                 cancel_event=cancel_event,
             )
         )
@@ -385,6 +387,7 @@ async def chat(
                 attached_file_ids=request.attached_file_ids,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
+                turn=request.turn,
                 cancellation_event=cancel_event,
             ):
                 yield chunk
@@ -403,6 +406,7 @@ class RewindRequest(BaseModel):
     new_query: str | None = None  # None = pure regenerate; set to edit the last user msg
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
+    turn: int | None = None
 
 
 @app.post("/api/threads/{thread_id}/rewind")
@@ -474,6 +478,7 @@ async def api_rewind_thread(
                 attached_file_ids=body.attached_file_ids,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
+                turn=body.turn,
                 rewind_config=rewind_config,
                 cancellation_event=cancel_event,
             ):
@@ -518,23 +523,27 @@ async def check_source(
     user_id: str = Depends(get_current_user),
 ):
     """
-    Find the source passage a piece of highlighted answer text came from.
+    Find every source passage that supports a piece of highlighted answer text.
 
-    Searches every source this thread has ever surfaced (persisted in Redis,
-    not just the current turn's), so a highlight can resolve to a source read
-    two turns ago. Returns the single best-matching chunk, or `match: null`
-    if nothing scores high enough to be a confident hit.
+    1. Semantic search (Upstash Search) over every chunk this thread has ever
+       produced, filtered to `turn <= request.turn` so a claim from an early
+       turn can never resolve to a source that only appeared later — see
+       `core/utils/citations.py` for how `turn` gets stamped onto a source.
+    2. An LLM rerank pass drops chunks that are merely topically similar (not
+       actually supporting), and extracts a verbatim excerpt from each
+       survivor for the frontend to fuzzy-match and highlight precisely.
     """
     _assert_thread_access(request.thread_id, user_id)
 
     text_selection = request.text_selection.strip()
-    if len(text_selection) < 10:
-        return {"error": "Text selection is too short"}
+    if not text_selection:
+        return {"error": "Text selection is empty"}
 
-    match = await asyncio.to_thread(
-        redis_sources.search_chunks, request.thread_id, text_selection
+    candidates = await vector_sources.search_similar_chunks(
+        request.thread_id, text_selection, request.turn
     )
-    return {"match": match}
+    matches = await source_rerank.rerank_candidates(text_selection, candidates)
+    return {"matches": matches}
 
 
 # ---------------------------------------------------------------------------

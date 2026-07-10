@@ -11,30 +11,40 @@ Redis at the top of each turn, so a source fetched two turns ago keeps its
 `[n]` and the model can cite it again without re-fetching. Threads used
 outside a persisted thread (thread_id=None, e.g. the direct-stream fallback
 in main.py) keep the old run-scoped-only behavior.
+
+Every new citation also carries the `turn` it was first introduced in (given
+by the caller, ultimately the frontend — see `reset_citation_registry`), so
+`/check_source` can later confine a claim from turn N to sources visible by
+turn N. Reused citations (same URL cited again in a later turn) keep their
+original `turn`, which is exactly the semantics we want: a source is valid
+for every turn from the one it first appeared in onward.
 """
 from __future__ import annotations
 
 import threading
 from contextvars import ContextVar
 
-from core.utils import redis_sources
+from core.utils import redis_sources, vector_sources
 
 _registry: ContextVar[list[dict] | None] = ContextVar("citation_registry", default=None)
 _thread_id: ContextVar[str | None] = ContextVar("citation_thread_id", default=None)
+_turn: ContextVar[int | None] = ContextVar("citation_turn", default=None)
 # Coarse global lock: guards only the in-memory list dedupe/append below, not
 # the Redis persist call (that happens after the lock is released) — so a
 # network round-trip never serializes concurrent chats against each other.
 _lock = threading.Lock()
 
 
-def reset_citation_registry(thread_id: str | None = None) -> None:
+def reset_citation_registry(thread_id: str | None = None, turn: int | None = None) -> None:
     """Start the registry for a new turn.
 
     If `thread_id` is given, hydrates from every citation this thread has
     ever produced (so numbering and de-dupe carry across turns); otherwise
-    starts empty, matching the old run-scoped-only behavior.
+    starts empty, matching the old run-scoped-only behavior. `turn` is
+    stamped onto any newly-registered citation this run.
     """
     _thread_id.set(thread_id)
+    _turn.set(turn)
     if thread_id:
         try:
             _registry.set(redis_sources.load_citations(thread_id))
@@ -69,7 +79,13 @@ def register_citation(title: str, url: str, content: str) -> int | None:
                 break
         else:
             n = len(reg) + 1
-            record = {"n": n, "title": title, "url": url, "content": content}
+            record = {
+                "n": n,
+                "title": title,
+                "url": url,
+                "content": content,
+                "turn": _turn.get(),
+            }
             reg.append(record)
             is_new = True
 
@@ -81,6 +97,11 @@ def register_citation(title: str, url: str, content: str) -> int | None:
             except Exception:
                 # Persistence is best-effort: the model still gets its number
                 # for this run even if Redis is briefly unavailable.
+                pass
+            try:
+                vector_sources.enqueue_source_indexing(thread_id, record)
+            except Exception:
+                # Same best-effort contract: indexing must never break citing.
                 pass
     return n
 

@@ -225,6 +225,7 @@ async def _stream_agent(
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
     *,
+    turn: int | None = None,
     rewind_config: dict | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
@@ -256,7 +257,7 @@ async def _stream_agent(
         if files:
             input_state["files"] = files
 
-    reset_citation_registry(thread_id)
+    reset_citation_registry(thread_id, turn)
 
     seen_sources: set[tuple] = set()
     all_sources: list[dict] = []
@@ -383,6 +384,7 @@ async def run_agent_stream(
     attached_file_ids: list[dict[str, str]] | None = None,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
+    turn: int | None = None,
     rewind_config: dict | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
@@ -415,6 +417,7 @@ async def run_agent_stream(
         try:
             async for event in _stream_agent(
                 query, thread_id, mode, personalization, attached_file_ids,
+                turn=turn,
                 rewind_config=rewind_config,
                 cancellation_event=cancellation_event,
             ):
