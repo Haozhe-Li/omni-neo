@@ -41,7 +41,7 @@ from core.utils.data_model import (
     AutoCompleteRequest,
     CheckSourceRequest,
 )
-from core.utils import vector_sources, source_rerank
+from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry
 from core.utils.utils import format_personalization
 from core.auto_complete import auto_complete
@@ -542,15 +542,11 @@ async def check_source(
     """
     _assert_thread_access(request.thread_id, user_id)
 
-    text_selection = request.text_selection.strip()
-    if not text_selection:
-        return {"error": "Text selection is empty"}
-
-    candidates = await vector_sources.search_similar_chunks(
-        request.thread_id, text_selection, request.turn
+    return await check_source_matches(
+        request.thread_id,
+        request.text_selection,
+        request.turn,
     )
-    matches = await source_rerank.rerank_candidates(text_selection, candidates)
-    return {"matches": matches}
 
 
 # ---------------------------------------------------------------------------
