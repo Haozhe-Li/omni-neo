@@ -67,12 +67,23 @@ def _escape_filter_value(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _title_url_prefix(record: dict) -> str:
+    """Title + URL (filename + URL for a document), one per line — prepended
+    to every chunk before embedding so a claim that names the source itself
+    ("according to the CDC...") can match on that, not just the body text.
+    Empty when neither is set, so plain content chunks are unaffected."""
+    title = (record.get("title") or "").strip()
+    url = (record.get("url") or "").strip()
+    return "\n".join(line for line in (title, url) if line)
+
+
 def _index_source_sync(thread_id: str, record: dict) -> None:
     content = (record.get("content") or "").strip()
     if not content:
         return
     n = record["n"]
     chunks = _splitter.split_text(content)
+    prefix = _title_url_prefix(record)
     docs = [
         {
             "id": _doc_id(thread_id, n, i),
@@ -80,7 +91,18 @@ def _index_source_sync(thread_id: str, record: dict) -> None:
             # (confirmed empirically — a filter on a `metadata`-only field
             # always returns zero hits, undocumented in the SDK). thread_id
             # HAS to live here for query-time isolation to work at all.
-            "content": {"text": chunk_text, "thread_id": thread_id},
+            #
+            # `text` carries the title/URL prefix baked in (see
+            # `_title_url_prefix`) — it's both what gets embedded *and* what
+            # `search_similar_chunks` later returns as `chunk`, so the same
+            # prefixed text is what source_rerank.py's LLM call and the
+            # frontend's highlight both see. No separate "embed-only" field:
+            # keeping it one field guarantees any excerpt the rerank step
+            # copies is still a genuine substring of what's displayed.
+            "content": {
+                "text": f"{prefix}\n\n{chunk_text}" if prefix else chunk_text,
+                "thread_id": thread_id,
+            },
             "metadata": {
                 "n": n,
                 "url": record.get("url", ""),
