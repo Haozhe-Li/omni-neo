@@ -3,6 +3,7 @@ import concurrent.futures
 import os
 
 from core.utils.citations import register_citation
+from core.utils.source_credibility import classify_sources
 
 # from core.utils.redis_cache import l1cache
 
@@ -68,7 +69,7 @@ def load_web_page_spider(url: str) -> dict:
     }
 
 
-def load_web_page(
+async def load_web_page(
     url: str,
 ):
     """Get the full text of a web page.
@@ -81,8 +82,15 @@ def load_web_page(
         cite it inline as [n] when you use this page's content in your answer.
     """
     result = load_web_page_spider(url)
+    # No query/topic available for a direct page load, so the LLM layer
+    # can't judge "first_party" here — it'll fall back to domain-only signal.
+    classified = await classify_sources([result], None)
+    result = classified[0] if classified else result
     n = register_citation(
-        result.get("title", ""), result.get("url", "") or url, result.get("content", "")
+        result.get("title", ""),
+        result.get("url", "") or url,
+        result.get("content", ""),
+        credibility=result.get("credibility"),
     )
     if n is not None:
         result["n"] = n

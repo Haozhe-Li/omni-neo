@@ -63,6 +63,7 @@ def _register(
     url: str,
     content: str,
     index_content: str | None = None,
+    credibility: str | None = None,
 ) -> int:
     """Shared implementation behind `register_citation` and
     `register_document_citation`. Dedupes on `record[key_field] == key_value`
@@ -74,6 +75,11 @@ def _register(
     slice of the source than what's persisted to Redis / shown to the
     frontend — used for documents, where the citation's display `content` is
     capped much shorter than what's worth chunking for search.
+
+    `credibility` is the label from `source_credibility.classify_sources`
+    (None for uploaded documents, which aren't classified). Like `turn`, a
+    reused citation keeps whatever label it was first registered with —
+    it isn't recomputed on repeat cites.
     """
     reg = _registry.get()
     if reg is None:
@@ -96,6 +102,7 @@ def _register(
                 "url": url,
                 "content": content,
                 "turn": _turn.get(),
+                "credibility": credibility,
             }
             if key_field != "url":
                 record[key_field] = key_value
@@ -122,7 +129,9 @@ def _register(
     return n
 
 
-def register_citation(title: str, url: str, content: str) -> int | None:
+def register_citation(
+    title: str, url: str, content: str, credibility: str | None = None
+) -> int | None:
     """Assign (or reuse) the 1-based citation number for `url` in this thread.
 
     Returns None if `url` is empty — there's nothing for the frontend to link
@@ -130,7 +139,7 @@ def register_citation(title: str, url: str, content: str) -> int | None:
     """
     if not url:
         return None
-    return _register("url", url, title, url, content)
+    return _register("url", url, title, url, content, credibility=credibility)
 
 
 def register_document_citation(

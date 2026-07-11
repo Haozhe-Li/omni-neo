@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from core.utils.redis_cache import l1cache
 from core.utils.citations import register_citation
+from core.utils.source_credibility import classify_sources
 from langchain_community.utilities import GoogleSerperAPIWrapper
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
@@ -169,7 +170,7 @@ def _google_search_cached(query: str, k: int=5) -> list[dict]:
     return res
 
 
-def google_search(query: str, k: int = 5) -> list[dict]:
+async def google_search(query: str, k: int = 5) -> list[dict]:
     """
     Perform an google search using Google Serper API.
 
@@ -183,10 +184,16 @@ def google_search(query: str, k: int = 5) -> list[dict]:
     """
     k = min(k, 10)
     results = _google_search_cached(query, k)
+    results = await classify_sources(results, query)
     out = []
     for item in results:
         item = dict(item)
-        n = register_citation(item.get("title", ""), item.get("url", ""), item.get("content", ""))
+        n = register_citation(
+            item.get("title", ""),
+            item.get("url", ""),
+            item.get("content", ""),
+            credibility=item.get("credibility"),
+        )
         if n is not None:
             item["n"] = n
         out.append(item)

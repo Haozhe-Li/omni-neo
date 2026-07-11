@@ -63,6 +63,8 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
                     src = {"title": title, "url": url, "content": content}
                     if item.get("n") is not None:
                         src["n"] = item["n"]
+                    if item.get("credibility") is not None:
+                        src["credibility"] = item["credibility"]
                     sources.append(src)
 
     # Handle direct page loads
@@ -83,6 +85,8 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
                 src = {"title": title, "url": url, "content": content}
                 if parsed_payload.get("n") is not None:
                     src["n"] = parsed_payload["n"]
+                if parsed_payload.get("credibility") is not None:
+                    src["credibility"] = parsed_payload["credibility"]
                 sources.append(src)
 
     # Handle map results

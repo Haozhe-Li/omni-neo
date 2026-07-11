@@ -87,6 +87,7 @@ def _index_source_sync(thread_id: str, record: dict) -> None:
                 "title": record.get("title", ""),
                 "chunk_index": i,
                 "turn": record.get("turn"),
+                "credibility": record.get("credibility"),
             },
         }
         for i, chunk_text in enumerate(chunks)
@@ -159,6 +160,7 @@ async def search_similar_chunks(
                 "chunk": doc.content.get("text", ""),
                 "score": round(float(doc.score), 4),
                 "turn": doc_turn,
+                "credibility": meta.get("credibility"),
             }
         )
     matches.sort(key=lambda m: m["score"], reverse=True)
