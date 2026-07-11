@@ -95,6 +95,24 @@ def pin_thread(thread_id: str, is_pinned: bool) -> bool:
         return False
 
 
+def get_thread_ids_owned_by_user(user_id: str) -> list[str]:
+    """
+    Return every thread_id in threads_control claimed by this user.
+    Used alongside user_threads' own row set when purging an entire account,
+    since a thread can in principle exist here without a user_threads row
+    (e.g. created but never synced with a title).
+    """
+    sql = "SELECT thread_id FROM threads_control WHERE user_id = %s"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                return [r["thread_id"] for r in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"[db_threads_control] get_thread_ids_owned_by_user error: {e}")
+        return []
+
+
 def delete_thread(thread_id: str) -> bool:
     """
     Hard-delete a thread from threads_control AND all LangGraph checkpoint tables

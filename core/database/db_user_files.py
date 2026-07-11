@@ -151,6 +151,36 @@ def update_file_failed(file_id: str) -> bool:
         return False
 
 
+def get_user_file_buckets(user_id: str) -> list[str]:
+    """Return the distinct S3 buckets this user's files live in (usually just one)."""
+    sql = "SELECT DISTINCT s3_bucket FROM user_files WHERE user_id = %s AND s3_bucket IS NOT NULL"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                return [r["s3_bucket"] for r in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"[db_user_files] get_user_file_buckets error: {e}")
+        return []
+
+
+def delete_user_files(user_id: str) -> int:
+    """Delete every user_files row for this user. Returns the number of rows deleted.
+
+    Caller is responsible for also removing the underlying S3 objects
+    (see delete_user_uploads_from_s3 in core/RAG/file_parser.py).
+    """
+    sql = "DELETE FROM user_files WHERE user_id = %s"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                return cur.rowcount
+    except Exception as e:
+        logger.error(f"[db_user_files] delete_user_files error: {e}")
+        return 0
+
+
 def count_prior_ready_files_with_name(thread_id: str, filename: str, file_id: str, created_at) -> int:
     """Count ready files in a thread sharing `filename`, ordered strictly before
     (`created_at`, `file_id`).

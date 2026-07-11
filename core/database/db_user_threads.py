@@ -310,6 +310,24 @@ def delete_user_thread(thread_id: str, user_id: str) -> bool:
         return False
 
 
+def delete_all_threads_for_user(user_id: str) -> list[str]:
+    """
+    Delete every user_threads row owned by user_id, regardless of count
+    (unlike delete_user_threads_bulk, not capped to a caller-supplied id list).
+    Returns the deleted thread_ids so the caller can cascade the LangGraph
+    state cleanup via delete_threads_bulk() in db_threads_control.
+    """
+    sql = "DELETE FROM user_threads WHERE user_id = %s RETURNING thread_id"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                return [r["thread_id"] for r in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"[db_user_threads] delete_all_threads_for_user error: {e}")
+        return []
+
+
 def delete_user_threads_bulk(thread_ids: list[str], user_id: str) -> list[str]:
     """
     Delete multiple threads from user_threads in one round trip, scoped to user_id.
@@ -399,6 +417,19 @@ def get_guest_usage_today(guest_id: str) -> int:
     except Exception as e:
         logger.error(f"[db_user_threads] get_guest_usage_today error: {e}")
         return 0
+
+
+def delete_guest_usage(guest_id: str) -> bool:
+    """Clear a guest's daily usage counter (part of a full account data purge)."""
+    sql = "DELETE FROM guest_usage WHERE guest_id = %s"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (guest_id,))
+                return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"[db_user_threads] delete_guest_usage error: {e}")
+        return False
 
 
 def check_and_increment_guest_usage(guest_id: str) -> int:

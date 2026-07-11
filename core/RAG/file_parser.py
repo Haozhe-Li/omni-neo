@@ -148,6 +148,39 @@ def get_image_base64_data_url(file_id: str) -> str | None:
         return None
 
 
+def delete_user_uploads_from_s3(user_id: str, buckets: list[str]) -> int:
+    """Delete every object under the `user_uploads/{user_id}/` prefix in each
+    given bucket. File keys are minted as `user_uploads/{user_id}/{uuid}`
+    (see uploads.py), so this prefix alone accounts for every upload —
+    including any orphaned objects whose user_files row is already gone.
+
+    Best-effort: a bucket that errors out is logged and skipped rather than
+    aborting the whole purge. Returns the number of objects deleted.
+    """
+    prefix = f"user_uploads/{user_id}/"
+    deleted = 0
+    for bucket in buckets:
+        try:
+            continuation_token = None
+            while True:
+                kwargs = {"Bucket": bucket, "Prefix": prefix}
+                if continuation_token:
+                    kwargs["ContinuationToken"] = continuation_token
+                resp = s3_client.list_objects_v2(**kwargs)
+                contents = resp.get("Contents", [])
+                if contents:
+                    keys = [{"Key": obj["Key"]} for obj in contents]
+                    s3_client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+                    deleted += len(keys)
+                if resp.get("IsTruncated"):
+                    continuation_token = resp.get("NextContinuationToken")
+                else:
+                    break
+        except Exception as e:
+            logger.error(f"delete_user_uploads_from_s3 failed for bucket {bucket}: {e}")
+    return deleted
+
+
 def get_put_presigned_url(s3_bucket: str, file_id: str, file_type: str) -> str | None:
     """Generate a short-lived presigned URL for frontend direct upload"""
     try:

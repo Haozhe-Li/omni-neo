@@ -5,9 +5,17 @@ from core.auth import get_current_user, GUEST_DAILY_LIMIT
 from core.database.db_user_threads import (
     get_guest_usage_today as _get_guest_usage_today,
     merge_guest_to_user,
+    delete_all_threads_for_user,
+    delete_guest_usage,
 )
-from core.database.db_threads_control import reassign_threads_user
-from core.database.db_user_memories import migrate_guest_memory
+from core.database.db_threads_control import (
+    reassign_threads_user,
+    get_thread_ids_owned_by_user,
+    delete_threads_bulk as delete_threads_state_bulk,
+)
+from core.database.db_user_memories import migrate_guest_memory, delete_user_memory
+from core.database.db_user_files import get_user_file_buckets, delete_user_files
+from core.RAG.file_parser import delete_user_uploads_from_s3
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -48,3 +56,37 @@ def api_merge_guest(
     reassign_threads_user(body.guest_id, user_id)
     migrate_guest_memory(user_id, body.guest_id)
     return {"status": "merged", "threads_migrated": count}
+
+
+@router.delete("/user-data")
+def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
+    """
+    Permanently erase every piece of data associated with this user_id:
+    all threads (LangGraph checkpoints, cached citations in Redis, and the
+    Upstash vector index), every uploaded file (DB rows + S3 objects), the
+    long-term memory document, and — for guests — the daily quota counter.
+
+    Irreversible. Published "pages" live in the frontend's own Redis (Upstash)
+    and are purged separately by the Next.js /api/unpublish-all route.
+    """
+    # Union of both tables' id sets: a thread can in principle exist in
+    # threads_control without ever having synced a user_threads row.
+    thread_ids = list(set(delete_all_threads_for_user(user_id)) | set(get_thread_ids_owned_by_user(user_id)))
+    delete_threads_state_bulk(thread_ids)
+
+    buckets = get_user_file_buckets(user_id)
+    files_deleted = delete_user_files(user_id)
+    objects_deleted = delete_user_uploads_from_s3(user_id, buckets) if buckets else 0
+
+    memory_deleted = delete_user_memory(user_id)
+
+    if user_id.startswith("guest_"):
+        delete_guest_usage(user_id)
+
+    return {
+        "status": "deleted",
+        "threads_deleted": len(thread_ids),
+        "files_deleted": files_deleted,
+        "s3_objects_deleted": objects_deleted,
+        "memory_deleted": memory_deleted,
+    }
