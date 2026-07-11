@@ -16,12 +16,9 @@ import redis.asyncio as aioredis
 _PREFIX = "omni:credibility:domain:"
 
 # Whitelist-tier domains (regex hits + seed list) are rarely worth
-# re-checking. Junk gets a much shorter TTL: a bad domain's ownership or
-# content can change (or the classification can simply have been wrong),
-# and a stale "junk" verdict is more harmful to leave uncorrected than a
-# stale "trusted" one.
+# re-checking. There's no TTL_JUNK counterpart — junk is never cached at the
+# domain level at all (see source_credibility.py's module docstring).
 TTL_TRUSTED = 3600 * 24 * 365
-TTL_JUNK = 3600 * 24 * 10
 
 
 class CredibilityRedis:
@@ -48,11 +45,7 @@ class CredibilityRedis:
         return {domain: value for domain, value in zip(domains, values) if value}
 
     async def set_many(self, entries: dict[str, str], ttl: int) -> None:
-        """Write every entry with the same `ttl` in one pipelined round trip.
-
-        Callers batch trusted/junk writes separately since the two labels
-        use different TTLs.
-        """
+        """Write every entry with the same `ttl` in one pipelined round trip."""
         if not entries:
             return
         pipe = self._get_client().pipeline(transaction=False)

@@ -39,8 +39,7 @@ from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
-from core.utils.format import _extract_domain_metadata
-from core.utils.citations import reset_citation_registry, register_document_citation
+from core.utils.citations import all_citations, reset_citation_registry, register_document_citation
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -318,6 +317,13 @@ async def _stream_agent(
             input_state["files"] = files
 
     seen_sources: set[tuple] = set()
+    # Citation numbers already surfaced to the frontend — seeded from whatever
+    # `reset_citation_registry`/`build_message_content` already registered
+    # (e.g. mounted documents) so the tool-result loop below doesn't re-emit
+    # them a second time once it starts polling the registry itself.
+    seen_citation_ns: set[int] = {
+        c["n"] for c in all_citations() if c.get("n") is not None
+    }
     all_sources: list[dict] = []
     artifact_ids: list[str] = []
     announced_drafts: set = set()
@@ -420,16 +426,31 @@ async def _stream_agent(
                             # in the model's context so it can retry; nothing to emit.
                             continue
 
-                        # Regular tool → surface citations
-                        meta = _extract_domain_metadata(name, raw_content)
+                        # Regular tool → surface any citations it just registered.
+                        # Read from the citation registry (`register_citation`,
+                        # called from inside the retrieval tools themselves),
+                        # not the tool's own return value — the two can now
+                        # differ: junk sources are registered for the record
+                        # but deliberately withheld from what the agent reads
+                        # back, so parsing the tool's return value would have
+                        # silently dropped them from the frontend too.
                         new_sources = []
-                        for s in meta.get("sources", []):
-                            key = (s.get("title"), s.get("url"), s.get("content"))
-                            if key not in seen_sources:
-                                seen_sources.add(key)
-                                all_sources.append(s)
-                                new_sources.append(s)
+                        for record in all_citations():
+                            n = record.get("n")
+                            if n is None or n in seen_citation_ns:
+                                continue
+                            seen_citation_ns.add(n)
+                            src = {
+                                "title": record.get("title", ""),
+                                "url": record.get("url", ""),
+                                "content": record.get("content", ""),
+                                "n": n,
+                            }
+                            if record.get("credibility") is not None:
+                                src["credibility"] = record["credibility"]
+                            new_sources.append(src)
                         if new_sources:
+                            all_sources.extend(new_sources)
                             yield _sse({"type": "sources", "sources": new_sources})
 
         if pending_text:

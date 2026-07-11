@@ -86,12 +86,23 @@ async def load_web_page(
     # can't judge "first_party" here — it'll fall back to domain-only signal.
     classified = await classify_sources([result], None)
     result = classified[0] if classified else result
+    resolved_url = result.get("url", "") or url
+    # Registered regardless of tier — junk still gets an `n` and a citation
+    # record (so it's not lost to the frontend's source list) — the agent
+    # just never sees the `n` or the actual page content for it below.
     n = register_citation(
         result.get("title", ""),
-        result.get("url", "") or url,
+        resolved_url,
         result.get("content", ""),
         credibility=result.get("credibility"),
     )
+    if result.get("credibility") == "junk":
+        return {
+            "url": resolved_url,
+            "title": result.get("title", ""),
+            "content": "This page was flagged as low-quality/unreliable and its content has been withheld. Do not cite it — try a different source.",
+            "credibility": "junk",
+        }
     if n is not None:
         result["n"] = n
     return result

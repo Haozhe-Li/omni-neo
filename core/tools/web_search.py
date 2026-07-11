@@ -170,6 +170,21 @@ def _google_search_cached(query: str, k: int=5) -> list[dict]:
     return res
 
 
+# Rank used to sort search results by credibility before they reach the
+# agent: official/trusted/first_party first (equally — all three are "the
+# reader can lean on this"), unknown in the middle, social_media last. Junk
+# never appears here — it's dropped from the agent-facing list entirely
+# (still registered as a citation, see below, so it's not lost to the
+# frontend's source list, just kept out of what grounds the answer).
+_CREDIBILITY_RANK = {
+    "official": 0,
+    "trusted": 0,
+    "first_party": 0,
+    "unknown": 1,
+    "social_media": 2,
+}
+
+
 async def google_search(query: str, k: int = 5) -> list[dict]:
     """
     Perform an google search using Google Serper API.
@@ -188,15 +203,22 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
     out = []
     for item in results:
         item = dict(item)
+        credibility = item.get("credibility")
+        # Registered regardless of tier — junk still gets an `n` and a citation
+        # record (so it's not lost to the frontend's source list) — it's just
+        # excluded from the list handed back to the agent below.
         n = register_citation(
             item.get("title", ""),
             item.get("url", ""),
             item.get("content", ""),
-            credibility=item.get("credibility"),
+            credibility=credibility,
         )
+        if credibility == "junk":
+            continue
         if n is not None:
             item["n"] = n
         out.append(item)
+    out.sort(key=lambda item: _CREDIBILITY_RANK.get(item.get("credibility"), 1))
     return out
 
 

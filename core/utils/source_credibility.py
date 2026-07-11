@@ -9,10 +9,14 @@ Three layers, cheapest first:
    Lookups are batched with one MGET per call.
 3. Whatever's left after (1) and (2) goes through a single batched
    gpt-oss-20b call (title + url + a short snippet + the user's query/topic,
-   for judging "first_party"). Only "trusted" and "junk" verdicts get
-   written back into the Layer 2 cache — "official" is left to the regex
-   layer, "first_party" is a property of (domain, query) not of the domain
-   alone, "social_media" and "unknown" carry no reusable signal.
+   for judging "first_party"). Only "trusted" verdicts get written back into
+   the Layer 2 cache — "official" is left to the regex layer, "first_party"
+   is a property of (domain, query) not of the domain alone, "social_media"
+   and "unknown" carry no reusable signal, and "junk" is deliberately never
+   cached either: a page being junk for *this* query doesn't mean the whole
+   domain is junk (could just be one marketing page on an otherwise fine
+   site) — so every hit gets a fresh LLM judgment instead of inheriting a
+   stale domain-wide verdict.
 
 Domains that host arbitrary user-generated content (reddit, x.com, medium,
 ...) are exempt from caching in both directions: quality varies wildly
@@ -28,7 +32,7 @@ from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.llm import credibility_llm
-from core.utils.redis_credibility import TTL_JUNK, TTL_TRUSTED, credibility_redis
+from core.utils.redis_credibility import TTL_TRUSTED, credibility_redis
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +167,6 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
         cache_lookup.setdefault(cache_key, []).append(i)
 
     to_cache_trusted: dict[str, str] = {}
-    to_cache_junk: dict[str, str] = {}
 
     if cache_lookup:
         cached = await credibility_redis.get_many(list(cache_lookup.keys()))
@@ -189,13 +192,9 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
         cache_key = cache_key_of.get(i)
         if cache_key and label == "trusted":
             to_cache_trusted[cache_key] = "trusted"
-        elif cache_key and label == "junk":
-            to_cache_junk[cache_key] = "junk"
 
     if to_cache_trusted:
         await credibility_redis.set_many(to_cache_trusted, TTL_TRUSTED)
-    if to_cache_junk:
-        await credibility_redis.set_many(to_cache_junk, TTL_JUNK)
 
     return [
         out[i] if out[i] is not None else {**items[i], "credibility": "unknown"}

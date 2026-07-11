@@ -118,14 +118,22 @@ def _register(
                 # Persistence is best-effort: the model still gets its number
                 # for this run even if Redis is briefly unavailable.
                 pass
-            try:
-                index_record = (
-                    record if index_content is None else {**record, "content": index_content}
-                )
-                vector_sources.enqueue_source_indexing(thread_id, index_record)
-            except Exception:
-                # Same best-effort contract: indexing must never break citing.
-                pass
+            # Junk is never indexed: the agent never sees junk content (see
+            # google_search/load_web_page), so no claim in the answer can
+            # legitimately be "supported by" it — indexing it anyway would
+            # just be wasted storage, and worst case lets `/check_source`
+            # spuriously match a claim against junk text that merely looks
+            # similar, letting a low-quality source get presented as backing
+            # a claim it never actually influenced.
+            if credibility != "junk":
+                try:
+                    index_record = (
+                        record if index_content is None else {**record, "content": index_content}
+                    )
+                    vector_sources.enqueue_source_indexing(thread_id, index_record)
+                except Exception:
+                    # Same best-effort contract: indexing must never break citing.
+                    pass
     return n
 
 
