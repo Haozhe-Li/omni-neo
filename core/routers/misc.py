@@ -2,10 +2,9 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
-from core.utils.data_model import QueryRequest, UpdateMemoriesRequest, AutoCompleteRequest
+from core.utils.data_model import QueryRequest, AutoCompleteRequest
 from core.auto_complete import auto_complete
 from core.get_title import get_title
-from core.memories_update_llm import get_update_memories
 from core.audio_sst import get_text_from_audio
 from core.database.db_threads_control import cleanup_old_threads
 from core.routers.state import db_executor
@@ -26,12 +25,6 @@ async def api_auto_complete(request: AutoCompleteRequest):
 @router.post("/get_title")
 def generate_title(request: QueryRequest):
     return get_title(request.query)
-
-
-@router.post("/update_memories")
-async def update_memories_api(request: UpdateMemoriesRequest):
-    res = await get_update_memories(request.past_queries, request.past_memories)
-    return res
 
 
 @router.post("/api/sst")

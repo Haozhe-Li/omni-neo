@@ -14,28 +14,6 @@ def format_personalization(personalization: Personalization) -> str:
     result = ""
     if personalization.response_language:
         result += f"Response Language: {personalization.response_language}\n"
-    if personalization.memories:
-        memories = personalization.memories
-        has_any_memory = any(
-            [
-                memories.user_profile,
-                memories.current_focus,
-                memories.interaction_style,
-                memories.avoid_topics,
-            ]
-        )
-        if has_any_memory:
-            result += (
-                "Memories (Not all memories might be useful for the current task):\n"
-            )
-            if memories.user_profile:
-                result += f"- User Profile: {memories.user_profile}\n"
-            if memories.current_focus:
-                result += f"- Current Focus: {memories.current_focus}\n"
-            if memories.interaction_style:
-                result += f"- Interaction Style: {memories.interaction_style}\n"
-            if memories.avoid_topics:
-                result += f"- Avoid Topics: {memories.avoid_topics}\n"
     if personalization.user_local_datetime:
         result += f"User Local Date Time: {personalization.user_local_datetime}\n"
     if personalization.user_location:
@@ -43,3 +21,17 @@ def format_personalization(personalization: Personalization) -> str:
 
     print(result)
     return result
+
+
+def append_memory_context(personalization_str: str, memory_content: str | None) -> str:
+    """Append the user's server-persisted long-term memory to the personalization block.
+
+    Kept separate from format_personalization because memory is fetched from
+    Postgres by the router (async, keyed by user_id), not supplied by the client.
+    """
+    if not memory_content:
+        return personalization_str
+    return personalization_str + (
+        "\n\nUser Memory (long-term facts about this user; "
+        f"not all of it may be relevant to the current task):\n{memory_content}\n"
+    )

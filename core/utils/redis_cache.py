@@ -138,6 +138,16 @@ class L1Cache:
         key_hash = hashlib.md5(payload.encode("utf-8")).hexdigest()
         return f"{self.prefix}{func.__name__}:{key_hash}"
 
+    def invalidate(self, func: Callable, *args, **kwargs) -> None:
+        """
+        Delete the cached entry for a specific call, e.g. after writing fresh
+        data so the next read isn't served stale content until ttl expiry.
+        `func` may be the decorated wrapper itself — functools.wraps preserves
+        __name__/__wrapped__ so the key hashes identically either way.
+        """
+        cache_key = self._build_cache_key(func, args, kwargs)
+        self.redis.delete(cache_key)
+
     def cache(self, ttl: Optional[int] = None) -> Callable:
         """
         Decorator，用于缓存函数结果。

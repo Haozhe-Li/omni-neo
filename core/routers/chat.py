@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 from typing import Literal
 
@@ -24,7 +25,7 @@ from core.redis_stream import (
 from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest
 from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry
-from core.utils.utils import format_personalization
+from core.utils.utils import format_personalization, append_memory_context
 from core.auth import get_current_user, GUEST_DAILY_LIMIT
 from core.database.db_user_threads import (
     get_thread_messages,
@@ -32,6 +33,8 @@ from core.database.db_user_threads import (
     check_and_increment_guest_usage,
 )
 from core.database.db_threads_control import touch_thread
+from core.database.db_user_memories import get_user_memory, save_user_memory
+from core.memories_update_llm import get_update_memories
 from core.routers.state import (
     db_executor,
     cancellation_events,
@@ -39,6 +42,8 @@ from core.routers.state import (
     assert_thread_access,
     PERSIST_GRACE_SECONDS,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -54,6 +59,21 @@ _BATCH_SIZE = 15        # flush when this many events are pending
 _BATCH_TIMEOUT_S = 0.03 # flush after 30 ms even if batch isn't full (slow models)
 
 
+async def _update_memory_background(user_id: str, user_query: str, assistant_text: str) -> None:
+    """Fire-and-forget: extract durable facts from this turn and persist them.
+
+    Independent of thread persistence below — runs even if the client never
+    reconnects to sync the turn, since memory is keyed by user_id, not thread_id.
+    """
+    try:
+        current = await asyncio.to_thread(get_user_memory, user_id)
+        updated = await get_update_memories(current, user_query, assistant_text)
+        if updated.strip() != current.strip():
+            await asyncio.to_thread(save_user_memory, user_id, updated)
+    except Exception as e:
+        logger.error(f"[chat] memory update failed for user {user_id}: {e}")
+
+
 async def _generate_background(
     thread_id: str,
     user_id: str,
@@ -65,6 +85,7 @@ async def _generate_background(
     user_local_datetime: str | None,
     turn: int | None,
     cancel_event: asyncio.Event | None,
+    memory_enabled: bool = False,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
     # Accumulate message fields for the final Postgres upsert.
@@ -135,6 +156,9 @@ async def _generate_background(
         # Shrink TTL now that generation is complete.
         await stream_expire(thread_id)
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
+
+        if memory_enabled and text:
+            asyncio.create_task(_update_memory_background(user_id, query, text))
 
         # Persist to Postgres as a FALLBACK only. A connected client — even one
         # that navigated away within the SPA — syncs the turn itself on the `done`
@@ -243,6 +267,10 @@ async def chat(
 
     personalization_str = format_personalization(request.personalization)
     p = request.personalization
+    memory_enabled = bool(p and p.memory_enabled)
+    if memory_enabled:
+        stored_memory = await asyncio.to_thread(get_user_memory, user_id)
+        personalization_str = append_memory_context(personalization_str, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
     if thread_id:
@@ -265,6 +293,7 @@ async def chat(
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=request.turn,
                 cancel_event=cancel_event,
+                memory_enabled=memory_enabled,
             )
         )
         generation_tasks[thread_id] = task
@@ -369,6 +398,9 @@ async def api_rewind_thread(
 
     p = body.personalization
     personalization_str = format_personalization(p)
+    if p and p.memory_enabled:
+        stored_memory = await asyncio.to_thread(get_user_memory, user_id)
+        personalization_str = append_memory_context(personalization_str, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
     cancel_event = asyncio.Event()
     cancellation_events[thread_id] = cancel_event

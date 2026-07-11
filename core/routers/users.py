@@ -7,6 +7,7 @@ from core.database.db_user_threads import (
     merge_guest_to_user,
 )
 from core.database.db_threads_control import reassign_threads_user
+from core.database.db_user_memories import migrate_guest_memory
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -45,4 +46,5 @@ def api_merge_guest(
     count = merge_guest_to_user(user_id, body.guest_id)
     # Mirror the reassignment in threads_control so retention rules apply correctly
     reassign_threads_user(body.guest_id, user_id)
+    migrate_guest_memory(user_id, body.guest_id)
     return {"status": "merged", "threads_migrated": count}

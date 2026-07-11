@@ -3,21 +3,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class Memories(BaseModel):
-    user_profile: str | None = None
-    current_focus: str | None = None
-    interaction_style: str | None = None
-    avoid_topics: str | None = None
-
-
-class UpdateMemoriesRequest(BaseModel):
-    past_queries: list[str]
-    past_memories: Memories | None = None
-
-
 class Personalization(BaseModel):
     response_language: str = "Follow User's Query Language"
-    memories: Memories | None = None
+    memory_enabled: bool = False
     user_local_datetime: str | None = None
     user_location: str | None = None
     user_unit: str | None = None
