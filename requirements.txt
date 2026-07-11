@@ -41,7 +41,7 @@ boto3
 redis
 
 # RAG
-langchain-pymupdf4llm
+pymupdf
 python-docx
 langchain-text-splitters
 

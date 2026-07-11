@@ -3,7 +3,7 @@ import boto3
 import base64
 import tempfile
 import logging
-from langchain_pymupdf4llm import PyMuPDF4LLMLoader
+import pymupdf
 from docx import Document as DocxDocument
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
@@ -113,9 +113,8 @@ def process_uploaded_file(file_id: str):
         try:
             full_text = ""
             if record["file_type"] == "application/pdf":
-                loader = PyMuPDF4LLMLoader(local_path)
-                docs = loader.load()
-                full_text = "\n".join([doc.page_content for doc in docs])
+                with pymupdf.open(local_path) as pdf_doc:
+                    full_text = "\n".join(page.get_text() for page in pdf_doc)
             elif record["file_type"] == DOCX_MIME_TYPE:
                 full_text = _parse_docx_to_markdown(local_path)
             else:
