@@ -63,7 +63,7 @@ def _register(
     url: str,
     content: str,
     index_content: str | None = None,
-    credibility: str | None = None,
+    credibility: dict | None = None,
 ) -> int:
     """Shared implementation behind `register_citation` and
     `register_document_citation`. Dedupes on `record[key_field] == key_value`
@@ -76,10 +76,11 @@ def _register(
     frontend — used for documents, where the citation's display `content` is
     capped much shorter than what's worth chunking for search.
 
-    `credibility` is the label from `source_credibility.classify_sources`
-    (None for uploaded documents, which aren't classified). Like `turn`, a
-    reused citation keeps whatever label it was first registered with —
-    it isn't recomputed on repeat cites.
+    `credibility` is the `{"label", "reason"}` dict from
+    `source_credibility.classify_sources` (None for uploaded documents, which
+    aren't classified). Like `turn`, a reused citation keeps whatever
+    credibility it was first registered with — it isn't recomputed on repeat
+    cites.
     """
     reg = _registry.get()
     if reg is None:
@@ -125,7 +126,7 @@ def _register(
             # spuriously match a claim against junk text that merely looks
             # similar, letting a low-quality source get presented as backing
             # a claim it never actually influenced.
-            if credibility != "junk":
+            if (credibility.get("label") if credibility else None) != "junk":
                 try:
                     index_record = (
                         record if index_content is None else {**record, "content": index_content}
@@ -138,7 +139,7 @@ def _register(
 
 
 def register_citation(
-    title: str, url: str, content: str, credibility: str | None = None
+    title: str, url: str, content: str, credibility: dict | None = None
 ) -> int | None:
     """Assign (or reuse) the 1-based citation number for `url` in this thread.
 

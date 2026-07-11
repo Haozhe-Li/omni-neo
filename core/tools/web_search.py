@@ -203,7 +203,7 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
     out = []
     for item in results:
         item = dict(item)
-        credibility = item.get("credibility")
+        credibility = item.get("credibility")  # {"label": ..., "reason": ...} | None
         # Registered regardless of tier — junk still gets an `n` and a citation
         # record (so it's not lost to the frontend's source list) — it's just
         # excluded from the list handed back to the agent below.
@@ -213,12 +213,16 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
             item.get("content", ""),
             credibility=credibility,
         )
-        if credibility == "junk":
+        if credibility and credibility.get("label") == "junk":
             continue
         if n is not None:
             item["n"] = n
         out.append(item)
-    out.sort(key=lambda item: _CREDIBILITY_RANK.get(item.get("credibility"), 1))
+    out.sort(
+        key=lambda item: _CREDIBILITY_RANK.get(
+            (item.get("credibility") or {}).get("label"), 1
+        )
+    )
     return out
 
 
