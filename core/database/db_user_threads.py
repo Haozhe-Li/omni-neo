@@ -45,11 +45,15 @@ SEARCH_TEXT_MAX_CHARS = 50_000
 # ---------------------------------------------------------------------------
 
 def get_threads_for_user(user_id: str) -> list[dict]:
-    """Return all threads belonging to a user, newest first."""
+    """Return all threads belonging to a user, newest first.
+
+    Excludes scheduled-research threads (origin='scheduled_task') — those are
+    surfaced only via /schedule_task's own run list (see
+    core/routers/scheduled_tasks.py), never in the regular chat sidebar."""
     sql = """
         SELECT thread_id, title, is_pinned, updated_at
         FROM user_threads
-        WHERE user_id = %s
+        WHERE user_id = %s AND origin IS NULL
         ORDER BY is_pinned DESC, updated_at DESC
     """
     try:
@@ -152,6 +156,11 @@ def setup_thread_search() -> None:
         "ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT '';",
         "CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);",
         "CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);",
+        # Marks a thread's creator — NULL for ordinary chat, 'scheduled_task'
+        # for a thread created by a scheduled research run (see
+        # core/routers/scheduled_tasks.py). Keeps the two entirely separate:
+        # regular chat history/search never surfaces a scheduled-task thread.
+        "ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS origin VARCHAR(20);",
     ]
     try:
         with pool.connection() as conn:
@@ -225,6 +234,7 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
                GREATEST(similarity(COALESCE(title, ''), %s), similarity(search_text, %s)) AS rank
         FROM user_threads
         WHERE user_id = %s
+          AND origin IS NULL
           AND (title ILIKE %s OR search_text ILIKE %s)
         ORDER BY rank DESC NULLS LAST, updated_at DESC
         LIMIT %s
@@ -249,20 +259,21 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
         return []
 
 
-def register_thread(thread_id: str, user_id: str) -> bool:
+def register_thread(thread_id: str, user_id: str, origin: str | None = None) -> bool:
     """
-    Create a user_threads row at thread-creation time (called from /get_thread_id).
+    Create a user_threads row at thread-creation time (called from /get_thread_id,
+    and from the scheduled-task webhook with origin='scheduled_task').
     No-op if the thread is already registered.
     """
     sql = """
-        INSERT INTO user_threads (thread_id, user_id, ui_messages, updated_at)
-        VALUES (%s, %s, '[]'::jsonb, NOW())
+        INSERT INTO user_threads (thread_id, user_id, ui_messages, origin, updated_at)
+        VALUES (%s, %s, '[]'::jsonb, %s, NOW())
         ON CONFLICT (thread_id) DO NOTHING
     """
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id))
+                cur.execute(sql, (thread_id, user_id, origin))
         return True
     except Exception as e:
         logger.error(f"[db_user_threads] register_thread error: {e}")

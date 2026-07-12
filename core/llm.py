@@ -22,3 +22,6 @@ update_memories_llm = gpt_oss_20b
 widget_predictor_llm = gpt_oss_20b
 credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
+# Structured extraction only (title/instruction/schedule) — low reasoning
+# effort is enough and keeps the interactive create-flow snappy.
+research_schedule_llm = gpt_oss_120b_low

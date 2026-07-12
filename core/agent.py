@@ -225,10 +225,84 @@ code block — it always looks bad and must not appear. {chart_policy}
 </formatting>
 {artifact_policy}"""
 
+# ── Scheduled profile ────────────────────────────────────────────────────────
+# Same capability as "pro" (model, tools, skills), minus two things:
+# - the ask-question skill: there's no user present to answer a clarifying
+#   question in an unattended cron run, so the agent must make a reasonable
+#   assumption and proceed instead of stalling the turn on it.
+# - streaming: this profile is invoked once via `.ainvoke()` (see
+#   core/scheduled_agent.py), not through the SSE machinery in core/stream.py.
+#
+# It also needs a short plain-text takeaway for the notification email, which
+# nothing upstream produces today (`<report>` isn't parsed backend-side — see
+# core/stream.py's module docstring) — taught here as a sibling `<summary>`
+# tag using the exact same "write it inline, we'll pull it out" convention as
+# the report-writing skill, so the shared skill file doesn't need touching.
+SCHEDULED_SKILL_FILES = {
+    path: data for path, data in PRO_SKILL_FILES.items()
+    if not path.startswith("/skills/ask-question/")
+}
+
+_SCHEDULED_ADDENDUM = """
+
+<scheduled_run_policy>
+This is an unattended scheduled research run — no user is present to answer a
+clarifying question. Never end your turn waiting on one; make the most
+reasonable assumption explicit in the report instead and proceed.
+
+You MUST produce a report for every run (see the report-writing skill) — this
+output only reaches the user by email, there is no chat surface to reply in.
+
+In addition, write a short plain-text executive summary of the report's key
+takeaway (2-4 sentences, no markdown formatting, no citations) wrapped in a
+`<summary>...</summary>` block. Place it immediately before the `<report>`
+block. This summary becomes the body of the notification email, so it must
+stand alone and make sense without the report attached.
+</scheduled_run_policy>
+"""
+
+_SCHEDULED_PROMPT = (
+    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO)
+    + _SCHEDULED_ADDENDUM
+)
+
+
+def build_scheduled_agent():
+    """Construct the agent variant used for scheduled research tasks.
+
+    Cheaper than the interactive pro profile (gpt-oss-120b-high on Groq
+    instead of Gemini Flash) — no one is watching this run live, so there's
+    no latency pressure to justify the pricier model."""
+    return create_deep_agent(
+        name="Omni Scheduled",
+        model=gpt_oss_120b_high,
+        tools=RETRIEVAL_TOOLS,
+        system_prompt=_SCHEDULED_PROMPT,
+        skills=[SKILLS_SOURCE] if SCHEDULED_SKILL_FILES else None,
+        checkpointer=_db.checkpointer,
+        middleware=[
+            ToolRetryMiddleware(
+                max_retries=2,
+                backoff_factor=2.0,
+                initial_delay=1.0,
+            ),
+            ToolCallLimitMiddleware(run_limit=30),
+        ],
+    )
+
+
+scheduled_agent = None
+
+
+def get_scheduled_agent():
+    return scheduled_agent
+
+
 # Registered with the prompt-leakage guard.
 SYSTEM_PROMPTS = [
     _BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
     _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO),
+    _SCHEDULED_PROMPT,
 ]
 
 
@@ -306,9 +380,10 @@ pro_agent = None
 
 
 def initialize_agents():
-    global fast_agent, pro_agent
+    global fast_agent, pro_agent, scheduled_agent
     fast_agent = build_agent("fast")
     pro_agent = build_agent("pro")
+    scheduled_agent = build_scheduled_agent()
 
 
 def get_agent(profile: Profile):

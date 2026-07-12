@@ -14,7 +14,8 @@ from core.database.db_user_threads import setup_thread_search
 from core.database.db_user_files import setup_user_files_table
 from core.database.db_user_memories import setup_user_memories_table
 from core.database.db_user_usage import setup_user_usage_table
-from core.routers import chat, uploads, threads, users, misc, memories
+from core.database.db_scheduled_tasks import setup_scheduled_tasks_table
+from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks
 
 
 @asynccontextmanager
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     setup_user_memories_table()
     setup_user_usage_table()
     setup_thread_search()
+    setup_scheduled_tasks_table()
     initialize_agents()
     yield
     await teardown_checkpointer()
@@ -48,3 +50,4 @@ app.include_router(threads.router)
 app.include_router(users.router)
 app.include_router(misc.router)
 app.include_router(memories.router)
+app.include_router(scheduled_tasks.router)

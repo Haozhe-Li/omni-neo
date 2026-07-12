@@ -47,3 +47,7 @@ langchain-text-splitters
 
 # semantic source search (backs /check_source)
 upstash-search
+
+# scheduled research tasks: email delivery + cron scheduling
+resend
+qstash

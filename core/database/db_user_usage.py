@@ -7,14 +7,17 @@ Table schema:
     CREATE TABLE IF NOT EXISTS user_usage (
         user_id VARCHAR(255) PRIMARY KEY,
         day DATE NOT NULL DEFAULT CURRENT_DATE,
-        day_used INT NOT NULL DEFAULT 0,
+        day_used NUMERIC(10,2) NOT NULL DEFAULT 0,
         month VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
-        month_used INT NOT NULL DEFAULT 0,
+        month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
 
 Model:
-    - Every /chat or /rewind call spends credits: fast=1, pro=3 (MODE_CREDIT_COST).
+    - Every /chat or /rewind call spends credits: fast=1, pro=4.7 — and a
+      scheduled research run (core/routers/scheduled_tasks.py) also spends
+      4.7, charged against the same ledger (MODE_CREDIT_COST). Costs are
+      fractional, hence NUMERIC columns rather than INT.
     - Two independent caps apply at once: a daily one and a calendar-month one.
       Both are tracked in the same row so a single charge is one round trip.
     - Limits differ for guests vs signed-in users (see *_CREDIT_LIMIT below),
@@ -23,6 +26,11 @@ Model:
     - Charging is all-or-nothing: if applying the cost would push either the
       day or month counter over its limit, nothing is charged at all (the
       request should be rejected outright, not partially billed).
+
+Note: psycopg maps NUMERIC to decimal.Decimal, which doesn't mix with float
+in arithmetic — every value read from a day_used/month_used column is cast
+to float immediately (see the float(...) wrapping below) so the rest of this
+module and its callers can treat usage as plain floats throughout.
 """
 
 import logging
@@ -38,14 +46,14 @@ USER_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("USER_MONTHLY_CREDIT_LIMIT", "300
 GUEST_DAILY_CREDIT_LIMIT: int = int(os.getenv("GUEST_DAILY_CREDIT_LIMIT", "20"))
 GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "300"))
 
-MODE_CREDIT_COST: dict[str, int] = {"fast": 1, "pro": 3}
+MODE_CREDIT_COST: dict[str, float] = {"fast": 1.0, "pro": 4.7, "scheduled": 4.7}
 
 
 def setup_user_usage_table() -> None:
     """
     Create user_usage (idempotent) and drop the old guest_usage table it
     replaces — usage is now tracked uniformly for guests and signed-in users
-    alike, across both fast and pro modes, so the old pro-only/guest-only
+    alike, across fast/pro/scheduled modes, so the old pro-only/guest-only
     table no longer serves a purpose. Safe to call on every startup.
     """
     ddl = [
@@ -54,12 +62,16 @@ def setup_user_usage_table() -> None:
         CREATE TABLE IF NOT EXISTS user_usage (
             user_id VARCHAR(255) PRIMARY KEY,
             day DATE NOT NULL DEFAULT CURRENT_DATE,
-            day_used INT NOT NULL DEFAULT 0,
+            day_used NUMERIC(10,2) NOT NULL DEFAULT 0,
             month VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
-            month_used INT NOT NULL DEFAULT 0,
+            month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
         """,
+        # Table pre-dates fractional costs (pro/scheduled used to be a flat
+        # int)  — widen existing INT columns in place, a no-op once already NUMERIC.
+        "ALTER TABLE user_usage ALTER COLUMN day_used TYPE NUMERIC(10,2);",
+        "ALTER TABLE user_usage ALTER COLUMN month_used TYPE NUMERIC(10,2);",
     ]
     try:
         with pool.connection() as conn:
@@ -153,8 +165,8 @@ def charge_credits(user_id: str, mode: str) -> dict:
                 if row is not None:
                     return {
                         "charged": True,
-                        "day_used": row["day_used"], "day_limit": day_limit,
-                        "month_used": row["month_used"], "month_limit": month_limit,
+                        "day_used": float(row["day_used"]), "day_limit": day_limit,
+                        "month_used": float(row["month_used"]), "month_limit": month_limit,
                         "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
                         "exceeded_scope": None,
                     }
@@ -164,8 +176,8 @@ def charge_credits(user_id: str, mode: str) -> dict:
                     (user_id,),
                 )
                 current = cur.fetchone()
-                day_used = current["day_used"] if current and current["day"] == today else 0
-                month_used = current["month_used"] if current and current["month"] == month else 0
+                day_used = float(current["day_used"]) if current and current["day"] == today else 0.0
+                month_used = float(current["month_used"]) if current and current["month"] == month else 0.0
                 day_over = day_used + cost > day_limit
                 month_over = month_used + cost > month_limit
                 scope = "both" if (day_over and month_over) else ("day" if day_over else "month")
@@ -180,8 +192,8 @@ def charge_credits(user_id: str, mode: str) -> dict:
         logger.error(f"[db_user_usage] charge_credits error for {user_id}: {e}")
         return {
             "charged": True,
-            "day_used": 0, "day_limit": day_limit,
-            "month_used": 0, "month_limit": month_limit,
+            "day_used": 0.0, "day_limit": day_limit,
+            "month_used": 0.0, "month_limit": month_limit,
             "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
             "exceeded_scope": None,
         }
@@ -194,7 +206,7 @@ def get_usage(user_id: str) -> dict:
     month = today.strftime("%Y-%m")
     resets_day_at, resets_month_at = _reset_times(today)
 
-    day_used = month_used = 0
+    day_used = month_used = 0.0
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
@@ -204,8 +216,8 @@ def get_usage(user_id: str) -> dict:
                 )
                 row = cur.fetchone()
                 if row:
-                    day_used = row["day_used"] if row["day"] == today else 0
-                    month_used = row["month_used"] if row["month"] == month else 0
+                    day_used = float(row["day_used"]) if row["day"] == today else 0.0
+                    month_used = float(row["month_used"]) if row["month"] == month else 0.0
     except Exception as e:
         logger.error(f"[db_user_usage] get_usage error for {user_id}: {e}")
 
