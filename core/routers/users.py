@@ -1,12 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth import get_current_user, GUEST_DAILY_LIMIT
+from core.auth import get_current_user
 from core.database.db_user_threads import (
-    get_guest_usage_today as _get_guest_usage_today,
     merge_guest_to_user,
     delete_all_threads_for_user,
-    delete_guest_usage,
 )
 from core.database.db_threads_control import (
     reassign_threads_user,
@@ -15,22 +13,21 @@ from core.database.db_threads_control import (
 )
 from core.database.db_user_memories import migrate_guest_memory, delete_user_memory
 from core.database.db_user_files import get_user_file_buckets, delete_user_files
+from core.database.db_user_usage import get_usage, delete_user_usage
 from core.RAG.file_parser import delete_user_uploads_from_s3
 
 router = APIRouter(prefix="/api", tags=["users"])
 
 
-@router.get("/guests/daily-quota")
-def api_guest_daily_quota(user_id: str = Depends(get_current_user)):
+@router.get("/usage")
+def api_get_usage(user_id: str = Depends(get_current_user)):
     """
-    Return the remaining daily quota for a guest user today.
-    Signed-in users always get unlimited (-1).
+    Return the caller's current credit usage: today's and this calendar
+    month's totals, limits, remaining balance, per-mode credit cost, and the
+    next reset times. Works for both guests and signed-in users — limits
+    differ by tier, everything else about the shape is the same.
     """
-    if not user_id.startswith("guest_"):
-        return {"daily_limit": -1, "used": 0, "remaining": -1}
-    used = _get_guest_usage_today(user_id)
-    remaining = max(GUEST_DAILY_LIMIT - used, 0)
-    return {"daily_limit": GUEST_DAILY_LIMIT, "used": used, "remaining": remaining}
+    return get_usage(user_id)
 
 
 class MergeRequest(BaseModel):
@@ -55,6 +52,9 @@ def api_merge_guest(
     # Mirror the reassignment in threads_control so retention rules apply correctly
     reassign_threads_user(body.guest_id, user_id)
     migrate_guest_memory(user_id, body.guest_id)
+    # Signing in is an upgrade, not a punishment: drop the guest's usage
+    # rather than carrying its (much lower) tier's counters over.
+    delete_user_usage(body.guest_id)
     return {"status": "merged", "threads_migrated": count}
 
 
@@ -64,7 +64,7 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
     Permanently erase every piece of data associated with this user_id:
     all threads (LangGraph checkpoints, cached citations in Redis, and the
     Upstash vector index), every uploaded file (DB rows + S3 objects), the
-    long-term memory document, and — for guests — the daily quota counter.
+    long-term memory document.
 
     Irreversible. Published "pages" live in the frontend's own Redis (Upstash)
     and are purged separately by the Next.js /api/unpublish-all route.
@@ -80,8 +80,8 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
 
     memory_deleted = delete_user_memory(user_id)
 
-    if user_id.startswith("guest_"):
-        delete_guest_usage(user_id)
+    # important: do not delete usage tracking, otherwise the user will be able to create a new account and get a fresh usage allowance.
+    # delete_user_usage(user_id)
 
     return {
         "status": "deleted",

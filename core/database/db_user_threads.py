@@ -1,7 +1,7 @@
 """
-Database operations for user_threads and guest_usage tables.
+Database operations for the user_threads table.
 
-Table schemas (post-migration):
+Table schema (post-migration):
     CREATE TABLE IF NOT EXISTS user_threads (
         thread_id VARCHAR(255) PRIMARY KEY,
         user_id VARCHAR(255) NOT NULL,
@@ -16,11 +16,9 @@ Table schemas (post-migration):
     CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);
     CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);
 
-    CREATE TABLE IF NOT EXISTS guest_usage (
-        guest_id VARCHAR(255) PRIMARY KEY,
-        usage_date DATE NOT NULL,
-        request_count INT DEFAULT 1
-    );
+Guest daily/monthly request quotas used to live in a `guest_usage` table
+here — that's been replaced by the unified credit ledger in
+core/database/db_user_usage.py, which covers both guests and signed-in users.
 
 Limits:
     - Guests: max GUEST_MAX_THREADS active threads
@@ -30,7 +28,6 @@ Limits:
 import json
 import logging
 import os
-from datetime import date
 
 from core.database.postgresql_saver import sync_pool as pool
 
@@ -391,73 +388,6 @@ def merge_guest_to_user(user_id: str, guest_id: str) -> int:
                 return cur.rowcount
     except Exception as e:
         logger.error(f"[db_user_threads] merge_guest_to_user error: {e}")
-        return 0
-
-
-# ---------------------------------------------------------------------------
-# Guest rate limiting
-# ---------------------------------------------------------------------------
-
-def get_guest_usage_today(guest_id: str) -> int:
-    """
-    Read-only: return today's request count for a guest without incrementing.
-    Returns 0 if no record exists for today.
-    """
-    today = date.today()
-    sql = """
-        SELECT request_count FROM guest_usage
-        WHERE guest_id = %s AND usage_date = %s
-    """
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (guest_id, today))
-                row = cur.fetchone()
-                return row["request_count"] if row else 0
-    except Exception as e:
-        logger.error(f"[db_user_threads] get_guest_usage_today error: {e}")
-        return 0
-
-
-def delete_guest_usage(guest_id: str) -> bool:
-    """Clear a guest's daily usage counter (part of a full account data purge)."""
-    sql = "DELETE FROM guest_usage WHERE guest_id = %s"
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (guest_id,))
-                return cur.rowcount > 0
-    except Exception as e:
-        logger.error(f"[db_user_threads] delete_guest_usage error: {e}")
-        return False
-
-
-def check_and_increment_guest_usage(guest_id: str) -> int:
-    """
-    Atomically increment (or reset-and-set) today's request count for a guest.
-    Returns the updated request_count.
-    """
-    today = date.today()
-    sql = """
-        INSERT INTO guest_usage (guest_id, usage_date, request_count)
-        VALUES (%s, %s, 1)
-        ON CONFLICT (guest_id) DO UPDATE
-            SET request_count = CASE
-                    WHEN guest_usage.usage_date = EXCLUDED.usage_date
-                    THEN guest_usage.request_count + 1
-                    ELSE 1
-                END,
-                usage_date = EXCLUDED.usage_date
-        RETURNING request_count
-    """
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (guest_id, today))
-                row = cur.fetchone()
-                return row["request_count"] if row else 1
-    except Exception as e:
-        logger.error(f"[db_user_threads] check_and_increment_guest_usage error: {e}")
         return 0
 
 

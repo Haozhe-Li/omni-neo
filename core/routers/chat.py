@@ -26,12 +26,12 @@ from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequ
 from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry
 from core.utils.utils import format_personalization, append_memory_context
-from core.auth import get_current_user, GUEST_DAILY_LIMIT
+from core.auth import get_current_user
 from core.database.db_user_threads import (
     get_thread_messages,
     upsert_thread_messages,
-    check_and_increment_guest_usage,
 )
+from core.database.db_user_usage import charge_credits
 from core.database.db_threads_control import touch_thread
 from core.database.db_user_memories import get_user_memory, save_user_memory
 from core.memories_update_llm import get_update_memories
@@ -218,6 +218,29 @@ async def _generate_background(
 # ---------------------------------------------------------------------------
 
 
+def _charge_or_429(user_id: str, mode: str) -> None:
+    """
+    Spend this turn's credits (fast=1, pro=3) against the caller's daily and
+    monthly usage. Raises 429 with a structured detail body — scope, current
+    totals, and reset times — that the frontend uses to render the
+    usage-limit dialog, instead of charging and letting the turn proceed.
+    """
+    usage = charge_credits(user_id, mode)
+    if not usage["charged"]:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "usage_limit_exceeded",
+                "scope": usage["exceeded_scope"],
+                "is_guest": user_id.startswith("guest_"),
+                "day_used": usage["day_used"], "day_limit": usage["day_limit"],
+                "month_used": usage["month_used"], "month_limit": usage["month_limit"],
+                "resets_day_at": usage["resets_day_at"],
+                "resets_month_at": usage["resets_month_at"],
+            },
+        )
+
+
 @router.post("/chat")
 async def chat(
     request: QueryRequest,
@@ -230,18 +253,11 @@ async def chat(
     disconnects — events are buffered in a Redis Stream so the client can
     reconnect at any time and replay from the beginning.
 
-    `request.mode` selects the profile: "fast" (lean, gpt-oss — unmetered) or
-    "pro" (deep agent, Gemini, with chart/report artifacts). Only "pro" counts
-    against the guest daily quota; "fast" is free and unlimited.
+    `request.mode` selects the profile: "fast" (lean, gpt-oss) or "pro" (deep
+    agent, Gemini, with chart/report artifacts). Every turn spends credits
+    against the caller's daily/monthly usage — see _charge_or_429.
     """
-    # Pro mode is the metered profile: enforce the guest daily cap (fast is free).
-    if request.mode == "pro" and user_id.startswith("guest_"):
-        count = check_and_increment_guest_usage(user_id)
-        if count > GUEST_DAILY_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail="Daily Pro limit reached for guest users. Please sign in to continue.",
-            )
+    _charge_or_429(user_id, request.mode)
 
     assert_thread_access(request.thread_id, user_id)
     thread_id = request.thread_id
@@ -354,7 +370,13 @@ async def api_rewind_thread(
     HumanMessage, optionally forks it via ``aupdate_state``, then streams from there.
     The LangGraph agent state is rewound; the frontend is responsible for trimming
     its own UI message list before calling this endpoint.
+
+    This re-runs the agent exactly like a fresh /chat turn, so it's metered
+    the same way — otherwise "regenerate" would be a free, unlimited bypass
+    around the credit system.
     """
+    _charge_or_429(user_id, body.mode)
+
     assert_thread_access(thread_id, user_id)
 
     profile = "pro" if body.mode == "pro" else "fast"

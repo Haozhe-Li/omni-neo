@@ -16,12 +16,9 @@ import jwt
 from jwt import PyJWKClient
 from fastapi import Header, HTTPException, Depends
 
-from core.database.db_user_threads import check_and_increment_guest_usage, get_guest_usage_today
-
 logger = logging.getLogger(__name__)
 
 CLERK_JWKS_URL: str = os.getenv("CLERK_JWKS_URL", "")
-GUEST_DAILY_LIMIT: int = int(os.getenv("GUEST_DAILY_LIMIT", "10"))
 
 # Lazily initialised – avoids network calls at import time
 _jwks_client: PyJWKClient | None = None
@@ -93,40 +90,3 @@ def get_optional_user(
         return get_current_user(authorization=authorization, x_guest_id=x_guest_id)
     except HTTPException:
         return None
-
-
-def get_current_user_with_rate_limit(
-    user_id: str = Depends(get_current_user),
-) -> str:
-    """
-    Same as get_current_user but additionally enforces a daily cap for guests.
-    Increments the counter. Use on endpoints that consume AI compute (e.g. /chat).
-    """
-    if user_id.startswith("guest_"):
-        count = check_and_increment_guest_usage(user_id)
-        if count > GUEST_DAILY_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail="Daily limit reached for guest users. Please sign in to continue.",
-            )
-    return user_id
-
-
-def get_current_user_check_rate_limit(
-    user_id: str = Depends(get_current_user),
-) -> str:
-    """
-    Read-only quota check — does NOT increment the counter.
-    Blocks with 429 if the guest has already exhausted today's quota,
-    but does not consume a request itself.
-    Use on pre-flight endpoints (e.g. /research_helper) so guests aren't
-    allowed to keep prepping once their canvas quota is gone.
-    """
-    if user_id.startswith("guest_"):
-        count = get_guest_usage_today(user_id)
-        if count >= GUEST_DAILY_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail="Daily limit reached for guest users. Please sign in to continue.",
-            )
-    return user_id

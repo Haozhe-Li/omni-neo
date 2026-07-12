@@ -13,6 +13,7 @@ from core.prompt_guard import register_sensitive_prompts
 from core.database.db_user_threads import setup_thread_search
 from core.database.db_user_files import setup_user_files_table
 from core.database.db_user_memories import setup_user_memories_table
+from core.database.db_user_usage import setup_user_usage_table
 from core.routers import chat, uploads, threads, users, misc, memories
 
 
@@ -21,6 +22,7 @@ async def lifespan(app: FastAPI):
     await setup_checkpointer()
     setup_user_files_table()
     setup_user_memories_table()
+    setup_user_usage_table()
     setup_thread_search()
     initialize_agents()
     yield
