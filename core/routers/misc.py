@@ -2,9 +2,10 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
-from core.utils.data_model import QueryRequest, AutoCompleteRequest
+from core.utils.data_model import QueryRequest, AutoCompleteRequest, GenerateCoverRequest
 from core.auto_complete import auto_complete
 from core.get_title import get_title
+from core.generate_cover import generate_cover
 from core.audio_sst import get_text_from_audio
 from core.database.db_threads_control import cleanup_old_threads
 from core.routers.state import db_executor
@@ -25,6 +26,11 @@ async def api_auto_complete(request: AutoCompleteRequest):
 @router.post("/get_title")
 def generate_title(request: QueryRequest):
     return get_title(request.query)
+
+
+@router.post("/generate_cover")
+def api_generate_cover(request: GenerateCoverRequest):
+    return generate_cover(request.title)
 
 
 @router.post("/api/sst")

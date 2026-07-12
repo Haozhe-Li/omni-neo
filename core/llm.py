@@ -21,3 +21,4 @@ prompt_guard_llm = llama_guard_2
 update_memories_llm = gpt_oss_20b
 widget_predictor_llm = gpt_oss_20b
 credibility_llm = gpt_oss_20b
+generate_cover_llm = gpt_oss_20b

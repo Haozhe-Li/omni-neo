@@ -31,6 +31,10 @@ class AutoCompleteRequest(BaseModel):
     text: str
 
 
+class GenerateCoverRequest(BaseModel):
+    title: str
+
+
 class CheckSourceRequest(BaseModel):
     thread_id: str
     text_selection: str
