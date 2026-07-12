@@ -10,6 +10,9 @@ import os
 from typing import AsyncGenerator
 
 import redis.asyncio as aioredis
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+from redis.retry import Retry
 
 _client: aioredis.Redis | None = None
 
@@ -20,7 +23,21 @@ STREAM_TTL_DONE   = 600    # 10 minutes after completion
 def _get_redis() -> aioredis.Redis:
     global _client
     if _client is None:
-        _client = aioredis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        # A bare timeout here used to be fatal: any transient Upstash blip
+        # raised straight out of stream_write_batch/stream_read, and
+        # _generate_background's catch-all turned that into a terminal
+        # `error` event, killing the whole in-flight generation over what's
+        # often a one-off network hiccup. Bounded timeouts + automatic retry
+        # let a blip resolve itself instead.
+        _client = aioredis.Redis.from_url(
+            os.environ["REDIS_URL"],
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=5,
+            retry=Retry(ExponentialBackoff(base=0.5, cap=2.0), retries=3),
+            retry_on_error=[RedisTimeoutError, RedisConnectionError],
+            health_check_interval=30,
+        )
     return _client
 
 

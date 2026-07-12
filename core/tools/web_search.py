@@ -8,6 +8,7 @@ from langchain_community.utilities import GoogleSerperAPIWrapper
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
 from typing import Literal
+import asyncio
 import os
 import arxiv
 
@@ -198,7 +199,13 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
         field — cite it inline as [n] when you use that result in your answer.
     """
     k = min(k, 10)
-    results = _google_search_cached(query, k)
+    # _google_search_cached is synchronous (blocking Redis cache lookup, and
+    # a blocking Serper HTTP call on a cache miss) — this function is itself
+    # `async def`, so the agent awaits it directly on the event loop instead
+    # of LangChain dispatching it to a worker thread the way it does for
+    # plain sync tools. Calling it inline would freeze that loop — and every
+    # other concurrent thread's SSE stream on it — for the call's duration.
+    results = await asyncio.to_thread(_google_search_cached, query, k)
     results = await classify_sources(results, query)
     out = []
     for item in results:

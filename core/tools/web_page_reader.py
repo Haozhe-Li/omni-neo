@@ -1,4 +1,5 @@
 from langchain_community.document_loaders import SpiderLoader
+import asyncio
 import concurrent.futures
 import os
 
@@ -38,8 +39,10 @@ def load_web_page_spider(url: str) -> dict:
         dict: The loaded web page content as a dictionary with URL and content keys.
     """
     # A worker-thread-safe timeout. `signal.SIGALRM` only works on the main
-    # thread, but agent tools run inside `asyncio.to_thread` worker threads, so
-    # we enforce the wall-clock limit with a future instead.
+    # thread, and this function is itself blocking (see load_web_page below,
+    # which must call it via asyncio.to_thread rather than inline — it can't
+    # assume it's already off the event loop), so we enforce the wall-clock
+    # limit with a future instead.
     # Note: avoid using ThreadPoolExecutor as a context manager — its __exit__
     # calls shutdown(wait=True), which blocks until the worker finishes and
     # silently defeats the timeout. We call shutdown(wait=False) explicitly so
@@ -81,7 +84,13 @@ async def load_web_page(
         dict: A dictionary with the URL, title, content, and a `n` field —
         cite it inline as [n] when you use this page's content in your answer.
     """
-    result = load_web_page_spider(url)
+    # load_web_page is itself `async def`, so the agent awaits it directly on
+    # the event loop rather than LangChain dispatching it to a worker thread
+    # the way it does for plain sync tools. load_web_page_spider is fully
+    # synchronous and blocks for up to _TIMEOUT_SECONDS — calling it inline
+    # would freeze that loop, and every other concurrent thread's SSE stream
+    # riding on it, for the fetch's duration.
+    result = await asyncio.to_thread(load_web_page_spider, url)
     # No query/topic available for a direct page load, so the LLM layer
     # can't judge "first_party" here — it'll fall back to domain-only signal.
     classified = await classify_sources([result], None)

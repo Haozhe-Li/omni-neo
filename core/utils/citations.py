@@ -22,9 +22,21 @@ is valid for every turn from the one it first appeared in onward.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 
 from core.utils import redis_sources, vector_sources
+
+# redis_sources.persist_citation is a synchronous (blocking) Redis call, but
+# _register runs inline inside `google_search`/`load_web_page` — both `async
+# def` tools that the agent awaits directly on the event loop, unlike sync
+# tools, which LangChain itself already dispatches to a worker thread. A
+# blocking call here would freeze that request's event loop for its
+# duration, stalling every other concurrent thread's SSE stream (writes/reads
+# in redis_stream.py) on the same loop — exactly the same class of bug
+# vector_sources.enqueue_source_indexing already works around below with its
+# own executor. Same fix, same reasoning.
+_persist_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="citation-persist")
 
 _registry: ContextVar[list[dict] | None] = ContextVar("citation_registry", default=None)
 _thread_id: ContextVar[str | None] = ContextVar("citation_thread_id", default=None)
@@ -113,12 +125,14 @@ def _register(
     if is_new:
         thread_id = _thread_id.get()
         if thread_id:
-            try:
-                redis_sources.persist_citation(thread_id, record)
-            except Exception:
-                # Persistence is best-effort: the model still gets its number
-                # for this run even if Redis is briefly unavailable.
-                pass
+            def _persist(thread_id=thread_id, record=record) -> None:
+                try:
+                    redis_sources.persist_citation(thread_id, record)
+                except Exception:
+                    # Persistence is best-effort: the model still gets its number
+                    # for this run even if Redis is briefly unavailable.
+                    pass
+            _persist_executor.submit(_persist)
             # Junk is never indexed: the agent never sees junk content (see
             # google_search/load_web_page), so no claim in the answer can
             # legitimately be "supported by" it — indexing it anyway would
