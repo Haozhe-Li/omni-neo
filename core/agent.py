@@ -234,7 +234,7 @@ code block — it always looks bad and must not appear. {chart_policy}
 # interactive-only policies (artifact/chart-in-chat framing), so it gets its
 # own prompt written for exactly what it does.
 #
-# Skills: everything the pro profile gets, minus two:
+# Skills: everything the pro profile gets, minus three:
 # - ask-question: no user present to answer a clarifying question in an
 #   unattended cron run, so the agent must assume and proceed instead of
 #   stalling the turn on it.
@@ -242,10 +242,17 @@ code block — it always looks bad and must not appear. {chart_policy}
 #   convention, which doesn't apply here — the report is a schema field, not
 #   something written inline and pulled out of the text after the fact (see
 #   <output_contract> below).
+# - deep-research: its plan/gather/reflect workflow is exactly what a
+#   scheduled run needs, but being an optional, progressively-disclosed skill
+#   made it easy for the agent to under-invest — a couple of shallow searches
+#   and a thin report, never actually loading the skill. Baked directly into
+#   <research_process> below instead of left optional, so every run gets the
+#   full workflow (see build_scheduled_agent's docstring).
 SCHEDULED_SKILL_FILES = {
     path: data for path, data in PRO_SKILL_FILES.items()
     if not path.startswith("/skills/ask-question/")
     and not path.startswith("/skills/report-writing/")
+    and not path.startswith("/skills/deep-research/")
 }
 
 
@@ -287,14 +294,6 @@ Route by topic:
 - Local places, venues, businesses → `google_search_places`.
 - Current weather → `get_weather`. Forecasts → `get_weather_forecast`.
   Stocks → `get_stock_data`. FX rates → `get_realtime_currency_rate`.
-
-Search discipline (hard limits — no exceptions):
-- Per sub-topic: at most 2 `google_search` calls (one focused query + one
-  reformulation). Never a third search on the same sub-topic.
-- Per search result: read at most 2 pages via `load_web_page`. Stop as soon
-  as you have enough for that section — do not read for completeness.
-- If results are still weak after 2 searches, write that section with what
-  you have and note the limitation. Do not keep searching.
 </retrieval_policy>
 
 <citation_policy>
@@ -318,14 +317,45 @@ never approximate in your head or make up numbers. `run_python` is
 text-only; for visualisations use an ```echarts fence directly in the report.
 </computation_policy>
 
-<planning>
-The moment you start researching, call `write_todos` to lay out your plan
-(3-8 concrete steps covering the sub-topics you'll investigate). Keep exactly
-ONE todo `in_progress` at a time, and flip it to `completed` — as its own
-standalone `write_todos` call, before starting the next step — the moment
-its work is done. Every todo must be `completed` before you produce your
-final output.
-</planning>
+<research_process>
+This is a scheduled deep-research run, not a quick lookup — follow this full
+arc every time, not a shortcut version of it:
+
+1. Plan — call `write_todos` before any search. Structure as a research arc:
+   - Orient: one broad search to map the landscape (key players, sub-topics,
+     timeframe).
+   - Dive: one todo per major sub-topic or angle (3-5 dives). Each narrow
+     enough to answer in 2-3 searches.
+   - Compare: if the task involves options or tradeoffs, add an explicit
+     synthesis todo.
+   - Report: always the final todo.
+   Aim for 6-10 todos total — fewer is fine only for a genuinely narrow scope.
+
+2. Gather — for each todo:
+   - One targeted `google_search` per sub-topic; `load_web_page` only on
+     clearly relevant, non-paywalled results.
+   - Read 2-4 pages per sub-topic. Stop once two consecutive pages add
+     nothing new.
+   - Hard cap: 2 searches per todo (initial + one reformulation). Never a
+     third — move on with what you have.
+   - Prefer primary sources and established outlets over aggregator
+     summaries. If sources disagree, surface the disagreement — don't
+     silently pick one.
+   - Todo hygiene (strict): mark a todo `in_progress` immediately before
+     starting it. The moment its work is done, your very next action must be
+     a standalone `write_todos` call marking it `completed`, before any other
+     tool call. Per-todo tool cap: 5 tool calls max — if reached with no
+     result, mark it completed and move on.
+
+3. Reflect — after every 2-3 dives: is there a significant angle the sources
+   haven't addressed? If yes, add a todo. If no, proceed. A quick gut-check,
+   not a reason to keep searching.
+
+Budget: 6-12 sources total across the whole run — a handful of strong sources
+beats exhaustive searching. Hard stop: if approaching the tool-call limit,
+skip remaining gather todos and write the report with what you already have —
+a partial, honest report beats running out of steps mid-search.
+</research_process>
 
 <unattended_run_policy>
 Nobody is present to answer a clarifying question. Never stall a turn
@@ -339,11 +369,13 @@ output — exactly the three fields of your response schema. There is no other
 output surface: no chat reply, no preamble, no `<report>`/`<summary>` tags
 anywhere. The schema fields ARE the output.
 
-Aim for a genuinely thorough `report` (typically 600-1200 words) — substantive
-and well-organized, never terse or perfunctory, but no filler either. Never
-draw charts, plots, or diagrams as ASCII/UTF-8 text art. Never include
-hyperlinks or bare URLs anywhere in the report — the [n] citation markers are
-the only allowed reference to a source.
+Aim for a genuinely thorough `report` (typically 1000-1500 words) —
+substantive and well-organized, covering every dive from your plan, never
+terse or perfunctory, but no filler either. Embed at least 1-2 ```echarts
+charts wherever data is clearer shown than told (comparisons, trends,
+distributions). Never draw charts, plots, or diagrams as ASCII/UTF-8 text
+art. Never include hyperlinks or bare URLs anywhere in the report — the [n]
+citation markers are the only allowed reference to a source.
 </output_contract>
 """
 
