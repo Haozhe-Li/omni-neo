@@ -2,7 +2,7 @@ import httpx
 from core.utils.redis_cache import l1cache
 
 
-@l1cache(ttl=60 * 60 * 12)
+# @l1cache(ttl=60 * 60 * 12)
 def get_realtime_currency_rate(base_currency: str, target_currency: str) -> dict:
     """
     Get the real-time exchange rate between two currencies.

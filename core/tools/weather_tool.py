@@ -12,7 +12,7 @@ owm = OWM(api_key=os.getenv("OPENWEATHERMAP_API_KEY"))
 mgr = owm.weather_manager()
 
 
-@l1cache(ttl=3600)
+# @l1cache(ttl=3600)
 def get_weather(location: str) -> dict:
     """Get current weather for a location. location (str): The location to get the weather for. MUST be in English."""
     try:
@@ -96,7 +96,7 @@ def _aggregate_daily(slots: list[dict]) -> dict:
     }
 
 
-@l1cache(ttl=3600)
+# @l1cache(ttl=3600)
 def get_weather_forecast(location: str) -> dict:
     """Get current weather PLUS today's hourly forecast and a 2-day outlook for a location.
     Use this when the user asks about weather forecasts, tomorrow's weather, specific hours

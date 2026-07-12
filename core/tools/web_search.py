@@ -233,7 +233,7 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
     return out
 
 
-@l1cache(ttl=3600 * 24 * 90)
+# @l1cache(ttl=3600 * 24 * 90)
 def google_search_places(query: str, k: int = 5) -> list[dict]:
     """
     Use Google Search for places, restaurants, etc.
@@ -247,7 +247,7 @@ def google_search_places(query: str, k: int = 5) -> list[dict]:
     return res.get("places", [])[:k]
 
 
-@l1cache(ttl=3600 * 24 * 90)
+# @l1cache(ttl=3600 * 24 * 90)
 def arxiv_search(query: str, k: int = 5) -> list[dict]:
     """
     Perform an arxiv search using Arxiv API.

@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 
-@l1cache(ttl=3600 * 24 * 10)
+# @l1cache(ttl=3600 * 24 * 10)
 def verify_claim(fact: str) -> dict:
     """Check a claim using Tavily API.
 

@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 from core.utils.redis_cache import l1cache
 
 
-@l1cache(ttl=3600 * 24 * 3)
+# @l1cache(ttl=3600 * 24 * 3)
 def _get_history_trend_cached(symbol: str, period: str = "5y") -> Dict[str, Any]:
     """
     Get historical stock trends with intelligent sampling to reduce resolution.
@@ -102,7 +102,7 @@ def get_history_trend(
     return _get_history_trend_cached(symbol, period)
 
 
-@l1cache(ttl=3600 * 24) # 1 day cache for stock data
+# @l1cache(ttl=3600 * 24) # 1 day cache for stock data
 def _get_stock_data_cached(symbol: str) -> Dict[str, Any]:
     """
     Get core stock metrics including price, valuation, and financial indicators.
