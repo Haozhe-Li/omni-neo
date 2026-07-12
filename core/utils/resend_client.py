@@ -47,9 +47,20 @@ _MUTED_DARK = "#8b8b8b"
 _BORDER_DARK = "rgba(255,255,255,0.08)"
 
 
-def _build_html(title: str, summary: str, page_url: str) -> str:
-    safe_title = html_escape.escape(title)
-    safe_summary = html_escape.escape(summary).replace("\n", "<br>")
+def _wrap_email(
+    *,
+    page_title: str,
+    eyebrow: str,
+    heading: str,
+    body_html: str,
+    cta_label: str,
+    cta_url: str,
+    footer_note: str,
+) -> str:
+    """Shared chrome (logo header, card, button, footer) for every
+    notification email — the report email and the task-confirmation email
+    both call this so they stay visually identical by construction rather
+    than by copy-pasted markup drifting apart over time."""
     year = datetime.now(timezone.utc).year
 
     return f"""<!DOCTYPE html>
@@ -57,7 +68,7 @@ def _build_html(title: str, summary: str, page_url: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{safe_title}</title>
+<title>{page_title}</title>
 <style>
   @media (prefers-color-scheme: dark) {{
     .omni-bg {{ background-color: {_BG_DARK} !important; }}
@@ -89,19 +100,19 @@ def _build_html(title: str, summary: str, page_url: str) -> str:
           <tr>
             <td class="omni-card" style="background-color:{_CARD};border:1px solid {_BORDER};border-radius:16px;padding:36px 32px;">
               <p style="margin:0 0 10px 0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:{_ACCENT};">
-                Scheduled Report
+                {eyebrow}
               </p>
               <h1 class="omni-fg" style="margin:0 0 16px 0;font-size:22px;line-height:1.3;font-weight:600;color:{_FOREGROUND};">
-                {safe_title}
+                {heading}
               </h1>
-              <p class="omni-muted" style="margin:0 0 28px 0;font-size:14px;line-height:1.7;color:{_MUTED};">
-                {safe_summary}
-              </p>
+              <div class="omni-muted" style="margin:0 0 28px 0;font-size:14px;line-height:1.7;color:{_MUTED};">
+                {body_html}
+              </div>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td style="border-radius:10px;background-color:{_ACCENT};">
-                    <a href="{page_url}" target="_blank" style="display:inline-block;padding:11px 22px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">
-                      View Full Report &rarr;
+                    <a href="{cta_url}" target="_blank" style="display:inline-block;padding:11px 22px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">
+                      {cta_label} &rarr;
                     </a>
                   </td>
                 </tr>
@@ -111,7 +122,7 @@ def _build_html(title: str, summary: str, page_url: str) -> str:
           <tr>
             <td style="padding:28px 4px 0 4px;">
               <p class="omni-muted" style="margin:0;font-size:12px;line-height:1.6;color:{_MUTED};">
-                You're receiving this because you set up a scheduled research task on Omni Knows.<br>
+                {footer_note}<br>
                 &copy; {year} <a href="{_SITE_URL}" style="color:{_MUTED};text-decoration:underline;">Omni Knows</a>. All rights reserved.
               </p>
             </td>
@@ -122,6 +133,39 @@ def _build_html(title: str, summary: str, page_url: str) -> str:
   </table>
 </body>
 </html>"""
+
+
+def _build_html(title: str, summary: str, page_url: str) -> str:
+    safe_title = html_escape.escape(title)
+    safe_summary = html_escape.escape(summary).replace("\n", "<br>")
+    return _wrap_email(
+        page_title=safe_title,
+        eyebrow="Scheduled Report",
+        heading=safe_title,
+        body_html=safe_summary,
+        cta_label="View Full Report",
+        cta_url=page_url,
+        footer_note="You're receiving this because you set up a scheduled research task on Omni Knows.",
+    )
+
+
+def _build_confirmation_html(task_name: str, schedule_label: str, settings_url: str) -> str:
+    safe_name = html_escape.escape(task_name)
+    safe_schedule = html_escape.escape(schedule_label)
+    body_html = (
+        f'Your scheduled research task <strong style="color:{_FOREGROUND};">&ldquo;{safe_name}&rdquo;</strong> '
+        f"is set up and will run <strong style=\"color:{_FOREGROUND};\">{safe_schedule}</strong>. "
+        "Each time it runs, the report will be emailed to this inbox automatically."
+    )
+    return _wrap_email(
+        page_title=f"Scheduled: {safe_name}",
+        eyebrow="Task Confirmed",
+        heading="Your scheduled research is set up",
+        body_html=body_html,
+        cta_label="Manage in Settings",
+        cta_url=settings_url,
+        footer_note="Want to change the schedule or cancel it? Go to Settings → Scheduled Research.",
+    )
 
 
 def send_report_email(
@@ -154,4 +198,35 @@ def send_report_email(
         return True
     except Exception as exc:
         logger.error(f"[resend_client] failed to send report email to {to_email!r}: {exc}")
+        return False
+
+
+def send_task_confirmation_email(
+    to_email: str,
+    task_name: str,
+    schedule_label: str,
+    settings_url: str,
+) -> bool:
+    """Sent once, right after a scheduled research task is created — confirms
+    the task and schedule, and points at Settings for changing/canceling it.
+    Same never-raises, best-effort contract as send_report_email: a failed
+    confirmation email shouldn't fail task creation, which has already
+    committed by the time this is called."""
+    text = (
+        f'Your scheduled research task "{task_name}" is set up and will run '
+        f"{schedule_label}. Each time it runs, the report will be emailed to "
+        "this inbox automatically.\n\n"
+        f"To change the schedule or cancel it: {settings_url}"
+    )
+    try:
+        resend.Emails.send({
+            "from": _FROM,
+            "to": [to_email],
+            "subject": f"Scheduled research confirmed: {task_name}",
+            "text": text,
+            "html": _build_confirmation_html(task_name, schedule_label, settings_url),
+        })
+        return True
+    except Exception as exc:
+        logger.error(f"[resend_client] failed to send confirmation email to {to_email!r}: {exc}")
         return False

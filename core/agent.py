@@ -23,8 +23,10 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
 )
+from langchain.agents.structured_output import ProviderStrategy
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
+from pydantic import BaseModel, Field
 
 import core.database.postgresql_saver as _db
 from core.tools.web_search import google_search, google_search_places
@@ -226,60 +228,145 @@ code block — it always looks bad and must not appear. {chart_policy}
 {artifact_policy}"""
 
 # ── Scheduled profile ────────────────────────────────────────────────────────
-# Same capability as "pro" (model, tools, skills), minus two things:
-# - the ask-question skill: there's no user present to answer a clarifying
-#   question in an unattended cron run, so the agent must make a reasonable
-#   assumption and proceed instead of stalling the turn on it.
-# - streaming: this profile is invoked once via `.ainvoke()` (see
-#   core/scheduled_agent.py), not through the SSE machinery in core/stream.py.
+# Deliberately NOT built from `_BASE_PROMPT` — an unattended cron run has a
+# different output surface (three structured fields, no chat reply, no
+# `<report>`/`<summary>` tags to stream to a reader pane) and doesn't need the
+# interactive-only policies (artifact/chart-in-chat framing), so it gets its
+# own prompt written for exactly what it does.
 #
-# It also needs a short plain-text takeaway for the notification email, which
-# nothing upstream produces today (`<report>` isn't parsed backend-side — see
-# core/stream.py's module docstring) — taught here as a sibling `<summary>`
-# tag using the exact same "write it inline, we'll pull it out" convention as
-# the report-writing skill, so the shared skill file doesn't need touching.
+# Skills: everything the pro profile gets, minus two:
+# - ask-question: no user present to answer a clarifying question in an
+#   unattended cron run, so the agent must assume and proceed instead of
+#   stalling the turn on it.
+# - report-writing: teaches the `<report>…</report>` inline-streaming
+#   convention, which doesn't apply here — the report is a schema field, not
+#   something written inline and pulled out of the text after the fact (see
+#   <output_contract> below).
 SCHEDULED_SKILL_FILES = {
     path: data for path, data in PRO_SKILL_FILES.items()
     if not path.startswith("/skills/ask-question/")
+    and not path.startswith("/skills/report-writing/")
 }
 
-_SCHEDULED_ADDENDUM = """
 
-<scheduled_run_policy>
-This is an unattended scheduled research run — no user is present to answer a
-clarifying question. Never end your turn waiting on one; make the most
-reasonable assumption explicit in the report instead and proceed.
+class ScheduledReportOutput(BaseModel):
+    """Structured final output of a scheduled research run."""
 
-You MUST produce a report for every run (see the report-writing skill) — this
-output only reaches the user by email, there is no chat surface to reply in.
+    title: str = Field(description="Concise report title, max ~10 words.")
+    summary: str = Field(
+        description="Plain-text executive summary, 2-4 sentences, no markdown "
+        "formatting and no [n] citations — this becomes the body of the "
+        "notification email, so it must stand alone and make sense without "
+        "the full report attached."
+    )
+    report: str = Field(
+        description="The full report in GitHub-flavoured Markdown (##/### "
+        "headings, lists, tables, $...$ / $$...$$ for math, optional "
+        "```echarts fenced charts). Cite every claim drawn from a tool "
+        "result with [n] per the citation policy. Do NOT wrap this in "
+        "<report> or any other tag — this field IS the report body."
+    )
 
-In addition, write a short plain-text executive summary of the report's key
-takeaway (2-4 sentences, no markdown formatting, no citations) wrapped in a
-`<summary>...</summary>` block. Place it immediately before the `<report>`
-block. This summary becomes the body of the notification email, so it must
-stand alone and make sense without the report attached.
-</scheduled_run_policy>
+
+_SCHEDULED_PROMPT = """
+<identity>
+You are Omni, running as an unattended scheduled research agent. A user set
+this task up in advance to fire on a recurring schedule. Nobody is watching
+this run live and there is no chat surface to reply in — your only output is
+the structured report you produce at the end, delivered later by email.
+</identity>
+
+<retrieval_policy>
+NEVER answer from your own knowledge alone. You MUST call a grounding tool —
+at minimum one `google_search` — before writing the report, even if you're
+already confident you know it. Confidence is not the same as current or
+correct; treat your own knowledge as unverified until a tool backs it up.
+Route by topic:
+- Facts / current events / specifics → `google_search`, then `load_web_page`
+  to read the most relevant results.
+- Local places, venues, businesses → `google_search_places`.
+- Current weather → `get_weather`. Forecasts → `get_weather_forecast`.
+  Stocks → `get_stock_data`. FX rates → `get_realtime_currency_rate`.
+
+Search discipline (hard limits — no exceptions):
+- Per sub-topic: at most 2 `google_search` calls (one focused query + one
+  reformulation). Never a third search on the same sub-topic.
+- Per search result: read at most 2 pages via `load_web_page`. Stop as soon
+  as you have enough for that section — do not read for completeness.
+- If results are still weak after 2 searches, write that section with what
+  you have and note the limitation. Do not keep searching.
+</retrieval_policy>
+
+<citation_policy>
+Citing is MANDATORY whenever a claim, fact, figure, or quote in the report
+came from a `google_search`/`load_web_page` result (each carries a `n`) —
+never skip it, no matter how obvious the fact seems. Facts you already knew,
+or pure reasoning, need no citation.
+
+Placement: never let citing interrupt the prose. Batch all the [n]s a
+paragraph relies on into one stack (e.g. [1][2]) at the very end of that
+paragraph — never mid-sentence, never scattered after every clause.
+
+Always ASCII `[`/`]`, never full-width (【】/［］). Only use `n` values that
+came from an actual tool result this run. Never invent a citation number.
+</citation_policy>
+
+<computation_policy>
+You MUST call `run_python` for arithmetic beyond trivial mental math,
+statistics, comparisons, unit conversions, or any other numerical analysis —
+never approximate in your head or make up numbers. `run_python` is
+text-only; for visualisations use an ```echarts fence directly in the report.
+</computation_policy>
+
+<planning>
+The moment you start researching, call `write_todos` to lay out your plan
+(3-8 concrete steps covering the sub-topics you'll investigate). Keep exactly
+ONE todo `in_progress` at a time, and flip it to `completed` — as its own
+standalone `write_todos` call, before starting the next step — the moment
+its work is done. Every todo must be `completed` before you produce your
+final output.
+</planning>
+
+<unattended_run_policy>
+Nobody is present to answer a clarifying question. Never stall a turn
+waiting on one; make the most reasonable assumption, state it plainly in the
+report, and proceed.
+</unattended_run_policy>
+
+<output_contract>
+Once every todo is completed and research is done, produce your final
+output — exactly the three fields of your response schema. There is no other
+output surface: no chat reply, no preamble, no `<report>`/`<summary>` tags
+anywhere. The schema fields ARE the output.
+
+Aim for a genuinely thorough `report` (typically 600-1200 words) — substantive
+and well-organized, never terse or perfunctory, but no filler either. Never
+draw charts, plots, or diagrams as ASCII/UTF-8 text art. Never include
+hyperlinks or bare URLs anywhere in the report — the [n] citation markers are
+the only allowed reference to a source.
+</output_contract>
 """
-
-_SCHEDULED_PROMPT = (
-    _BASE_PROMPT.format(chart_policy=_CHART_POLICY_PRO, artifact_policy=_ARTIFACT_POLICY_PRO)
-    + _SCHEDULED_ADDENDUM
-)
 
 
 def build_scheduled_agent():
     """Construct the agent variant used for scheduled research tasks.
 
-    Cheaper than the interactive pro profile (gpt-oss-120b-high on Groq
-    instead of Gemini Flash) — no one is watching this run live, so there's
-    no latency pressure to justify the pricier model."""
+    Uses Gemini Flash-Lite with `ProviderStrategy` structured output (verified
+    empirically to work alongside tool calls on this model) instead of asking
+    the model to hand-wrap a `<summary>`/`<report>` block in free text — the
+    prior tag-parsing approach was fragile (a malformed/missing tag silently
+    broke `core/scheduled_agent.py`'s regex extraction) and is unrelated to
+    why scheduled uses a cheaper model than pro: no one is watching this run
+    live, so there's no latency pressure to justify a pricier one either way.
+    """
     return create_deep_agent(
         name="Omni Scheduled",
-        model=gpt_oss_120b_high,
+        model=gemini_flash_lite_latest,
         tools=RETRIEVAL_TOOLS,
         system_prompt=_SCHEDULED_PROMPT,
         skills=[SKILLS_SOURCE] if SCHEDULED_SKILL_FILES else None,
         checkpointer=_db.checkpointer,
+        response_format=ProviderStrategy(ScheduledReportOutput),
         middleware=[
             ToolRetryMiddleware(
                 max_retries=2,

@@ -48,7 +48,7 @@ from core.utils.qstash_client import (
     delete_schedule,
     verify_webhook_signature,
 )
-from core.utils.resend_client import send_report_email
+from core.utils.resend_client import send_report_email, send_task_confirmation_email
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,12 @@ class CreateTaskRequest(BaseModel):
     prompt: str
     cron_schedule: str
     email: str
+    # Human-readable schedule description (e.g. "Daily at 9:00 AM"), computed
+    # client-side from the user's local timezone — the backend only ever sees
+    # the UTC cron string, which isn't reconstructable back to local time
+    # without knowing the browser's offset. Used solely for the confirmation
+    # email's copy; falls back to the raw cron string if omitted.
+    schedule_label: str = ""
 
 
 class EditTaskRequest(BaseModel):
@@ -126,6 +132,16 @@ def api_create_task(request: CreateTaskRequest, user_id: str = Depends(get_curre
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to create task.")
+
+    # Best-effort, matching send_report_email's contract — the task is
+    # already committed, so a flaky email send shouldn't turn into a 500 for
+    # something the user will see succeeded in their task list regardless.
+    send_task_confirmation_email(
+        request.email,
+        request.name,
+        request.schedule_label or request.cron_schedule,
+        f"{SITE_URL}/settings/scheduled-research",
+    )
 
     return {"task_id": task_id, "qstash_schedule_id": qstash_schedule_id}
 
