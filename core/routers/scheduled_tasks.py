@@ -221,8 +221,8 @@ def api_update_task(task_id: str, request: UpdateTaskRequest, user_id: str = Dep
 
 
 async def _execute_run(run_id: str, task_id: str, thread_id: str, user_id: str, email: str, prompt: str) -> None:
-    """The actual work of one task firing — runs as a background asyncio task
-    so the webhook handler can return to QStash immediately (see api_run_task)."""
+    """The actual work of one task firing — awaited inside the webhook request
+    itself (see api_run_task for why it must not be fire-and-forget)."""
     update_run(run_id, status="running")
 
     # Charged the same as an interactive turn — a scheduled run is not a
@@ -256,10 +256,17 @@ async def _execute_run(run_id: str, task_id: str, thread_id: str, user_id: str, 
 
 @router.post("/scheduled_task/run")
 async def api_run_task(request: Request):
-    """QStash webhook target — verifies the signature, then hands off to a
-    background task and returns immediately (mirrors _generate_background's
-    fire-and-forget pattern in chat.py) so a slow report doesn't make QStash
-    time out and retry the whole delivery."""
+    """QStash webhook target — verifies the signature, then runs the whole
+    task INSIDE the request and only responds when it's done.
+
+    Deliberately not fire-and-forget: Cloud Run only allocates CPU while a
+    request is in flight, so a detached asyncio task runs on a throttled
+    (~zero) CPU — tool calls that take 1-2s in interactive chat ballooned to
+    15-30s and Redis connects timed out outright. Holding the request open
+    keeps full CPU for the run's duration. Budget-wise this fits: QStash
+    waits up to the schedule's 600s timeout (qstash_client.create_schedule),
+    matching Cloud Run's 600s request timeout, and a run normally finishes
+    in well under that."""
     body_bytes = await request.body()
     body_str = body_bytes.decode()
     signature = request.headers.get("upstash-signature", "")
@@ -290,8 +297,6 @@ async def api_run_task(request: Request):
     upsert_thread(thread_id, task["user_id"])
     register_thread(thread_id, task["user_id"], origin="scheduled_task")
 
-    asyncio.create_task(
-        _execute_run(run_id, task_id, thread_id, task["user_id"], task["email"], task["prompt"])
-    )
+    await _execute_run(run_id, task_id, thread_id, task["user_id"], task["email"], task["prompt"])
 
-    return {"status": "accepted", "run_id": run_id}
+    return {"status": "completed", "run_id": run_id}

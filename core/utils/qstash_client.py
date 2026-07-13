@@ -59,6 +59,11 @@ def create_schedule(
         body={"task_id": task_id},
         method="POST",
         retries=2,
+        # The webhook runs the whole research turn before responding (see
+        # api_run_task in core/routers/scheduled_tasks.py), and Cloud Run cuts
+        # the request off at its 600s service timeout — so don't let QStash
+        # keep waiting past that (its plan default is far longer).
+        timeout="600s",
         schedule_id=schedule_id,
     )
 
