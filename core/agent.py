@@ -461,7 +461,7 @@ def build_agent(profile: Profile):
     if profile == "fast":
         return create_deep_agent(
             name="Omni Fast",
-            model=gemma_4_31b,
+            model=fast_llm,
             tools=RETRIEVAL_TOOLS,
             system_prompt=_BASE_PROMPT.format(chart_policy=_CHART_POLICY_FAST, artifact_policy=_ARTIFACT_POLICY_FAST),
             skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
@@ -469,7 +469,7 @@ def build_agent(profile: Profile):
             middleware=[
                 ToolRetryMiddleware(max_retries=1),
                 ToolCallLimitMiddleware(run_limit=8),
-                # FastVisionModelMiddleware(gemma_4_31b),
+                FastVisionModelMiddleware(gemma_4_31b),
             ],
         )
 
