@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from tavily import TavilyClient
 from typing import Literal
 import asyncio
+import json
 import os
 import arxiv
 
@@ -117,12 +118,23 @@ def tavily_search(
             }
 
 
-@l1cache(ttl=3600 * 24 * 3)
-def _google_search_cached(query: str, k: int=5) -> list[dict]:
-    """Cached Serper call, kept separate from citation numbering below —
-    numbers must be assigned fresh on every call (they're scoped to the
-    current agent turn), even when the search itself is served from cache."""
-    search = GoogleSerperAPIWrapper(k=k, type="search")
+# tbs -> how long a cached result stays valid. A narrow window like "past
+# hour" is only correct while it's fresh; caching it for days would keep
+# serving the same stale snapshot as if it were still "the last hour".
+_TBS_CACHE_TTL = {
+    "qdr:h": 60 * 5,
+    "qdr:d": 60 * 30,
+    "qdr:w": 3600 * 3,
+    "qdr:m": 3600 * 24,
+    "qdr:y": 3600 * 24 * 3,
+}
+_DEFAULT_SEARCH_TTL = 3600 * 24 * 3
+
+
+def _google_search_uncached(
+    query: str, k: int = 5, tbs: str | None = None
+) -> list[dict]:
+    search = GoogleSerperAPIWrapper(k=k, type="search", tbs=tbs)
     res = search.results(query)
     normalized_results = []
     if res.get("answerBox"):
@@ -171,6 +183,26 @@ def _google_search_cached(query: str, k: int=5) -> list[dict]:
     return res
 
 
+def _google_search_cached(query: str, k: int = 5, tbs: str | None = None) -> list[dict]:
+    """Same Redis-backed cache as the rest of this module (see `l1cache`), but
+    with a TTL that depends on `tbs` — kept separate from citation numbering
+    below, which must be assigned fresh on every call even on a cache hit."""
+    cache_key = l1cache._build_cache_key(
+        _google_search_uncached, (query, k, tbs), {}
+    )
+    cached = l1cache.redis.get(cache_key)
+    if cached is not None:
+        try:
+            return json.loads(cached)
+        except json.JSONDecodeError:
+            l1cache.redis.delete(cache_key)
+
+    result = _google_search_uncached(query, k, tbs)
+    ttl = _TBS_CACHE_TTL.get(tbs, _DEFAULT_SEARCH_TTL)
+    l1cache.redis.setex(cache_key, ttl, json.dumps(result, default=str, ensure_ascii=False))
+    return result
+
+
 # Rank used to sort search results by credibility before they reach the
 # agent: official/trusted/first_party first (equally — all three are "the
 # reader can lean on this"), unknown in the middle, social_media last. Junk
@@ -186,13 +218,25 @@ _CREDIBILITY_RANK = {
 }
 
 
-async def google_search(query: str, k: int = 5) -> list[dict]:
+async def google_search(
+    query: str, k: int = 5, tbs: str | None = None
+) -> list[dict]:
     """
     Perform an google search using Google Serper API.
 
     Args:
         query (str): The search query.
         k (int): The number of results to return. Default is 5. Max is 10.
+        tbs (str, optional): Google's time-range filter. Use this whenever the
+            question is about something recent or time-sensitive (breaking
+            news, live scores, "just happened", latest price/status) instead
+            of adding words like "today"/"latest" to the query. One of:
+            - "qdr:h" — past hour
+            - "qdr:d" — past day
+            - "qdr:w" — past week
+            - "qdr:m" — past month
+            - "qdr:y" — past year
+            Leave unset for queries with no time constraint.
 
     Returns:
         list[dict]: A list of search result dictionaries. Each carries a `n`
@@ -205,7 +249,7 @@ async def google_search(query: str, k: int = 5) -> list[dict]:
     # of LangChain dispatching it to a worker thread the way it does for
     # plain sync tools. Calling it inline would freeze that loop — and every
     # other concurrent thread's SSE stream on it — for the call's duration.
-    results = await asyncio.to_thread(_google_search_cached, query, k)
+    results = await asyncio.to_thread(_google_search_cached, query, k, tbs)
     results = await classify_sources(results, query)
     out = []
     for item in results:
