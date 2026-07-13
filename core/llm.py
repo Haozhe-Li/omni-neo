@@ -2,9 +2,9 @@ from langchain_cerebras import ChatCerebras
 from langchain_groq import ChatGroq
 from langchain.chat_models import init_chat_model
 
-gpt_oss_120b_low = ChatCerebras(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="low")
-gpt_oss_120b_high = ChatCerebras(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="high")
-gpt_oss_120b_medium = ChatCerebras(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
+gpt_oss_120b_low = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="low")
+gpt_oss_120b_high = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="high")
+gpt_oss_120b_medium = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
 qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
@@ -14,7 +14,7 @@ glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
 gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2)
 llama_guard_2 = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
 
-fast_llm = gpt_oss_120b_high
+fast_llm = gpt_oss_120b_medium
 pro_llm = gemini_flash
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = llama_guard_2
