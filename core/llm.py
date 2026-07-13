@@ -5,6 +5,7 @@ from langchain.chat_models import init_chat_model
 gpt_oss_120b_low = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="low")
 gpt_oss_120b_high = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="high")
 gpt_oss_120b_medium = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
+
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
 qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
