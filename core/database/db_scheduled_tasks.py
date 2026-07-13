@@ -20,7 +20,10 @@ Table schema:
         run_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES scheduled_tasks(task_id) ON DELETE CASCADE,
         thread_id TEXT,            -- fresh chat thread created for this run
-        publish_id TEXT,           -- Pages publish:{id} for the generated report
+        publish_id TEXT,           -- legacy: Pages publish:{id}, unused by new runs
+        title TEXT,                -- report title (private — see module docstring)
+        report_markdown TEXT,      -- full report body
+        sources JSONB,             -- citation list, same shape as the Pages `sources` field
         summary TEXT,
         status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending | running | success | failed
         error TEXT,
@@ -37,6 +40,14 @@ Each logged-in user may have at most MAX_ACTIVE_TASKS non-deleted tasks
 Each task fires repeatedly on its cron schedule; every firing gets its own
 row in scheduled_task_runs plus its own thread_id, so the user can continue
 chatting in that thread afterward exactly like any other conversation.
+
+A run's report is private by construction: it lives only in this table,
+gated by `scheduled_tasks.user_id` (see api_get_run in
+core/routers/scheduled_tasks.py), and is never written into the Pages Redis
+keyspace the way it used to be. A user can explicitly copy a report out to
+Pages (public or unlisted) via the Share button on its /schedule/{run_id}
+page — that creates an independent record; deleting either one doesn't
+touch the other.
 """
 
 import json
@@ -84,6 +95,12 @@ def setup_scheduled_tasks_table() -> None:
         );
         """,
         "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task_id ON scheduled_task_runs(task_id);",
+        # Runs now store the report privately instead of publishing to Pages —
+        # added once /schedule/{run_id} replaced /pages/{publish_id} as the
+        # report's home; idempotent for existing rows.
+        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS title TEXT;",
+        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS report_markdown TEXT;",
+        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS sources JSONB;",
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_task_runs_qstash_msg
             ON scheduled_task_runs(qstash_message_id) WHERE qstash_message_id IS NOT NULL;
@@ -242,7 +259,9 @@ def update_run(
     *,
     status: str | None = None,
     thread_id: str | None = None,
-    publish_id: str | None = None,
+    title: str | None = None,
+    report_markdown: str | None = None,
+    sources: list[dict] | None = None,
     summary: str | None = None,
     error: str | None = None,
 ) -> None:
@@ -251,13 +270,17 @@ def update_run(
     for col, val in (
         ("status", status),
         ("thread_id", thread_id),
-        ("publish_id", publish_id),
+        ("title", title),
+        ("report_markdown", report_markdown),
         ("summary", summary),
         ("error", error),
     ):
         if val is not None:
             fields.append(f"{col} = %s")
             values.append(val)
+    if sources is not None:
+        fields.append("sources = %s::jsonb")
+        values.append(json.dumps(sources))
     if not fields:
         return
     fields.append("updated_at = NOW()")
@@ -271,9 +294,27 @@ def update_run(
         logger.error(f"[db_scheduled_tasks] update_run error: {e}")
 
 
+def get_run(run_id: str) -> dict | None:
+    sql = "SELECT * FROM scheduled_task_runs WHERE run_id = %s"
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (run_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"[db_scheduled_tasks] get_run error: {e}")
+        return None
+
+
 def list_runs_for_task(task_id: str, limit: int = 20) -> list[dict]:
+    """Excludes report_markdown/sources — those are only needed by the single
+    -run detail view (get_run), not the run-history list in Settings, so
+    leaving them out keeps this payload small."""
     sql = """
-        SELECT * FROM scheduled_task_runs
+        SELECT run_id, task_id, thread_id, summary, status, error,
+               qstash_message_id, created_at, updated_at
+        FROM scheduled_task_runs
         WHERE task_id = %s
         ORDER BY created_at DESC
         LIMIT %s

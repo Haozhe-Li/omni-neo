@@ -1,9 +1,13 @@
 """Scheduled research tasks: "run this prompt on a schedule, email me the
 report" — the backend half. QStash fires a cron webhook -> a fresh chat
 thread runs the scheduled agent variant (core/scheduled_agent.py) -> the
-report is published into the same Redis keyspace Pages reads from
-(core/publish_report.py) -> a plain-text summary + full report is emailed via
-Resend (core/utils/resend_client.py).
+report is stored privately on its run row (core/database/db_scheduled_tasks.py)
+-> a plain-text summary + full report is emailed via Resend
+(core/utils/resend_client.py), linking to the auth-gated /schedule/{run_id}
+page on the frontend. Unlike a manually-published Pages report, a scheduled
+report is never public by default — only the task's own user can read it
+(enforced in api_get_run below); sharing it out to Pages is an explicit,
+separate action the user takes from that page.
 
 Every task fire gets its own thread_id (core/scheduled_agent.py runs it as an
 ordinary first turn in that thread), so the user can open the resulting
@@ -28,6 +32,7 @@ from core.database.db_scheduled_tasks import (
     count_active_tasks,
     create_task,
     create_run,
+    get_run,
     get_task,
     list_tasks_for_user,
     list_runs_for_task,
@@ -38,7 +43,6 @@ from core.database.db_scheduled_tasks import (
 from core.database.db_threads_control import upsert_thread
 from core.database.db_user_threads import register_thread
 from core.database.db_user_usage import charge_credits
-from core.publish_report import publish_report
 from core.scheduled_agent import run_scheduled_task, ScheduledRunError
 from core.scheduled_task_parser import parse_schedule_prompt
 from core.utils.qstash_client import (
@@ -163,6 +167,33 @@ def api_get_task(task_id: str, user_id: str = Depends(get_current_user)):
     return task
 
 
+@router.get("/schedule_task/run/{run_id}")
+def api_get_run(run_id: str, user_id: str = Depends(get_current_user)):
+    """Private report view — the target of a scheduled report's email link
+    and the frontend's /schedule/{run_id} page. Ownership is checked through
+    the run's parent task, not stored redundantly on the run row itself; a
+    404 (not 403) either way avoids confirming a run_id exists to a
+    non-owner probing IDs."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    task = get_task(run["task_id"])
+    if not task or task["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {
+        "run_id": run["run_id"],
+        "task_id": run["task_id"],
+        "task_name": task["name"],
+        "status": run["status"],
+        "error": run["error"],
+        "title": run["title"],
+        "report": run["report_markdown"],
+        "sources": run["sources"] or [],
+        "summary": run["summary"],
+        "created_at": run["created_at"],
+    }
+
+
 @router.put("/schedule_task/{task_id}")
 def api_edit_task(task_id: str, request: EditTaskRequest, user_id: str = Depends(get_current_user)):
     task = get_task(task_id)
@@ -238,14 +269,22 @@ async def _execute_run(run_id: str, task_id: str, thread_id: str, user_id: str, 
 
     try:
         result = await run_scheduled_task(thread_id, user_id, prompt)
-        publish_id = await publish_report(
-            user_id, thread_id, result["title"], result["report"], result["sources"]
-        )
-        page_url = f"{SITE_URL}/pages/{publish_id}"
+        # Report stays private to this run (see the module docstring in
+        # core/database/db_scheduled_tasks.py) — the emailed link opens the
+        # auth-gated /schedule/{run_id} page, not a public Pages URL. Users
+        # can explicitly copy a report out to Pages via that page's Share button.
+        report_url = f"{SITE_URL}/schedule/{run_id}"
         await asyncio.to_thread(
-            send_report_email, email, result["title"], result["summary"], result["report"], page_url
+            send_report_email, email, result["title"], result["summary"], result["report"], report_url
         )
-        update_run(run_id, status="success", publish_id=publish_id, summary=result["summary"])
+        update_run(
+            run_id,
+            status="success",
+            title=result["title"],
+            report_markdown=result["report"],
+            sources=result["sources"],
+            summary=result["summary"],
+        )
     except ScheduledRunError as exc:
         logger.error(f"[scheduled_tasks] run {run_id} failed: {exc}")
         update_run(run_id, status="failed", error=str(exc))

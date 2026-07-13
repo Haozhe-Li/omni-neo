@@ -3,10 +3,11 @@
 HTML body mirrors the site's own design tokens (app/globals.css in the
 Next.js repo — teal accent #20B2AA, warm off-white background, 0.75rem
 radius) so the email doesn't feel like a different product from the app it
-came from. The full report itself still lives on its Pages URL (full
-markdown, charts, everything already using that UI) — this email is a
-notification card (title, summary, a CTA button), not a copy of the report;
-the plain-text fallback carries the full body for text-only clients.
+came from. The full report itself lives on its private /schedule/{run_id}
+page (auth-gated, owner-only — see core/routers/scheduled_tasks.py) — this
+email is a notification card (title, summary, a CTA button), not a copy of
+the report; the plain-text fallback carries the full body for text-only
+clients.
 """
 
 from __future__ import annotations
