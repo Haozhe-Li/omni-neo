@@ -20,13 +20,52 @@ not Postgres tables, so thread deletion clears it via the sync Upstash saver's
 """
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
-from core.database.supabase_client import supabase, utcnow_iso
+from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
 from core.database.checkpointer import sync_checkpointer
 from core.utils import redis_sources, vector_sources
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-process owner cache
+# ---------------------------------------------------------------------------
+# Thread ownership is read on the hot path of every chat/rewind/stop/check_source
+# request but changes almost never (set once at claim, only altered by
+# guest-merge or delete). Cache it per-process with a short TTL so those reads
+# usually skip the Supabase round trip. Writes below invalidate eagerly, so the
+# only staleness window is a claim/merge racing an in-flight cached read — and
+# ownership only ever becomes *more* restrictive, bounded by the TTL.
+_OWNER_TTL = 30.0
+_owner_cache: dict[str, tuple[str | None, float]] = {}
+_owner_lock = threading.Lock()
+
+
+def _owner_cache_get(thread_id: str) -> tuple[str | None] | None:
+    """Return a 1-tuple (owner,) on a live hit, or None on miss/expiry.
+    The tuple wrapper lets a cached owner of None be distinguished from a miss."""
+    ent = _owner_cache.get(thread_id)
+    if ent is not None and ent[1] > time.monotonic():
+        return (ent[0],)
+    return None
+
+
+def _owner_cache_put(thread_id: str, owner: str | None) -> None:
+    with _owner_lock:
+        _owner_cache[thread_id] = (owner, time.monotonic() + _OWNER_TTL)
+
+
+def _owner_cache_invalidate(thread_id: str) -> None:
+    with _owner_lock:
+        _owner_cache.pop(thread_id, None)
+
+
+def _owner_cache_clear() -> None:
+    with _owner_lock:
+        _owner_cache.clear()
 
 
 def get_thread_owner(thread_id: str) -> str | None:
@@ -34,6 +73,9 @@ def get_thread_owner(thread_id: str) -> str | None:
     Return the user_id that owns this thread.
     Returns None if the thread doesn't exist yet (new thread) or is unclaimed (NULL).
     """
+    cached = _owner_cache_get(thread_id)
+    if cached is not None:
+        return cached[0]
     try:
         res = (
             supabase.table("threads_control")
@@ -42,11 +84,34 @@ def get_thread_owner(thread_id: str) -> str | None:
             .limit(1)
             .execute()
         )
-        if not res.data:
-            return None  # Thread not registered yet – treat as unclaimed
-        return res.data[0]["user_id"]  # May itself be None (unclaimed legacy thread)
+        owner = res.data[0]["user_id"] if res.data else None  # None = unclaimed/new
+        _owner_cache_put(thread_id, owner)
+        return owner
     except Exception as e:
         logger.error(f"[db_threads_control] get_thread_owner error: {e}")
+        return None
+
+
+async def get_thread_owner_async(thread_id: str) -> str | None:
+    """True-async owner lookup for the hot chat path (access checks run on the
+    event loop). Same semantics as get_thread_owner, same in-process cache."""
+    cached = _owner_cache_get(thread_id)
+    if cached is not None:
+        return cached[0]
+    try:
+        sb = await get_async_supabase()
+        res = (
+            await sb.table("threads_control")
+            .select("user_id")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        owner = res.data[0]["user_id"] if res.data else None
+        _owner_cache_put(thread_id, owner)
+        return owner
+    except Exception as e:
+        logger.error(f"[db_threads_control] get_thread_owner_async error: {e}")
         return None
 
 
@@ -77,6 +142,7 @@ def upsert_thread(thread_id: str, user_id: str | None = None) -> None:
             supabase.table("threads_control").update({"user_id": user_id}).eq(
                 "thread_id", thread_id
             ).is_("user_id", "null").execute()
+        _owner_cache_invalidate(thread_id)  # ownership may have just changed
     except Exception as e:
         logger.error(f"[db_threads_control] upsert_thread error for {thread_id}: {e}")
 
@@ -103,10 +169,12 @@ def touch_thread(thread_id: str, user_id: str | None = None) -> None:
                 },
                 on_conflict="thread_id", ignore_duplicates=True,
             ).execute()
+            _owner_cache_invalidate(thread_id)
             return
         payload = {"updated_at": utcnow_iso()}
         if user_id is not None and existing.data[0]["user_id"] is None:
             payload["user_id"] = user_id
+            _owner_cache_invalidate(thread_id)  # claimed → drop stale unclaimed entry
         supabase.table("threads_control").update(payload).eq(
             "thread_id", thread_id
         ).execute()
@@ -161,6 +229,7 @@ def delete_thread(thread_id: str) -> bool:
     """
     try:
         supabase.table("threads_control").delete().eq("thread_id", thread_id).execute()
+        _owner_cache_invalidate(thread_id)
         _delete_checkpoint_state(thread_id)
         try:
             redis_sources.delete_thread_sources(thread_id)
@@ -187,6 +256,7 @@ def delete_threads_bulk(thread_ids: list[str]) -> None:
     try:
         supabase.table("threads_control").delete().in_("thread_id", thread_ids).execute()
         for thread_id in thread_ids:
+            _owner_cache_invalidate(thread_id)
             _delete_checkpoint_state(thread_id)
         try:
             redis_sources.delete_threads_sources_bulk(thread_ids)
@@ -210,6 +280,9 @@ def reassign_threads_user(old_user_id: str, new_user_id: str) -> int:
         res = supabase.table("threads_control").update({"user_id": new_user_id}).eq(
             "user_id", old_user_id
         ).execute()
+        # Bulk owner change across an unknown set of thread_ids — clear the whole
+        # cache (guest-merge is rare, so this is cheap enough).
+        _owner_cache_clear()
         return len(res.data or [])
     except Exception as e:
         logger.error(f"[db_threads_control] reassign_threads_user error: {e}")

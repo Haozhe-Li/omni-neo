@@ -68,6 +68,20 @@ def reset_citation_registry(thread_id: str | None = None, turn: int | None = Non
     _registry.set([])
 
 
+async def reset_citation_registry_async(thread_id: str | None = None, turn: int | None = None) -> None:
+    """Async variant of reset_citation_registry — awaits the Upstash hydrate
+    instead of blocking the event loop. Use from the async chat/stream path."""
+    _thread_id.set(thread_id)
+    _turn.set(turn)
+    if thread_id:
+        try:
+            _registry.set(await redis_sources.load_citations_async(thread_id))
+            return
+        except Exception:
+            pass
+    _registry.set([])
+
+
 def _register(
     key_field: str,
     key_value: str,

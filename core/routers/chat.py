@@ -17,29 +17,28 @@ from core.redis_stream import (
     stream_set_status,
     stream_is_generating,
     stream_expire,
-    stream_reset,
+    stream_begin,
     stream_read,
-    STREAM_TTL_ACTIVE,
     STREAM_TTL_DONE,
 )
 from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest
 from core.check_source import check_source_matches
-from core.utils.citations import reset_citation_registry
+from core.utils.citations import reset_citation_registry_async
 from core.utils.utils import format_personalization, append_memory_context
 from core.auth import get_current_user
 from core.database.db_user_threads import (
     get_thread_messages,
     upsert_thread_messages,
 )
-from core.database.db_user_usage import charge_credits
-from core.database.db_threads_control import touch_thread
+from core.database.db_user_usage import evaluate_charge_fast, commit_charge_fast
+from core.database.db_threads_control import touch_thread, get_thread_owner_async
 from core.database.db_user_memories import get_user_memory, save_user_memory
 from core.memories_update_llm import get_update_memories
 from core.routers.state import (
     db_executor,
     cancellation_events,
     generation_tasks,
-    assert_thread_access,
+    assert_thread_access_async,
     PERSIST_GRACE_SECONDS,
 )
 
@@ -218,27 +217,18 @@ async def _generate_background(
 # ---------------------------------------------------------------------------
 
 
-def _charge_or_429(user_id: str, mode: str) -> None:
-    """
-    Spend this turn's credits (fast=1, pro=3) against the caller's daily and
-    monthly usage. Raises 429 with a structured detail body — scope, current
-    totals, and reset times — that the frontend uses to render the
-    usage-limit dialog, instead of charging and letting the turn proceed.
-    """
-    usage = charge_credits(user_id, mode)
-    if not usage["charged"]:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "usage_limit_exceeded",
-                "scope": usage["exceeded_scope"],
-                "is_guest": user_id.startswith("guest_"),
-                "day_used": usage["day_used"], "day_limit": usage["day_limit"],
-                "month_used": usage["month_used"], "month_limit": usage["month_limit"],
-                "resets_day_at": usage["resets_day_at"],
-                "resets_month_at": usage["resets_month_at"],
-            },
-        )
+def _usage_limit_detail(user_id: str, usage: dict) -> dict:
+    """The structured 429 body — scope, current totals, reset times — the
+    frontend uses to render the usage-limit dialog."""
+    return {
+        "error": "usage_limit_exceeded",
+        "scope": usage["exceeded_scope"],
+        "is_guest": user_id.startswith("guest_"),
+        "day_used": usage["day_used"], "day_limit": usage["day_limit"],
+        "month_used": usage["month_used"], "month_limit": usage["month_limit"],
+        "resets_day_at": usage["resets_day_at"],
+        "resets_month_at": usage["resets_month_at"],
+    }
 
 
 @router.post("/chat")
@@ -255,25 +245,56 @@ async def chat(
 
     `request.mode` selects the profile: "fast" (lean, gpt-oss) or "pro" (deep
     agent, Gemini, with chart/report artifacts). Every turn spends credits
-    against the caller's daily/monthly usage — see _charge_or_429.
+    against the caller's daily/monthly usage.
     """
-    _charge_or_429(user_id, request.mode)
-
-    assert_thread_access(request.thread_id, user_id)
     thread_id = request.thread_id
+    p = request.personalization
+    memory_enabled = bool(p and p.memory_enabled)
 
-    if thread_id:
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(db_executor, touch_thread, thread_id, user_id)
+    # ── one concurrent batch of the independent pre-LLM reads ──────────────
+    # These four don't depend on each other, so fire them together (~1 round
+    # trip) instead of serially (~5). The charge is only *evaluated* here — the
+    # write is deferred until we've confirmed we're actually starting a new
+    # generation, so a reconnect (below) never charges.
+    async def _owner():
+        return await get_thread_owner_async(thread_id) if thread_id else None
 
-    # If this thread already has an active background generation, just reconnect.
-    if thread_id and await stream_is_generating(thread_id):
+    async def _generating():
+        return await stream_is_generating(thread_id) if thread_id else False
+
+    async def _memory():
+        return await asyncio.to_thread(get_user_memory, user_id) if memory_enabled else ""
+
+    charge_result, owner, is_generating_now, stored_memory = await asyncio.gather(
+        evaluate_charge_fast(user_id, request.mode),
+        _owner(),
+        _generating(),
+        _memory(),
+    )
+
+    # ── decide, in priority order (pure in-memory, no I/O) ─────────────────
+    # 1. access gate — reject before any side effect (nothing charged yet)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="Thread access denied.")
+    # 2. reconnect gate — a generation is already in flight: just re-attach.
+    #    No charge (already paid when it started), no new LLM run.
+    if thread_id and is_generating_now:
         headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
         return StreamingResponse(
             stream_read(thread_id),
             media_type="text/event-stream",
             headers=headers,
         )
+    # 3. usage gate
+    if not charge_result["charged"]:
+        raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
+
+    # Committed to a new generation → reconcile the charge in the background
+    # (off the critical path) and bump the thread's updated_at.
+    commit_charge_fast(user_id, request.mode)
+    if thread_id:
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(db_executor, touch_thread, thread_id, user_id)
 
     query_text = request.query
     if request.follow_up_content:
@@ -282,10 +303,7 @@ async def chat(
         query_text += f"\n\nUser explicitly asked for the '{request.skill}' skill. Please first activate this skill."
 
     personalization_str = format_personalization(request.personalization)
-    p = request.personalization
-    memory_enabled = bool(p and p.memory_enabled)
     if memory_enabled:
-        stored_memory = await asyncio.to_thread(get_user_memory, user_id)
         personalization_str = append_memory_context(personalization_str, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
@@ -293,10 +311,10 @@ async def chat(
         # ── background task mode: survives HTTP disconnect ─────────────────
         cancel_event = asyncio.Event()
         cancellation_events[thread_id] = cancel_event
-        # Clear the previous turn's buffer so stream_read doesn't replay it.
-        await stream_reset(thread_id)
-        # Set status *before* starting stream_read so it doesn't exit on an empty stream.
-        await stream_set_status(thread_id, "generating", STREAM_TTL_ACTIVE)
+        # Clear the previous turn's buffer and mark this one generating, in a
+        # single pipelined round trip (status set *before* stream_read starts so
+        # it doesn't exit on an empty stream).
+        await stream_begin(thread_id)
         task = asyncio.create_task(
             _generate_background(
                 thread_id=thread_id,
@@ -375,9 +393,18 @@ async def api_rewind_thread(
     the same way — otherwise "regenerate" would be a free, unlimited bypass
     around the credit system.
     """
-    _charge_or_429(user_id, body.mode)
-
-    assert_thread_access(thread_id, user_id)
+    # Charge-evaluate and ownership check are independent reads — run them
+    # concurrently (~1 round trip instead of 2), then commit the charge
+    # fire-and-forget once both gates pass. Rewind has no reconnect path.
+    charge_result, owner = await asyncio.gather(
+        evaluate_charge_fast(user_id, body.mode),
+        get_thread_owner_async(thread_id),
+    )
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="Thread access denied.")
+    if not charge_result["charged"]:
+        raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
+    commit_charge_fast(user_id, body.mode)
 
     profile = "pro" if body.mode == "pro" else "fast"
     agent = get_agent(profile)
@@ -403,7 +430,7 @@ async def api_rewind_thread(
         # build_message_content assigns a citation number to any newly-attached
         # document via register_document_citation, which needs the thread/turn
         # context this sets up — same ordering requirement as in _stream_agent.
-        reset_citation_registry(thread_id, body.turn)
+        await reset_citation_registry_async(thread_id, body.turn)
         new_content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             body.new_query, personalization_str, body.attached_file_ids, thread_id,
@@ -459,7 +486,7 @@ async def stop_generation(
     user_id: str = Depends(get_current_user),
 ):
     """Signal the active generation for this thread to stop."""
-    assert_thread_access(thread_id, user_id)
+    await assert_thread_access_async(thread_id, user_id)
     event = cancellation_events.get(thread_id)
     if event:
         event.set()
@@ -483,7 +510,7 @@ async def check_source(
        actually supporting), and extracts a verbatim excerpt from each
        survivor for the frontend to fuzzy-match and highlight precisely.
     """
-    assert_thread_access(request.thread_id, user_id)
+    await assert_thread_access_async(request.thread_id, user_id)
 
     return await check_source_matches(
         request.thread_id,

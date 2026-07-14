@@ -6,6 +6,7 @@ from typing import Callable, Any, Optional
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import re
 from upstash_redis import Redis
+from upstash_redis.asyncio import Redis as AsyncRedis
 
 class L1Cache:
     def __init__(self, redis_client: Redis, prefix: str = "l1cache:", ttl: Optional[int] = None):
@@ -19,6 +20,16 @@ class L1Cache:
         self.redis = redis_client
         self.prefix = prefix
         self.default_ttl = ttl
+        # Async client, created lazily. The sync client above blocks the event
+        # loop for a full round-trip on every get/set — fine for sync callers
+        # (they run in a threadpool), but the async_wrapper below serves async
+        # tools that run directly on the loop, so those use the async client.
+        self._async_redis: Optional[AsyncRedis] = None
+
+    def _aredis(self) -> AsyncRedis:
+        if self._async_redis is None:
+            self._async_redis = AsyncRedis.from_env()
+        return self._async_redis
 
     def __call__(self, ttl: Optional[int] = None) -> Callable:
         return self.cache(ttl=ttl)
@@ -158,15 +169,16 @@ class L1Cache:
                 @functools.wraps(func)
                 async def async_wrapper(*args, **kwargs) -> Any:
                     cache_key = self._build_cache_key(func, args, kwargs)
+                    aredis = self._aredis()
 
-                    # 尝试从 Redis 获取
-                    cached = self.redis.get(cache_key)
+                    # 尝试从 Redis 获取（真异步，不阻塞事件循环）
+                    cached = await aredis.get(cache_key)
                     if cached is not None:
                         try:
                             return json.loads(cached)
                         except json.JSONDecodeError:
                             # 缓存损坏，删除并重新计算
-                            self.redis.delete(cache_key)
+                            await aredis.delete(cache_key)
 
                     # 缓存 miss，执行函数
                     result = await func(*args, **kwargs)
@@ -174,9 +186,9 @@ class L1Cache:
                     # 存入 Redis
                     ttl_to_use = ttl or self.default_ttl
                     if ttl_to_use:
-                        self.redis.setex(cache_key, ttl_to_use, json.dumps(result, default=str, ensure_ascii=False))
+                        await aredis.setex(cache_key, ttl_to_use, json.dumps(result, default=str, ensure_ascii=False))
                     else:
-                        self.redis.set(cache_key, json.dumps(result, default=str, ensure_ascii=False))
+                        await aredis.set(cache_key, json.dumps(result, default=str, ensure_ascii=False))
 
                     return result
 

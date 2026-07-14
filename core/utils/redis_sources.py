@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 
 from upstash_redis import Redis
+from upstash_redis.asyncio import Redis as AsyncRedis
 
 # 90 days matches the longest thread retention window (logged-in users, see
 # db_threads_control.py). Explicit deletion on thread delete handles the rest;
@@ -22,6 +23,7 @@ from upstash_redis import Redis
 _SOURCE_TTL = 3600 * 24 * 90
 
 _client: Redis | None = None
+_async_client: AsyncRedis | None = None
 
 
 def _get_redis() -> Redis:
@@ -32,6 +34,13 @@ def _get_redis() -> Redis:
     return _client
 
 
+def _get_async_redis() -> AsyncRedis:
+    global _async_client
+    if _async_client is None:
+        _async_client = AsyncRedis.from_env()
+    return _async_client
+
+
 def _citation_key(thread_id: str) -> str:
     return f"omni:citation:{thread_id}"
 
@@ -40,10 +49,7 @@ def _index_key(thread_id: str) -> str:
     return f"omni:citation:{thread_id}:index"
 
 
-def load_citations(thread_id: str) -> list[dict]:
-    """Load every citation this thread has ever produced, oldest first."""
-    r = _get_redis()
-    raw = r.lrange(_citation_key(thread_id), 0, -1)
+def _parse_citations(raw: list) -> list[dict]:
     out = []
     for item in raw:
         try:
@@ -51,6 +57,18 @@ def load_citations(thread_id: str) -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def load_citations(thread_id: str) -> list[dict]:
+    """Load every citation this thread has ever produced, oldest first."""
+    r = _get_redis()
+    return _parse_citations(r.lrange(_citation_key(thread_id), 0, -1))
+
+
+async def load_citations_async(thread_id: str) -> list[dict]:
+    """Async load (for the hot chat path, which runs on the event loop)."""
+    r = _get_async_redis()
+    return _parse_citations(await r.lrange(_citation_key(thread_id), 0, -1))
 
 
 def persist_citation(thread_id: str, record: dict) -> None:

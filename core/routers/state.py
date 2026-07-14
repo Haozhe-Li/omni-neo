@@ -11,7 +11,7 @@ import asyncio
 
 from fastapi import HTTPException
 
-from core.database.db_threads_control import get_thread_owner
+from core.database.db_threads_control import get_thread_owner, get_thread_owner_async
 
 # Thread pool for fire-and-forget blocking DB calls
 db_executor = ThreadPoolExecutor(max_workers=4)
@@ -33,9 +33,20 @@ def assert_thread_access(thread_id: str | None, user_id: str) -> None:
     Verify the requesting user is allowed to access the given thread.
     Raises HTTP 403 if the thread is claimed by a *different* user.
     Unclaimed threads (owner is None) are accessible by anyone.
+    Sync variant — used by sync endpoints (threads.py); async endpoints should
+    use assert_thread_access_async so the owner lookup doesn't block the loop.
     """
     if not thread_id:
         return
     owner = get_thread_owner(thread_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="Thread access denied.")
+
+
+async def assert_thread_access_async(thread_id: str | None, user_id: str) -> None:
+    """Async variant of assert_thread_access for the chat request handlers."""
+    if not thread_id:
+        return
+    owner = await get_thread_owner_async(thread_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="Thread access denied.")

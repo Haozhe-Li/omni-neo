@@ -17,9 +17,26 @@ disabled on these tables. See the migration notes for the implications.
 import os
 from datetime import datetime, timezone
 
-from supabase import Client, create_client
+from supabase import AsyncClient, Client, create_async_client, create_client
 
 supabase: Client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+# Async client for hot-path calls made directly on the event loop (chat request
+# handlers). The sync `supabase` client above does blocking httpx, which would
+# stall the whole event loop for a full round-trip on every call — fine from a
+# sync endpoint (runs in FastAPI's threadpool) but a head-of-line-blocking
+# hazard from async code. `create_async_client` is a coroutine, so the client
+# is built lazily on first use rather than at import.
+_async_supabase: AsyncClient | None = None
+
+
+async def get_async_supabase() -> AsyncClient:
+    global _async_supabase
+    if _async_supabase is None:
+        _async_supabase = await create_async_client(
+            os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"]
+        )
+    return _async_supabase
 
 
 def utcnow_iso() -> str:
