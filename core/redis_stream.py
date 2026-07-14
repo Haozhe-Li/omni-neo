@@ -118,6 +118,21 @@ async def stream_reset(thread_id: str) -> None:
     await r.delete(_sk(thread_id), _stk(thread_id))
 
 
+async def stream_begin(thread_id: str) -> None:
+    """Start a fresh turn in one round trip: drop the previous turn's buffered
+    events + status, then mark this turn generating.
+
+    Pipelines the DEL and the SET into a single HTTP request (executed in order
+    server-side, so the delete can't clobber the status we set right after),
+    replacing the separate stream_reset + stream_set_status round trips.
+    """
+    r = _get_redis()
+    pipe = r.pipeline()
+    pipe.delete(_sk(thread_id), _stk(thread_id))
+    pipe.set(_stk(thread_id), "generating", ex=STREAM_TTL_ACTIVE)
+    await pipe.exec()
+
+
 async def stream_read(thread_id: str) -> AsyncGenerator[str, None]:
     """Yield all buffered SSE strings then live events until generation ends.
 

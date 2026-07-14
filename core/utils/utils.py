@@ -19,7 +19,6 @@ def format_personalization(personalization: Personalization) -> str:
     if personalization.user_location:
         result += f"User Location: {personalization.user_location}\n"
 
-    print(result)
     return result
 
 

@@ -1,7 +1,10 @@
+import logging
 import re
 from typing import Iterable
 
 from core.llm import prompt_guard_llm
+
+logger = logging.getLogger(__name__)
 
 
 _LEAKAGE_PATTERNS = [
@@ -156,7 +159,7 @@ async def is_harmful(query: str) -> bool:
         res = float((await prompt_guard_llm.ainvoke(messages)).content)
         return res > 0.5
     except Exception as e:
-        print(e)
+        logger.warning(f"[prompt_guard] is_harmful check failed, allowing through: {e}")
         return False
 
 

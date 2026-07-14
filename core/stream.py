@@ -39,7 +39,7 @@ from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful
-from core.utils.citations import all_citations, reset_citation_registry, register_document_citation
+from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -293,7 +293,7 @@ async def _stream_agent(
     # Must run before build_message_content: mounting a document assigns it a
     # citation number via register_document_citation, which needs the
     # thread/turn context this sets up.
-    reset_citation_registry(thread_id, turn)
+    await reset_citation_registry_async(thread_id, turn)
 
     if rewind_config is not None:
         # Time-travel: replay from (possibly forked) checkpoint — no new input.
