@@ -267,6 +267,12 @@ async def evaluate_charge_fast(user_id: str, mode: str) -> dict:
     return result
 
 
+def usage_snapshot_hit(user_id: str) -> bool:
+    """Whether a live usage-snapshot entry exists (for timing/observability logs)."""
+    today = datetime.now(timezone.utc)
+    return _snapshot_get(user_id, today.date().isoformat(), today.strftime("%Y-%m")) is not None
+
+
 def commit_charge_fast(user_id: str, mode: str) -> None:
     """Fire-and-forget reconcile: do the real read+increment+write against the
     DB, then re-anchor the local snapshot to the post-write truth."""
