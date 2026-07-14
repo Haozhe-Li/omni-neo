@@ -9,9 +9,7 @@ search result page with one round trip instead of one per source.
 """
 from __future__ import annotations
 
-import os
-
-import redis.asyncio as aioredis
+from upstash_redis.asyncio import Redis
 
 _PREFIX = "omni:credibility:domain:"
 
@@ -24,13 +22,12 @@ TTL_TRUSTED = 3600 * 24 * 365
 class CredibilityRedis:
     def __init__(self, prefix: str = _PREFIX):
         self._prefix = prefix
-        self._client: aioredis.Redis | None = None
+        self._client: Redis | None = None
 
-    def _get_client(self) -> aioredis.Redis:
+    def _get_client(self) -> Redis:
         if self._client is None:
-            self._client = aioredis.Redis.from_url(
-                os.environ["REDIS_URL"], decode_responses=True
-            )
+            # Upstash HTTP REST (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).
+            self._client = Redis.from_env()
         return self._client
 
     def _key(self, domain: str) -> str:
@@ -41,17 +38,17 @@ class CredibilityRedis:
         if not domains:
             return {}
         keys = [self._key(d) for d in domains]
-        values = await self._get_client().mget(keys)
+        values = await self._get_client().mget(*keys)
         return {domain: value for domain, value in zip(domains, values) if value}
 
     async def set_many(self, entries: dict[str, str], ttl: int) -> None:
         """Write every entry with the same `ttl` in one pipelined round trip."""
         if not entries:
             return
-        pipe = self._get_client().pipeline(transaction=False)
+        pipe = self._get_client().pipeline()
         for domain, label in entries.items():
             pipe.set(self._key(domain), label, ex=ttl)
-        await pipe.execute()
+        await pipe.exec()
 
 
 credibility_redis = CredibilityRedis()

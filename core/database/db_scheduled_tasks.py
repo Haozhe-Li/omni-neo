@@ -1,8 +1,8 @@
 """
 Database operations for scheduled research tasks (the "run this prompt on a
-schedule, email me the report" feature).
+schedule, email me the report" feature). Over Supabase PostgREST (HTTP).
 
-Table schema:
+Table schema (managed in Supabase, see schema.sql):
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
         task_id TEXT PRIMARY KEY,
         user_id VARCHAR(255) NOT NULL,
@@ -19,100 +19,34 @@ Table schema:
     CREATE TABLE IF NOT EXISTS scheduled_task_runs (
         run_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES scheduled_tasks(task_id) ON DELETE CASCADE,
-        thread_id TEXT,            -- fresh chat thread created for this run
-        publish_id TEXT,           -- legacy: Pages publish:{id}, unused by new runs
-        title TEXT,                -- report title (private — see module docstring)
-        report_markdown TEXT,      -- full report body
-        sources JSONB,             -- citation list, same shape as the Pages `sources` field
+        thread_id TEXT,
+        publish_id TEXT,
+        title TEXT,
+        report_markdown TEXT,
+        sources JSONB,
         summary TEXT,
         status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending | running | success | failed
         error TEXT,
-        qstash_message_id TEXT,    -- idempotency guard: QStash retries redeliver
-                                    -- the same message id, so a unique index here
-                                    -- turns a retry into a no-op insert instead of
-                                    -- a second run.
+        qstash_message_id TEXT,   -- idempotency guard (unique index, see schema.sql)
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
 Each logged-in user may have at most MAX_ACTIVE_TASKS non-deleted tasks
 (enforced in core/routers/scheduled_tasks.py at creation time, not here).
-Each task fires repeatedly on its cron schedule; every firing gets its own
-row in scheduled_task_runs plus its own thread_id, so the user can continue
-chatting in that thread afterward exactly like any other conversation.
+Each firing gets its own row in scheduled_task_runs plus its own thread_id.
 
-A run's report is private by construction: it lives only in this table,
-gated by `scheduled_tasks.user_id` (see api_get_run in
-core/routers/scheduled_tasks.py), and is never written into the Pages Redis
-keyspace the way it used to be. A user can explicitly copy a report out to
-Pages (public or unlisted) via the Share button on its /schedule/{run_id}
-page — that creates an independent record; deleting either one doesn't
-touch the other.
+A run's report is private by construction: it lives only in this table, gated
+by scheduled_tasks.user_id (see api_get_run in core/routers/scheduled_tasks.py).
 """
 
-import json
 import logging
 
-from core.database.postgresql_saver import sync_pool as pool
+from core.database.supabase_client import supabase, utcnow_iso
 
 logger = logging.getLogger(__name__)
 
 MAX_ACTIVE_TASKS = 3
-
-
-def setup_scheduled_tasks_table() -> None:
-    """Idempotently create the scheduled_tasks / scheduled_task_runs tables. Safe on every startup."""
-    ddl = [
-        """
-        CREATE TABLE IF NOT EXISTS scheduled_tasks (
-            task_id TEXT PRIMARY KEY,
-            user_id VARCHAR(255) NOT NULL,
-            email TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            cron_schedule TEXT NOT NULL,
-            qstash_schedule_id TEXT,
-            status VARCHAR(20) NOT NULL DEFAULT 'active',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user_id ON scheduled_tasks(user_id);",
-        # Table pre-dates the `name` column (added once the frontend needed a
-        # separate task name from the prompt) — idempotent for existing rows.
-        "ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';",
-        """
-        CREATE TABLE IF NOT EXISTS scheduled_task_runs (
-            run_id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL REFERENCES scheduled_tasks(task_id) ON DELETE CASCADE,
-            thread_id TEXT,
-            publish_id TEXT,
-            summary TEXT,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            error TEXT,
-            qstash_message_id TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task_id ON scheduled_task_runs(task_id);",
-        # Runs now store the report privately instead of publishing to Pages —
-        # added once /schedule/{run_id} replaced /pages/{publish_id} as the
-        # report's home; idempotent for existing rows.
-        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS title TEXT;",
-        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS report_markdown TEXT;",
-        "ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS sources JSONB;",
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_task_runs_qstash_msg
-            ON scheduled_task_runs(qstash_message_id) WHERE qstash_message_id IS NOT NULL;
-        """,
-    ]
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                for stmt in ddl:
-                    cur.execute(stmt)
-    except Exception as e:
-        logger.error(f"[db_scheduled_tasks] setup_scheduled_tasks_table error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +55,15 @@ def setup_scheduled_tasks_table() -> None:
 
 def count_active_tasks(user_id: str) -> int:
     """Tasks counting against the per-user MAX_ACTIVE_TASKS cap (active + paused, not deleted)."""
-    sql = "SELECT COUNT(*) AS cnt FROM scheduled_tasks WHERE user_id = %s AND status IN ('active', 'paused')"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                row = cur.fetchone()
-                return row["cnt"] if row else 0
+        res = (
+            supabase.table("scheduled_tasks")
+            .select("task_id", count="exact")
+            .eq("user_id", user_id)
+            .in_("status", ["active", "paused"])
+            .execute()
+        )
+        return res.count or 0
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] count_active_tasks error: {e}")
         return 0
@@ -142,15 +78,17 @@ def create_task(
     cron_schedule: str,
     qstash_schedule_id: str | None,
 ) -> bool:
-    sql = """
-        INSERT INTO scheduled_tasks (task_id, user_id, name, email, prompt, cron_schedule, qstash_schedule_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (task_id, user_id, name, email, prompt, cron_schedule, qstash_schedule_id))
-        return True
+        res = supabase.table("scheduled_tasks").insert({
+            "task_id": task_id,
+            "user_id": user_id,
+            "name": name,
+            "email": email,
+            "prompt": prompt,
+            "cron_schedule": cron_schedule,
+            "qstash_schedule_id": qstash_schedule_id,
+        }).execute()
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] create_task error: {e}")
         return False
@@ -166,51 +104,54 @@ def update_task(
 ) -> bool:
     """Edit a task's content (not its status — see update_task_status).
     The caller is responsible for updating the QStash schedule to match."""
-    fields = []
-    values = []
-    for col, val in (("name", name), ("prompt", prompt), ("cron_schedule", cron_schedule)):
-        if val is not None:
-            fields.append(f"{col} = %s")
-            values.append(val)
-    if not fields:
+    payload = {
+        col: val
+        for col, val in (("name", name), ("prompt", prompt), ("cron_schedule", cron_schedule))
+        if val is not None
+    }
+    if not payload:
         return False
-    fields.append("updated_at = NOW()")
-    sql = f"UPDATE scheduled_tasks SET {', '.join(fields)} WHERE task_id = %s AND user_id = %s"
-    values += [task_id, user_id]
+    payload["updated_at"] = utcnow_iso()
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, values)
-                return cur.rowcount > 0
+        res = (
+            supabase.table("scheduled_tasks")
+            .update(payload)
+            .eq("task_id", task_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] update_task error: {e}")
         return False
 
 
 def get_task(task_id: str) -> dict | None:
-    sql = "SELECT * FROM scheduled_tasks WHERE task_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (task_id,))
-                row = cur.fetchone()
-                return dict(row) if row else None
+        res = (
+            supabase.table("scheduled_tasks")
+            .select("*")
+            .eq("task_id", task_id)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] get_task error: {e}")
         return None
 
 
 def list_tasks_for_user(user_id: str) -> list[dict]:
-    sql = """
-        SELECT * FROM scheduled_tasks
-        WHERE user_id = %s AND status != 'deleted'
-        ORDER BY created_at DESC
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                return [dict(r) for r in cur.fetchall()]
+        res = (
+            supabase.table("scheduled_tasks")
+            .select("*")
+            .eq("user_id", user_id)
+            .neq("status", "deleted")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] list_tasks_for_user error: {e}")
         return []
@@ -218,15 +159,15 @@ def list_tasks_for_user(user_id: str) -> list[dict]:
 
 def update_task_status(task_id: str, user_id: str, status: str) -> bool:
     """status: 'active' | 'paused' | 'deleted'. Scoped to user_id to enforce ownership."""
-    sql = """
-        UPDATE scheduled_tasks SET status = %s, updated_at = NOW()
-        WHERE task_id = %s AND user_id = %s
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (status, task_id, user_id))
-                return cur.rowcount > 0
+        res = (
+            supabase.table("scheduled_tasks")
+            .update({"status": status, "updated_at": utcnow_iso()})
+            .eq("task_id", task_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] update_task_status error: {e}")
         return False
@@ -239,16 +180,25 @@ def update_task_status(task_id: str, user_id: str, status: str) -> bool:
 def create_run(run_id: str, task_id: str, qstash_message_id: str | None = None) -> bool:
     """Insert a new run row. Returns False (no-op) if qstash_message_id already
     exists — that's a QStash retry of a delivery we already started, not a new firing."""
-    sql = """
-        INSERT INTO scheduled_task_runs (run_id, task_id, status, qstash_message_id)
-        VALUES (%s, %s, 'pending', %s)
-        ON CONFLICT (qstash_message_id) WHERE qstash_message_id IS NOT NULL DO NOTHING
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (run_id, task_id, qstash_message_id))
-                return cur.rowcount > 0
+        # QStash retries redeliver the same message id; skip if we've seen it.
+        if qstash_message_id is not None:
+            existing = (
+                supabase.table("scheduled_task_runs")
+                .select("run_id")
+                .eq("qstash_message_id", qstash_message_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return False
+        res = supabase.table("scheduled_task_runs").insert({
+            "run_id": run_id,
+            "task_id": task_id,
+            "status": "pending",
+            "qstash_message_id": qstash_message_id,
+        }).execute()
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] create_run error: {e}")
         return False
@@ -265,43 +215,39 @@ def update_run(
     summary: str | None = None,
     error: str | None = None,
 ) -> None:
-    fields = []
-    values = []
-    for col, val in (
-        ("status", status),
-        ("thread_id", thread_id),
-        ("title", title),
-        ("report_markdown", report_markdown),
-        ("summary", summary),
-        ("error", error),
-    ):
-        if val is not None:
-            fields.append(f"{col} = %s")
-            values.append(val)
+    payload = {
+        col: val
+        for col, val in (
+            ("status", status),
+            ("thread_id", thread_id),
+            ("title", title),
+            ("report_markdown", report_markdown),
+            ("summary", summary),
+            ("error", error),
+        )
+        if val is not None
+    }
     if sources is not None:
-        fields.append("sources = %s::jsonb")
-        values.append(json.dumps(sources))
-    if not fields:
+        payload["sources"] = sources
+    if not payload:
         return
-    fields.append("updated_at = NOW()")
-    sql = f"UPDATE scheduled_task_runs SET {', '.join(fields)} WHERE run_id = %s"
-    values.append(run_id)
+    payload["updated_at"] = utcnow_iso()
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, values)
+        supabase.table("scheduled_task_runs").update(payload).eq("run_id", run_id).execute()
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] update_run error: {e}")
 
 
 def get_run(run_id: str) -> dict | None:
-    sql = "SELECT * FROM scheduled_task_runs WHERE run_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (run_id,))
-                row = cur.fetchone()
-                return dict(row) if row else None
+        res = (
+            supabase.table("scheduled_task_runs")
+            .select("*")
+            .eq("run_id", run_id)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] get_run error: {e}")
         return None
@@ -311,19 +257,17 @@ def list_runs_for_task(task_id: str, limit: int = 20) -> list[dict]:
     """Excludes report_markdown/sources — those are only needed by the single
     -run detail view (get_run), not the run-history list in Settings, so
     leaving them out keeps this payload small."""
-    sql = """
-        SELECT run_id, task_id, thread_id, summary, status, error,
-               qstash_message_id, created_at, updated_at
-        FROM scheduled_task_runs
-        WHERE task_id = %s
-        ORDER BY created_at DESC
-        LIMIT %s
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (task_id, limit))
-                return [dict(r) for r in cur.fetchall()]
+        res = (
+            supabase.table("scheduled_task_runs")
+            .select("run_id, task_id, thread_id, summary, status, error, "
+                    "qstash_message_id, created_at, updated_at")
+            .eq("task_id", task_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data
     except Exception as e:
         logger.error(f"[db_scheduled_tasks] list_runs_for_task error: {e}")
         return []

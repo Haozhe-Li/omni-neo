@@ -2,7 +2,9 @@
 Database operations for the user_memories table — durable, cross-thread,
 per-user long-term memory (a single freeform markdown document per user).
 
-Table schema:
+All access is over Supabase's PostgREST HTTP API (see supabase_client.py).
+
+Table schema (managed in Supabase, see schema.sql):
     CREATE TABLE IF NOT EXISTS user_memories (
         user_id VARCHAR(255) PRIMARY KEY,
         content TEXT NOT NULL DEFAULT '',
@@ -12,7 +14,7 @@ Table schema:
 
 import logging
 
-from core.database.postgresql_saver import sync_pool as pool
+from core.database.supabase_client import supabase, utcnow_iso
 from core.utils.redis_cache import l1cache
 
 logger = logging.getLogger(__name__)
@@ -24,33 +26,18 @@ logger = logging.getLogger(__name__)
 MAX_MEMORY_CHARS = 3000
 
 
-def setup_user_memories_table() -> None:
-    """Create the user_memories table if it doesn't exist. Safe to call on every startup."""
-    sql = """
-        CREATE TABLE IF NOT EXISTS user_memories (
-            user_id VARCHAR(255) PRIMARY KEY,
-            content TEXT NOT NULL DEFAULT '',
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-    """
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-    except Exception as e:
-        logger.error(f"[db_user_memories] setup_user_memories_table error: {e}")
-
-
 @l1cache(ttl=60)
 def get_user_memory(user_id: str) -> str:
     """Return the user's long-term memory document, or '' if none stored yet."""
-    sql = "SELECT content FROM user_memories WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                row = cur.fetchone()
-                return row["content"] if row else ""
+        res = (
+            supabase.table("user_memories")
+            .select("content")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0]["content"] if res.data else ""
     except Exception as e:
         logger.error(f"[db_user_memories] get_user_memory error: {e}")
         return ""
@@ -59,16 +46,11 @@ def get_user_memory(user_id: str) -> str:
 def save_user_memory(user_id: str, content: str) -> bool:
     """Insert or overwrite the user's memory document."""
     content = (content or "").strip()[:MAX_MEMORY_CHARS]
-    sql = """
-        INSERT INTO user_memories (user_id, content, updated_at)
-        VALUES (%s, %s, NOW())
-        ON CONFLICT (user_id) DO UPDATE
-            SET content = EXCLUDED.content, updated_at = NOW()
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id, content))
+        supabase.table("user_memories").upsert(
+            {"user_id": user_id, "content": content, "updated_at": utcnow_iso()},
+            on_conflict="user_id",
+        ).execute()
         l1cache.invalidate(get_user_memory, user_id)
         return True
     except Exception as e:
@@ -78,14 +60,10 @@ def save_user_memory(user_id: str, content: str) -> bool:
 
 def delete_user_memory(user_id: str) -> bool:
     """Clear a user's memory document. Returns True if a row was deleted."""
-    sql = "DELETE FROM user_memories WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                deleted = cur.rowcount > 0
+        res = supabase.table("user_memories").delete().eq("user_id", user_id).execute()
         l1cache.invalidate(get_user_memory, user_id)
-        return deleted
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_user_memories] delete_user_memory error: {e}")
         return False
@@ -97,16 +75,28 @@ def migrate_guest_memory(user_id: str, guest_id: str) -> bool:
     user doesn't already have one (never clobbers existing memory), then drop
     the guest's row either way. Call alongside merge_guest_to_user().
     """
-    sql = """
-        INSERT INTO user_memories (user_id, content, updated_at)
-        SELECT %s, content, NOW() FROM user_memories WHERE user_id = %s
-        ON CONFLICT (user_id) DO NOTHING
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id, guest_id))
-                cur.execute("DELETE FROM user_memories WHERE user_id = %s", (guest_id,))
+        # Only adopt if the target user has no memory yet.
+        existing = (
+            supabase.table("user_memories")
+            .select("user_id")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            guest = (
+                supabase.table("user_memories")
+                .select("content")
+                .eq("user_id", guest_id)
+                .limit(1)
+                .execute()
+            )
+            if guest.data:
+                supabase.table("user_memories").insert(
+                    {"user_id": user_id, "content": guest.data[0]["content"]}
+                ).execute()
+        supabase.table("user_memories").delete().eq("user_id", guest_id).execute()
         l1cache.invalidate(get_user_memory, user_id)
         l1cache.invalidate(get_user_memory, guest_id)
         return True

@@ -2,18 +2,17 @@ import json
 import hashlib
 import functools
 import inspect
-import os
 from typing import Callable, Any, Optional
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import re
-import redis
+from upstash_redis import Redis
 
 class L1Cache:
-    def __init__(self, redis_client: redis.Redis, prefix: str = "l1cache:", ttl: Optional[int] = None):
+    def __init__(self, redis_client: Redis, prefix: str = "l1cache:", ttl: Optional[int] = None):
         """
         L1Cache 类，用于 Redis L1 缓存，支持 decorator 包装函数。
-        
-        :param redis_client: 已初始化的 redis.Redis 实例
+
+        :param redis_client: 已初始化的 upstash_redis.Redis 实例（HTTP REST）
         :param prefix: 缓存 key 前缀，默认 "l1cache:"
         :param ttl: 默认过期时间（秒），None 表示不设置
         """
@@ -212,6 +211,8 @@ class L1Cache:
         
         return decorator
 
-r = redis.Redis.from_url(os.environ["REDIS_URL"])
+# HTTP REST client (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN). Each
+# get/set is an independent HTTPS request — no long-lived socket to go stale.
+r = Redis.from_env()
 
 l1cache = L1Cache(r, prefix="app:", ttl=3600 * 24)

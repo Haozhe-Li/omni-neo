@@ -1,7 +1,7 @@
 """
-Database operations for threads_control table.
+Database operations for threads_control table (over Supabase PostgREST, HTTP).
 
-Table schema (post-migration):
+Table schema (managed in Supabase, see schema.sql):
     CREATE TABLE threads_control (
         thread_id TEXT PRIMARY KEY,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -13,10 +13,17 @@ Retention policy:
     - guest (user_id IS NULL or LIKE 'guest_%'): 3 days
     - logged-in user:                            90 days
     - pinned threads:                            never auto-deleted
+
+LangGraph checkpoint state now lives in Upstash Redis (see checkpointer.py),
+not Postgres tables, so thread deletion clears it via the sync Upstash saver's
+`delete_thread` instead of `DELETE FROM checkpoints`.
 """
 
 import logging
-from core.database.postgresql_saver import sync_pool as pool
+from datetime import datetime, timedelta, timezone
+
+from core.database.supabase_client import supabase, utcnow_iso
+from core.database.checkpointer import sync_checkpointer
 from core.utils import redis_sources, vector_sources
 
 logger = logging.getLogger(__name__)
@@ -27,15 +34,17 @@ def get_thread_owner(thread_id: str) -> str | None:
     Return the user_id that owns this thread.
     Returns None if the thread doesn't exist yet (new thread) or is unclaimed (NULL).
     """
-    sql = "SELECT user_id FROM threads_control WHERE thread_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id,))
-                row = cur.fetchone()
-                if row is None:
-                    return None  # Thread not registered yet – treat as unclaimed
-                return row["user_id"]  # May itself be None (unclaimed legacy thread)
+        res = (
+            supabase.table("threads_control")
+            .select("user_id")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None  # Thread not registered yet – treat as unclaimed
+        return res.data[0]["user_id"]  # May itself be None (unclaimed legacy thread)
     except Exception as e:
         logger.error(f"[db_threads_control] get_thread_owner error: {e}")
         return None
@@ -47,16 +56,27 @@ def upsert_thread(thread_id: str, user_id: str | None = None) -> None:
     If it already exists, claim it with user_id only if currently unclaimed.
     Called synchronously when GET /get_thread_id is requested.
     """
-    sql = """
-        INSERT INTO threads_control (thread_id, updated_at, is_pinned, user_id)
-        VALUES (%s, NOW(), FALSE, %s)
-        ON CONFLICT (thread_id) DO UPDATE
-            SET user_id = COALESCE(threads_control.user_id, EXCLUDED.user_id)
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id))
+        existing = (
+            supabase.table("threads_control")
+            .select("user_id")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            supabase.table("threads_control").upsert(
+                {
+                    "thread_id": thread_id, "user_id": user_id,
+                    "is_pinned": False, "updated_at": utcnow_iso(),
+                },
+                on_conflict="thread_id", ignore_duplicates=True,
+            ).execute()
+        elif user_id is not None and existing.data[0]["user_id"] is None:
+            # Claim an unclaimed row without disturbing updated_at.
+            supabase.table("threads_control").update({"user_id": user_id}).eq(
+                "thread_id", thread_id
+            ).is_("user_id", "null").execute()
     except Exception as e:
         logger.error(f"[db_threads_control] upsert_thread error for {thread_id}: {e}")
 
@@ -67,29 +87,40 @@ def touch_thread(thread_id: str, user_id: str | None = None) -> None:
     If user_id is provided and the row is currently unclaimed, claim it.
     Called asynchronously (fire-and-forget) from /chat and /light_chat.
     """
-    sql = """
-        INSERT INTO threads_control (thread_id, updated_at, is_pinned, user_id)
-        VALUES (%s, NOW(), FALSE, %s)
-        ON CONFLICT (thread_id) DO UPDATE
-            SET updated_at = NOW(),
-                user_id = COALESCE(threads_control.user_id, EXCLUDED.user_id)
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id))
+        existing = (
+            supabase.table("threads_control")
+            .select("user_id")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            supabase.table("threads_control").upsert(
+                {
+                    "thread_id": thread_id, "user_id": user_id,
+                    "is_pinned": False, "updated_at": utcnow_iso(),
+                },
+                on_conflict="thread_id", ignore_duplicates=True,
+            ).execute()
+            return
+        payload = {"updated_at": utcnow_iso()}
+        if user_id is not None and existing.data[0]["user_id"] is None:
+            payload["user_id"] = user_id
+        supabase.table("threads_control").update(payload).eq(
+            "thread_id", thread_id
+        ).execute()
     except Exception as e:
         logger.error(f"[db_threads_control] touch_thread error for {thread_id}: {e}")
 
 
 def pin_thread(thread_id: str, is_pinned: bool) -> bool:
     """Toggle the pinned state of a thread. Returns True if the row was found."""
-    sql = "UPDATE threads_control SET is_pinned = %s WHERE thread_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (is_pinned, thread_id))
-                return cur.rowcount > 0
+        res = supabase.table("threads_control").update({"is_pinned": is_pinned}).eq(
+            "thread_id", thread_id
+        ).execute()
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_threads_control] pin_thread error for {thread_id}: {e}")
         return False
@@ -102,33 +133,35 @@ def get_thread_ids_owned_by_user(user_id: str) -> list[str]:
     since a thread can in principle exist here without a user_threads row
     (e.g. created but never synced with a title).
     """
-    sql = "SELECT thread_id FROM threads_control WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                return [r["thread_id"] for r in cur.fetchall()]
+        res = (
+            supabase.table("threads_control")
+            .select("thread_id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return [r["thread_id"] for r in res.data]
     except Exception as e:
         logger.error(f"[db_threads_control] get_thread_ids_owned_by_user error: {e}")
         return []
 
 
+def _delete_checkpoint_state(thread_id: str) -> None:
+    """Clear a thread's LangGraph checkpoint state from Upstash Redis."""
+    try:
+        sync_checkpointer.delete_thread(thread_id)
+    except Exception as e:
+        logger.error(f"[db_threads_control] checkpoint cleanup error for {thread_id}: {e}")
+
+
 def delete_thread(thread_id: str) -> bool:
     """
-    Hard-delete a thread from threads_control AND all LangGraph checkpoint tables
-    (checkpoints, checkpoint_blobs, checkpoint_writes).
+    Hard-delete a thread from threads_control AND its LangGraph checkpoint state.
     Ownership should be verified by the caller before invoking this.
     """
-    # LangGraph stores state across three tables that all use thread_id.
-    checkpoint_tables = ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                for table in checkpoint_tables:
-                    cur.execute(f"DELETE FROM {table} WHERE thread_id = %s", (thread_id,))
-                cur.execute(
-                    "DELETE FROM threads_control WHERE thread_id = %s", (thread_id,)
-                )
+        supabase.table("threads_control").delete().eq("thread_id", thread_id).execute()
+        _delete_checkpoint_state(thread_id)
         try:
             redis_sources.delete_thread_sources(thread_id)
         except Exception as e:
@@ -145,21 +178,16 @@ def delete_thread(thread_id: str) -> bool:
 
 def delete_threads_bulk(thread_ids: list[str]) -> None:
     """
-    Hard-delete multiple threads from threads_control AND all LangGraph checkpoint
-    tables in one round trip. Ownership must already be verified by the caller
+    Hard-delete multiple threads from threads_control AND their LangGraph
+    checkpoint state. Ownership must already be verified by the caller
     (pass only ids confirmed deleted from user_threads).
     """
     if not thread_ids:
         return
-    checkpoint_tables = ["checkpoint_writes", "checkpoint_blobs", "checkpoints"]
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                for table in checkpoint_tables:
-                    cur.execute(f"DELETE FROM {table} WHERE thread_id = ANY(%s)", (thread_ids,))
-                cur.execute(
-                    "DELETE FROM threads_control WHERE thread_id = ANY(%s)", (thread_ids,)
-                )
+        supabase.table("threads_control").delete().in_("thread_id", thread_ids).execute()
+        for thread_id in thread_ids:
+            _delete_checkpoint_state(thread_id)
         try:
             redis_sources.delete_threads_sources_bulk(thread_ids)
         except Exception as e:
@@ -178,12 +206,11 @@ def reassign_threads_user(old_user_id: str, new_user_id: str) -> int:
     Update user_id in threads_control when guest threads are merged into a real account.
     Returns the number of rows updated.
     """
-    sql = "UPDATE threads_control SET user_id = %s WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (new_user_id, old_user_id))
-                return cur.rowcount
+        res = supabase.table("threads_control").update({"user_id": new_user_id}).eq(
+            "user_id", old_user_id
+        ).execute()
+        return len(res.data or [])
     except Exception as e:
         logger.error(f"[db_threads_control] reassign_threads_user error: {e}")
         return 0
@@ -197,29 +224,30 @@ def cleanup_old_threads() -> None:
       - pinned threads: never deleted
     Called asynchronously (fire-and-forget) on GET /health.
     """
-    guest_sql = """
-        DELETE FROM threads_control
-        WHERE is_pinned = FALSE
-          AND updated_at < NOW() - INTERVAL '3 days'
-          AND (user_id IS NULL OR user_id LIKE 'guest_%')
-    """
-    user_sql = """
-        DELETE FROM threads_control
-        WHERE is_pinned = FALSE
-          AND updated_at < NOW() - INTERVAL '90 days'
-          AND user_id IS NOT NULL
-          AND user_id NOT LIKE 'guest_%'
-    """
+    now = datetime.now(timezone.utc)
+    cutoff_guest = (now - timedelta(days=3)).isoformat()
+    cutoff_user = (now - timedelta(days=90)).isoformat()
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(guest_sql)
-                guest_deleted = cur.rowcount
-                cur.execute(user_sql)
-                user_deleted = cur.rowcount
-                logger.info(
-                    f"[db_threads_control] cleanup: {guest_deleted} guest threads "
-                    f"(3d), {user_deleted} user threads (90d) deleted"
-                )
+        guest_res = (
+            supabase.table("threads_control")
+            .delete()
+            .eq("is_pinned", False)
+            .lt("updated_at", cutoff_guest)
+            .or_("user_id.is.null,user_id.like.guest_*")
+            .execute()
+        )
+        user_res = (
+            supabase.table("threads_control")
+            .delete()
+            .eq("is_pinned", False)
+            .lt("updated_at", cutoff_user)
+            .not_.is_("user_id", "null")
+            .not_.like("user_id", "guest_*")
+            .execute()
+        )
+        logger.info(
+            f"[db_threads_control] cleanup: {len(guest_res.data or [])} guest threads "
+            f"(3d), {len(user_res.data or [])} user threads (90d) deleted"
+        )
     except Exception as e:
         logger.error(f"[db_threads_control] cleanup_old_threads error: {e}")

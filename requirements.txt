@@ -9,9 +9,10 @@ langchain-openai
 langchain-google-genai
 langchain-cerebras
 
-# For persisting agent state
-langgraph-checkpoint-postgres
-psycopg[binary]
+# For persisting agent state — LangGraph checkpoints in Upstash Redis (HTTP REST),
+# app data in Supabase over PostgREST (HTTP). No direct Postgres/TCP anymore.
+langgraph-checkpoint-upstash-redis
+supabase
 
 # For fetching data
 spider-client
@@ -37,8 +38,8 @@ pandas
 matplotlib
 boto3
 
-# cache
-redis
+# cache + stream buffer + checkpoints (Upstash Redis over HTTP REST)
+upstash-redis
 
 # RAG
 pymupdf

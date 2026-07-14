@@ -1,7 +1,7 @@
 """
-Database operations for the user_threads table.
+Database operations for the user_threads table (over Supabase PostgREST, HTTP).
 
-Table schema (post-migration):
+Table schema (managed in Supabase, see schema.sql):
     CREATE TABLE IF NOT EXISTS user_threads (
         thread_id VARCHAR(255) PRIMARY KEY,
         user_id VARCHAR(255) NOT NULL,
@@ -9,34 +9,34 @@ Table schema (post-migration):
         ui_messages JSONB DEFAULT '[]',
         search_text TEXT NOT NULL DEFAULT '',
         is_pinned BOOLEAN DEFAULT FALSE,
+        origin VARCHAR(20),   -- NULL=chat, 'scheduled_task'=scheduled research run
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX IF NOT EXISTS idx_user_threads_user_id ON user_threads(user_id);
-    CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);
-    CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);
 
-Guest daily/monthly request quotas used to live in a `guest_usage` table
-here — that's been replaced by the unified credit ledger in
-core/database/db_user_usage.py, which covers both guests and signed-in users.
+Thread search used to lean on Postgres pg_trgm (GIN indexes + similarity()).
+Over PostgREST that isn't available, so search now fetches the user's own
+threads and does substring matching + fuzzy ranking here (see
+search_user_threads). Thread counts are small per user, so this stays cheap.
 
 Limits:
     - Guests: max GUEST_MAX_THREADS active threads
     - Logged-in users: no hard thread count limit
 """
 
+import difflib
 import json
 import logging
 import os
 
-from core.database.postgresql_saver import sync_pool as pool
+from core.database.supabase_client import supabase, utcnow_iso
 
 logger = logging.getLogger(__name__)
 
 GUEST_MAX_THREADS: int = int(os.getenv("GUEST_MAX_THREADS", "5"))
 
 # Caps how much text per thread gets indexed/stored for search, guarding
-# against pathologically long threads bloating the trigram index.
+# against pathologically long threads bloating the stored search_text.
 SEARCH_TEXT_MAX_CHARS = 50_000
 
 
@@ -50,18 +50,17 @@ def get_threads_for_user(user_id: str) -> list[dict]:
     Excludes scheduled-research threads (origin='scheduled_task') — those are
     surfaced only via /schedule_task's own run list (see
     core/routers/scheduled_tasks.py), never in the regular chat sidebar."""
-    sql = """
-        SELECT thread_id, title, is_pinned, updated_at
-        FROM user_threads
-        WHERE user_id = %s AND origin IS NULL
-        ORDER BY is_pinned DESC, updated_at DESC
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                rows = cur.fetchall()
-                return [dict(r) for r in rows]
+        res = (
+            supabase.table("user_threads")
+            .select("thread_id, title, is_pinned, updated_at")
+            .eq("user_id", user_id)
+            .is_("origin", "null")
+            .order("is_pinned", desc=True)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return res.data
     except Exception as e:
         logger.error(f"[db_user_threads] get_threads_for_user error: {e}")
         return []
@@ -69,22 +68,21 @@ def get_threads_for_user(user_id: str) -> list[dict]:
 
 def get_thread_messages(thread_id: str, user_id: str) -> list | None:
     """Return ui_messages for a specific owned thread, or None if not found."""
-    sql = """
-        SELECT ui_messages
-        FROM user_threads
-        WHERE thread_id = %s AND user_id = %s
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id))
-                row = cur.fetchone()
-                if row:
-                    msgs = row["ui_messages"]
-                    if isinstance(msgs, str):
-                        return json.loads(msgs)
-                    return msgs or []
-        return None
+        res = (
+            supabase.table("user_threads")
+            .select("ui_messages")
+            .eq("thread_id", thread_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        msgs = res.data[0]["ui_messages"]
+        if isinstance(msgs, str):
+            return json.loads(msgs)
+        return msgs or []
     except Exception as e:
         logger.error(f"[db_user_threads] get_thread_messages error: {e}")
         return None
@@ -92,13 +90,14 @@ def get_thread_messages(thread_id: str, user_id: str) -> list | None:
 
 def count_user_threads(user_id: str) -> int:
     """Return the number of active threads for a user (used for guest cap)."""
-    sql = "SELECT COUNT(*) AS cnt FROM user_threads WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                row = cur.fetchone()
-                return row["cnt"] if row else 0
+        res = (
+            supabase.table("user_threads")
+            .select("thread_id", count="exact")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return res.count or 0
     except Exception as e:
         logger.error(f"[db_user_threads] count_user_threads error: {e}")
         return 0
@@ -109,7 +108,7 @@ def count_user_threads(user_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 def _extract_search_text(messages: list) -> str:
-    """Flatten a ui_messages list into plain text for trigram indexing."""
+    """Flatten a ui_messages list into plain text for search indexing."""
     parts = []
     for m in messages or []:
         if not isinstance(m, dict):
@@ -127,11 +126,6 @@ def _extract_search_text(messages: list) -> str:
     return text[:SEARCH_TEXT_MAX_CHARS]
 
 
-def _escape_like(term: str) -> str:
-    """Escape ILIKE wildcards so a literal '%' or '_' in the query is matched literally."""
-    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def _make_snippet(text: str, query: str, radius: int = 40) -> str:
     """Return a short excerpt of `text` centered on the first case-insensitive match of `query`."""
     if not text:
@@ -145,46 +139,13 @@ def _make_snippet(text: str, query: str, radius: int = 40) -> str:
     return ("…" if start > 0 else "") + snippet + ("…" if end < len(text) else "")
 
 
-def setup_thread_search() -> None:
-    """
-    Idempotently enable pg_trgm and add the search_text column + trigram
-    indexes needed for /api/threads/search. Safe to call on every startup.
-    Also backfills search_text for rows written before this column existed.
-    """
-    ddl = [
-        "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
-        "ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS search_text TEXT NOT NULL DEFAULT '';",
-        "CREATE INDEX IF NOT EXISTS idx_user_threads_search_trgm ON user_threads USING GIN (search_text gin_trgm_ops);",
-        "CREATE INDEX IF NOT EXISTS idx_user_threads_title_trgm ON user_threads USING GIN (title gin_trgm_ops);",
-        # Marks a thread's creator — NULL for ordinary chat, 'scheduled_task'
-        # for a thread created by a scheduled research run (see
-        # core/routers/scheduled_tasks.py). Keeps the two entirely separate:
-        # regular chat history/search never surfaces a scheduled-task thread.
-        "ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS origin VARCHAR(20);",
-    ]
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                for stmt in ddl:
-                    cur.execute(stmt)
-                cur.execute(
-                    "SELECT thread_id, ui_messages FROM user_threads "
-                    "WHERE search_text = '' AND ui_messages != '[]'::jsonb"
-                )
-                stale = cur.fetchall()
-            for row in stale:
-                msgs = row["ui_messages"]
-                if isinstance(msgs, str):
-                    msgs = json.loads(msgs)
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE user_threads SET search_text = %s WHERE thread_id = %s",
-                        (_extract_search_text(msgs), row["thread_id"]),
-                    )
-            if stale:
-                logger.info(f"[db_user_threads] backfilled search_text for {len(stale)} threads")
-    except Exception as e:
-        logger.error(f"[db_user_threads] setup_thread_search error: {e}")
+def _rank(title: str | None, search_text: str, query: str) -> float:
+    """Relevance score approximating the old pg_trgm ranking: a title hit
+    outranks a body-only hit, ties broken by fuzzy title similarity."""
+    ql = query.lower()
+    tl = (title or "").lower()
+    base = 1.0 if ql in tl else (0.5 if ql in (search_text or "").lower() else 0.0)
+    return base + difflib.SequenceMatcher(None, ql, tl).ratio()
 
 
 # ---------------------------------------------------------------------------
@@ -196,23 +157,28 @@ def upsert_thread_messages(thread_id: str, user_id: str, messages: list) -> bool
     Insert or update a thread's ui_messages (and derived search_text).
     Only updates if the row's user_id matches (prevents overwriting another user's data).
     """
-    sql = """
-        INSERT INTO user_threads (thread_id, user_id, ui_messages, search_text, updated_at)
-        VALUES (%s, %s, %s::jsonb, %s, NOW())
-        ON CONFLICT (thread_id) DO UPDATE
-            SET ui_messages = EXCLUDED.ui_messages,
-                search_text = EXCLUDED.search_text,
-                updated_at = NOW()
-            WHERE user_threads.user_id = EXCLUDED.user_id
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql,
-                    (thread_id, user_id, json.dumps(messages), _extract_search_text(messages)),
-                )
-                return cur.rowcount > 0
+        existing = (
+            supabase.table("user_threads")
+            .select("user_id")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        # Guard: never clobber a thread owned by a different user.
+        if existing.data and existing.data[0]["user_id"] != user_id:
+            return False
+        supabase.table("user_threads").upsert(
+            {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "ui_messages": messages,
+                "search_text": _extract_search_text(messages),
+                "updated_at": utcnow_iso(),
+            },
+            on_conflict="thread_id",
+        ).execute()
+        return True
     except Exception as e:
         logger.error(f"[db_user_threads] upsert_thread_messages error: {e}")
         return False
@@ -225,35 +191,39 @@ def upsert_thread_messages(thread_id: str, user_id: str, messages: list) -> bool
 def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]:
     """
     Fuzzy-search a user's own threads by title and message content.
-    Uses the pg_trgm GIN indexes for both matching (ILIKE) and ranking (similarity).
-    Returns threads ordered by relevance, each with a short match snippet.
+    Fetches the user's threads and ranks matches in-process (substring match +
+    fuzzy title similarity), returning them ordered by relevance with a short
+    match snippet.
     """
-    like = f"%{_escape_like(query)}%"
-    sql = """
-        SELECT thread_id, title, is_pinned, updated_at, search_text,
-               GREATEST(similarity(COALESCE(title, ''), %s), similarity(search_text, %s)) AS rank
-        FROM user_threads
-        WHERE user_id = %s
-          AND origin IS NULL
-          AND (title ILIKE %s OR search_text ILIKE %s)
-        ORDER BY rank DESC NULLS LAST, updated_at DESC
-        LIMIT %s
-    """
+    query = (query or "").strip()
+    if not query:
+        return []
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (query, query, user_id, like, like, limit))
-                rows = cur.fetchall()
-                results = []
-                for r in rows:
-                    results.append({
-                        "thread_id": r["thread_id"],
-                        "title": r["title"],
-                        "is_pinned": r["is_pinned"],
-                        "updated_at": r["updated_at"],
-                        "snippet": _make_snippet(r["search_text"], query),
-                    })
-                return results
+        res = (
+            supabase.table("user_threads")
+            .select("thread_id, title, is_pinned, updated_at, search_text")
+            .eq("user_id", user_id)
+            .is_("origin", "null")
+            .execute()
+        )
+        ql = query.lower()
+        matched = []
+        for r in res.data:
+            title = r.get("title") or ""
+            search_text = r.get("search_text") or ""
+            if ql in title.lower() or ql in search_text.lower():
+                matched.append((_rank(title, search_text, query), r))
+        matched.sort(key=lambda pair: (pair[0], pair[1].get("updated_at") or ""), reverse=True)
+        return [
+            {
+                "thread_id": r["thread_id"],
+                "title": r["title"],
+                "is_pinned": r["is_pinned"],
+                "updated_at": r["updated_at"],
+                "snippet": _make_snippet(r.get("search_text") or "", query),
+            }
+            for _, r in matched[:limit]
+        ]
     except Exception as e:
         logger.error(f"[db_user_threads] search_user_threads error: {e}")
         return []
@@ -265,15 +235,18 @@ def register_thread(thread_id: str, user_id: str, origin: str | None = None) -> 
     and from the scheduled-task webhook with origin='scheduled_task').
     No-op if the thread is already registered.
     """
-    sql = """
-        INSERT INTO user_threads (thread_id, user_id, ui_messages, origin, updated_at)
-        VALUES (%s, %s, '[]'::jsonb, %s, NOW())
-        ON CONFLICT (thread_id) DO NOTHING
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id, origin))
+        supabase.table("user_threads").upsert(
+            {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "ui_messages": [],
+                "origin": origin,
+                "updated_at": utcnow_iso(),
+            },
+            on_conflict="thread_id",
+            ignore_duplicates=True,
+        ).execute()
         return True
     except Exception as e:
         logger.error(f"[db_user_threads] register_thread error: {e}")
@@ -282,15 +255,15 @@ def register_thread(thread_id: str, user_id: str, origin: str | None = None) -> 
 
 def update_thread_title(thread_id: str, user_id: str, title: str) -> bool:
     """Update the title of a thread owned by the user."""
-    sql = """
-        UPDATE user_threads SET title = %s, updated_at = NOW()
-        WHERE thread_id = %s AND user_id = %s
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (title, thread_id, user_id))
-                return cur.rowcount > 0
+        res = (
+            supabase.table("user_threads")
+            .update({"title": title, "updated_at": utcnow_iso()})
+            .eq("thread_id", thread_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_user_threads] update_thread_title error: {e}")
         return False
@@ -307,12 +280,15 @@ def delete_user_thread(thread_id: str, user_id: str) -> bool:
     The caller is responsible for also calling delete_thread() in db_threads_control
     to clean up the LangGraph state.
     """
-    sql = "DELETE FROM user_threads WHERE thread_id = %s AND user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (thread_id, user_id))
-                return cur.rowcount > 0
+        res = (
+            supabase.table("user_threads")
+            .delete()
+            .eq("thread_id", thread_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_user_threads] delete_user_thread error: {e}")
         return False
@@ -325,12 +301,14 @@ def delete_all_threads_for_user(user_id: str) -> list[str]:
     Returns the deleted thread_ids so the caller can cascade the LangGraph
     state cleanup via delete_threads_bulk() in db_threads_control.
     """
-    sql = "DELETE FROM user_threads WHERE user_id = %s RETURNING thread_id"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                return [r["thread_id"] for r in cur.fetchall()]
+        res = (
+            supabase.table("user_threads")
+            .delete()
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return [r["thread_id"] for r in (res.data or [])]
     except Exception as e:
         logger.error(f"[db_user_threads] delete_all_threads_for_user error: {e}")
         return []
@@ -346,12 +324,15 @@ def delete_user_threads_bulk(thread_ids: list[str], user_id: str) -> list[str]:
     """
     if not thread_ids:
         return []
-    sql = "DELETE FROM user_threads WHERE user_id = %s AND thread_id = ANY(%s) RETURNING thread_id"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id, thread_ids))
-                return [r["thread_id"] for r in cur.fetchall()]
+        res = (
+            supabase.table("user_threads")
+            .delete()
+            .eq("user_id", user_id)
+            .in_("thread_id", thread_ids)
+            .execute()
+        )
+        return [r["thread_id"] for r in (res.data or [])]
     except Exception as e:
         logger.error(f"[db_user_threads] delete_user_threads_bulk error: {e}")
         return []
@@ -366,15 +347,15 @@ def pin_user_thread(thread_id: str, user_id: str, is_pinned: bool) -> bool:
     Set the is_pinned flag on a thread owned by the user.
     Returns True if the row was found and updated.
     """
-    sql = """
-        UPDATE user_threads SET is_pinned = %s
-        WHERE thread_id = %s AND user_id = %s
-    """
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (is_pinned, thread_id, user_id))
-                return cur.rowcount > 0
+        res = (
+            supabase.table("user_threads")
+            .update({"is_pinned": is_pinned})
+            .eq("thread_id", thread_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_user_threads] pin_user_thread error: {e}")
         return False
@@ -391,14 +372,14 @@ def merge_guest_to_user(user_id: str, guest_id: str) -> int:
     Call reassign_threads_user() in db_threads_control separately to
     also update the LangGraph-side table.
     """
-    sql = "UPDATE user_threads SET user_id = %s WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id, guest_id))
-                return cur.rowcount
+        res = (
+            supabase.table("user_threads")
+            .update({"user_id": user_id})
+            .eq("user_id", guest_id)
+            .execute()
+        )
+        return len(res.data or [])
     except Exception as e:
         logger.error(f"[db_user_threads] merge_guest_to_user error: {e}")
         return 0
-
-

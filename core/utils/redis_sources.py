@@ -13,22 +13,22 @@ full, unchunked source record.
 from __future__ import annotations
 
 import json
-import os
 
-import redis
+from upstash_redis import Redis
 
 # 90 days matches the longest thread retention window (logged-in users, see
 # db_threads_control.py). Explicit deletion on thread delete handles the rest;
 # this TTL is only a safety net against orphaned keys.
 _SOURCE_TTL = 3600 * 24 * 90
 
-_client: redis.Redis | None = None
+_client: Redis | None = None
 
 
-def _get_redis() -> redis.Redis:
+def _get_redis() -> Redis:
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        # HTTP REST client (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).
+        _client = Redis.from_env()
     return _client
 
 
@@ -62,13 +62,13 @@ def persist_citation(thread_id: str, record: dict) -> None:
     """
     r = _get_redis()
 
-    pipe = r.pipeline(transaction=False)
+    pipe = r.pipeline()
     pipe.rpush(_citation_key(thread_id), json.dumps(record, ensure_ascii=False))
     pipe.expire(_citation_key(thread_id), _SOURCE_TTL)
     if record.get("url"):
         pipe.hset(_index_key(thread_id), record["url"], record["n"])
         pipe.expire(_index_key(thread_id), _SOURCE_TTL)
-    pipe.execute()
+    pipe.exec()
 
 
 def delete_thread_sources(thread_id: str) -> None:

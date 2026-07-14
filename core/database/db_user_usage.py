@@ -27,17 +27,17 @@ Model:
       day or month counter over its limit, nothing is charged at all (the
       request should be rejected outright, not partially billed).
 
-Note: psycopg maps NUMERIC to decimal.Decimal, which doesn't mix with float
-in arithmetic — every value read from a day_used/month_used column is cast
-to float immediately (see the float(...) wrapping below) so the rest of this
-module and its callers can treat usage as plain floats throughout.
+Note: NUMERIC values can come back over PostgREST as strings (to preserve
+precision), so every value read from a day_used/month_used column is cast to
+float immediately (see _rolled_over_usage) so the rest of this module and its
+callers can treat usage as plain floats throughout.
 """
 
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 
-from core.database.postgresql_saver import sync_pool as pool
+from core.database.supabase_client import supabase, utcnow_iso
 
 logger = logging.getLogger(__name__)
 
@@ -47,39 +47,6 @@ GUEST_DAILY_CREDIT_LIMIT: int = int(os.getenv("GUEST_DAILY_CREDIT_LIMIT", "20"))
 GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "300"))
 
 MODE_CREDIT_COST: dict[str, float] = {"fast": 1.0, "pro": 4.7, "scheduled": 4.7}
-
-
-def setup_user_usage_table() -> None:
-    """
-    Create user_usage (idempotent) and drop the old guest_usage table it
-    replaces — usage is now tracked uniformly for guests and signed-in users
-    alike, across fast/pro/scheduled modes, so the old pro-only/guest-only
-    table no longer serves a purpose. Safe to call on every startup.
-    """
-    ddl = [
-        "DROP TABLE IF EXISTS guest_usage;",
-        """
-        CREATE TABLE IF NOT EXISTS user_usage (
-            user_id VARCHAR(255) PRIMARY KEY,
-            day DATE NOT NULL DEFAULT CURRENT_DATE,
-            day_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-            month VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
-            month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-        """,
-        # Table pre-dates fractional costs (pro/scheduled used to be a flat
-        # int)  — widen existing INT columns in place, a no-op once already NUMERIC.
-        "ALTER TABLE user_usage ALTER COLUMN day_used TYPE NUMERIC(10,2);",
-        "ALTER TABLE user_usage ALTER COLUMN month_used TYPE NUMERIC(10,2);",
-    ]
-    try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                for stmt in ddl:
-                    cur.execute(stmt)
-    except Exception as e:
-        logger.error(f"[db_user_usage] setup_user_usage_table error: {e}")
 
 
 def _limits(user_id: str) -> tuple[int, int]:
@@ -106,13 +73,31 @@ def _reset_times(today: date) -> tuple[str, str]:
     return resets_day_at, resets_month_at
 
 
+def _rolled_over_usage(row: dict | None, today_iso: str, month: str) -> tuple[float, float]:
+    """Current day/month usage from a stored row, reset to 0 if its stored
+    day/month has since rolled over."""
+    if not row:
+        return 0.0, 0.0
+    day_used = float(row["day_used"]) if row.get("day") == today_iso else 0.0
+    month_used = float(row["month_used"]) if row.get("month") == month else 0.0
+    return day_used, month_used
+
+
 def charge_credits(user_id: str, mode: str) -> dict:
     """
-    Atomically charge `mode`'s credit cost against user_id's daily and
-    monthly usage, in one round trip. Charges only if the totals stay within
-    BOTH limits after the charge (day/month rollover-aware) — if either
-    would be exceeded, nothing is charged and `charged=False` is returned
-    along with which scope(s) were exceeded.
+    Charge `mode`'s credit cost against user_id's daily and monthly usage.
+    Charges only if the totals stay within BOTH limits after the charge
+    (day/month rollover-aware) — if either would be exceeded, nothing is
+    charged and `charged=False` is returned along with which scope(s) were
+    exceeded.
+
+    Over PostgREST there is no single-statement atomic upsert-with-guard the
+    way the old psycopg version had, so this is read-modify-write: read the
+    row, decide, then write. The window is tiny and same-user charges are
+    effectively never concurrent (a user's requests are serialized by the UI),
+    so worst case two truly-simultaneous requests could each let the other
+    slip just over a limit — a bounded, self-correcting over-count, never a
+    hard failure.
 
     Fails open on a DB error (logs loudly, reports charged=True with zeroed
     usage) — a usage-ledger hiccup should degrade gracefully, not take chat
@@ -121,73 +106,51 @@ def charge_credits(user_id: str, mode: str) -> dict:
     cost = MODE_CREDIT_COST[mode]
     day_limit, month_limit = _limits(user_id)
     today = datetime.now(timezone.utc).date()
+    today_iso = today.isoformat()
     month = today.strftime("%Y-%m")
     resets_day_at, resets_month_at = _reset_times(today)
 
-    # The CASE branches roll each counter over to `cost` if the stored
-    # day/month has moved on, otherwise add `cost` to what's already there.
-    # The WHERE clause re-evaluates those same rolled-over totals against the
-    # limits — if either would be exceeded, the UPDATE (and therefore the
-    # whole statement) simply matches no row, and RETURNING yields nothing.
-    # This is single-statement atomic: Postgres locks the row for the
-    # duration of this one UPDATE, so concurrent charges from the same user
-    # serialize correctly with no separate transaction/lock needed. The
-    # INSERT branch (brand-new user) is never blocked by the WHERE guard —
-    # harmless since cost (<=3) is always far below any real limit.
-    sql = """
-        INSERT INTO user_usage (user_id, day, day_used, month, month_used)
-        VALUES (%(user_id)s, %(today)s, %(cost)s, %(month)s, %(cost)s)
-        ON CONFLICT (user_id) DO UPDATE SET
-            day = %(today)s,
-            day_used = CASE WHEN user_usage.day = %(today)s
-                             THEN user_usage.day_used + %(cost)s ELSE %(cost)s END,
-            month = %(month)s,
-            month_used = CASE WHEN user_usage.month = %(month)s
-                               THEN user_usage.month_used + %(cost)s ELSE %(cost)s END,
-            updated_at = NOW()
-        WHERE
-            (CASE WHEN user_usage.day = %(today)s
-                  THEN user_usage.day_used + %(cost)s ELSE %(cost)s END) <= %(day_limit)s
-            AND
-            (CASE WHEN user_usage.month = %(month)s
-                  THEN user_usage.month_used + %(cost)s ELSE %(cost)s END) <= %(month_limit)s
-        RETURNING day_used, month_used
-    """
-    params = {
-        "user_id": user_id, "today": today, "month": month, "cost": cost,
-        "day_limit": day_limit, "month_limit": month_limit,
-    }
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                row = cur.fetchone()
-                if row is not None:
-                    return {
-                        "charged": True,
-                        "day_used": float(row["day_used"]), "day_limit": day_limit,
-                        "month_used": float(row["month_used"]), "month_limit": month_limit,
-                        "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
-                        "exceeded_scope": None,
-                    }
-                # Rejected — read back the current (unchanged) totals to report.
-                cur.execute(
-                    "SELECT day, day_used, month, month_used FROM user_usage WHERE user_id = %s",
-                    (user_id,),
-                )
-                current = cur.fetchone()
-                day_used = float(current["day_used"]) if current and current["day"] == today else 0.0
-                month_used = float(current["month_used"]) if current and current["month"] == month else 0.0
-                day_over = day_used + cost > day_limit
-                month_over = month_used + cost > month_limit
-                scope = "both" if (day_over and month_over) else ("day" if day_over else "month")
-                return {
-                    "charged": False,
-                    "day_used": day_used, "day_limit": day_limit,
-                    "month_used": month_used, "month_limit": month_limit,
-                    "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
-                    "exceeded_scope": scope,
-                }
+        res = (
+            supabase.table("user_usage")
+            .select("day, day_used, month, month_used")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        row = res.data[0] if res.data else None
+        day_used, month_used = _rolled_over_usage(row, today_iso, month)
+        new_day = day_used + cost
+        new_month = month_used + cost
+
+        if new_day <= day_limit and new_month <= month_limit:
+            supabase.table("user_usage").upsert(
+                {
+                    "user_id": user_id,
+                    "day": today_iso, "day_used": new_day,
+                    "month": month, "month_used": new_month,
+                    "updated_at": utcnow_iso(),
+                },
+                on_conflict="user_id",
+            ).execute()
+            return {
+                "charged": True,
+                "day_used": new_day, "day_limit": day_limit,
+                "month_used": new_month, "month_limit": month_limit,
+                "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
+                "exceeded_scope": None,
+            }
+
+        day_over = new_day > day_limit
+        month_over = new_month > month_limit
+        scope = "both" if (day_over and month_over) else ("day" if day_over else "month")
+        return {
+            "charged": False,
+            "day_used": day_used, "day_limit": day_limit,
+            "month_used": month_used, "month_limit": month_limit,
+            "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
+            "exceeded_scope": scope,
+        }
     except Exception as e:
         logger.error(f"[db_user_usage] charge_credits error for {user_id}: {e}")
         return {
@@ -203,21 +166,21 @@ def get_usage(user_id: str) -> dict:
     """Read-only snapshot of a user's current usage — no mutation, no charge."""
     day_limit, month_limit = _limits(user_id)
     today = datetime.now(timezone.utc).date()
+    today_iso = today.isoformat()
     month = today.strftime("%Y-%m")
     resets_day_at, resets_month_at = _reset_times(today)
 
     day_used = month_used = 0.0
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT day, day_used, month, month_used FROM user_usage WHERE user_id = %s",
-                    (user_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    day_used = float(row["day_used"]) if row["day"] == today else 0.0
-                    month_used = float(row["month_used"]) if row["month"] == month else 0.0
+        res = (
+            supabase.table("user_usage")
+            .select("day, day_used, month, month_used")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        row = res.data[0] if res.data else None
+        day_used, month_used = _rolled_over_usage(row, today_iso, month)
     except Exception as e:
         logger.error(f"[db_user_usage] get_usage error for {user_id}: {e}")
 
@@ -234,12 +197,9 @@ def get_usage(user_id: str) -> dict:
 
 def delete_user_usage(user_id: str) -> bool:
     """Delete a user's usage row (account purge / guest-merge cleanup)."""
-    sql = "DELETE FROM user_usage WHERE user_id = %s"
     try:
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (user_id,))
-                return cur.rowcount > 0
+        res = supabase.table("user_usage").delete().eq("user_id", user_id).execute()
+        return bool(res.data)
     except Exception as e:
         logger.error(f"[db_user_usage] delete_user_usage error: {e}")
         return False

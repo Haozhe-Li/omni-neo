@@ -8,24 +8,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.agent import SYSTEM_PROMPTS, initialize_agents
-from core.database.postgresql_saver import setup_checkpointer, teardown_checkpointer
+from core.database.checkpointer import setup_checkpointer, teardown_checkpointer
 from core.prompt_guard import register_sensitive_prompts
-from core.database.db_user_threads import setup_thread_search
-from core.database.db_user_files import setup_user_files_table
-from core.database.db_user_memories import setup_user_memories_table
-from core.database.db_user_usage import setup_user_usage_table
-from core.database.db_scheduled_tasks import setup_scheduled_tasks_table
 from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Table schema is now managed directly in Supabase (see schema.sql) — DDL
+    # can't run over the PostgREST HTTP API, so there are no setup_*_table()
+    # calls here anymore. The checkpointer is just an Upstash REST client, so
+    # setup is instant (no pool to open).
     await setup_checkpointer()
-    setup_user_files_table()
-    setup_user_memories_table()
-    setup_user_usage_table()
-    setup_thread_search()
-    setup_scheduled_tasks_table()
     initialize_agents()
     yield
     await teardown_checkpointer()
