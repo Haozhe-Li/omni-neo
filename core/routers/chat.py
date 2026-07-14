@@ -30,8 +30,9 @@ from core.database.db_user_threads import (
     get_thread_messages,
     upsert_thread_messages,
 )
-from core.database.db_user_usage import evaluate_charge_fast, commit_charge_fast
-from core.database.db_threads_control import touch_thread, get_thread_owner_async
+from core.database.db_user_usage import evaluate_charge_fast, commit_charge_fast, usage_snapshot_hit
+from core.database.db_threads_control import touch_thread, get_thread_owner_async, owner_cache_hit
+from core.utils.timing import Timing
 from core.database.db_user_memories import get_user_memory, save_user_memory
 from core.memories_update_llm import get_update_memories
 from core.routers.state import (
@@ -87,6 +88,12 @@ async def _generate_background(
     memory_enabled: bool = False,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
+    # Structured timing for the generation task: how long until the first event
+    # reaches the buffer (brackets the in-task pre-LLM work + first model call),
+    # the first text token, and total run. Complements the chat_prelude span.
+    tg = Timing("chat_generation", thread_id=thread_id, mode=mode)
+    n_events = 0
+
     # Accumulate message fields for the final Postgres upsert.
     text = ""
     steps: list[dict] = []
@@ -116,6 +123,10 @@ async def _generate_background(
             turn=turn,
             cancellation_event=cancel_event,
         ):
+            if n_events == 0:
+                tg.mark("first_event")
+            n_events += 1
+
             try:
                 ev = json.loads(event_str[6:])  # strip "data: "
             except Exception:
@@ -123,6 +134,8 @@ async def _generate_background(
 
             ev_type = ev.get("type")
             if ev_type == "text":
+                if "first_text_ms" not in tg.stages:
+                    tg.mark("first_text")
                 text += ev.get("content", "")
             elif ev_type == "tool_call":
                 steps.append({
@@ -155,6 +168,7 @@ async def _generate_background(
         # Shrink TTL now that generation is complete.
         await stream_expire(thread_id)
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
+        tg.emit(outcome="done", events=n_events, chars=len(text))
 
         if memory_enabled and text:
             asyncio.create_task(_update_memory_background(user_id, query, text))
@@ -198,6 +212,7 @@ async def _generate_background(
         await _flush()
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
         await stream_expire(thread_id)
+        tg.emit(outcome="cancelled", events=n_events, chars=len(text))
         raise
     except Exception as exc:
         import traceback
@@ -207,6 +222,7 @@ async def _generate_background(
         await _flush()
         await stream_set_status(thread_id, "error", STREAM_TTL_DONE)
         await stream_expire(thread_id)
+        tg.emit(outcome="error", events=n_events, error=str(exc)[:200])
     finally:
         cancellation_events.pop(thread_id, None)
         generation_tasks.pop(thread_id, None)
@@ -251,6 +267,12 @@ async def chat(
     p = request.personalization
     memory_enabled = bool(p and p.memory_enabled)
 
+    # Structured timing for the non-LLM prelude (see core/utils/timing.py).
+    t = Timing("chat_prelude", thread_id=thread_id, mode=request.mode,
+               is_guest=user_id.startswith("guest_"), memory_enabled=memory_enabled)
+    t.set(owner_cache=("hit" if (thread_id and owner_cache_hit(thread_id)) else "miss"),
+          charge_cache=("hit" if usage_snapshot_hit(user_id) else "miss"))
+
     # ── one concurrent batch of the independent pre-LLM reads ──────────────
     # These four don't depend on each other, so fire them together (~1 round
     # trip) instead of serially (~5). The charge is only *evaluated* here — the
@@ -265,20 +287,24 @@ async def chat(
     async def _memory():
         return await asyncio.to_thread(get_user_memory, user_id) if memory_enabled else ""
 
+    _batch_start = time.perf_counter()
     charge_result, owner, is_generating_now, stored_memory = await asyncio.gather(
-        evaluate_charge_fast(user_id, request.mode),
-        _owner(),
-        _generating(),
-        _memory(),
+        t.atimed("charge", evaluate_charge_fast(user_id, request.mode)),
+        t.atimed("owner", _owner()),
+        t.atimed("is_generating", _generating()),
+        t.atimed("memory", _memory()),
     )
+    t.record("batch", (time.perf_counter() - _batch_start) * 1000)
 
     # ── decide, in priority order (pure in-memory, no I/O) ─────────────────
     # 1. access gate — reject before any side effect (nothing charged yet)
     if owner is not None and owner != user_id:
+        t.emit(outcome="denied")
         raise HTTPException(status_code=403, detail="Thread access denied.")
     # 2. reconnect gate — a generation is already in flight: just re-attach.
     #    No charge (already paid when it started), no new LLM run.
     if thread_id and is_generating_now:
+        t.emit(outcome="reconnect")
         headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
         return StreamingResponse(
             stream_read(thread_id),
@@ -287,6 +313,7 @@ async def chat(
         )
     # 3. usage gate
     if not charge_result["charged"]:
+        t.emit(outcome="usage_limit")
         raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
 
     # Committed to a new generation → reconcile the charge in the background
@@ -314,7 +341,8 @@ async def chat(
         # Clear the previous turn's buffer and mark this one generating, in a
         # single pipelined round trip (status set *before* stream_read starts so
         # it doesn't exit on an empty stream).
-        await stream_begin(thread_id)
+        with t.stage("stream_begin"):
+            await stream_begin(thread_id)
         task = asyncio.create_task(
             _generate_background(
                 thread_id=thread_id,
@@ -331,6 +359,7 @@ async def chat(
             )
         )
         generation_tasks[thread_id] = task
+        t.emit(outcome="started")
         return StreamingResponse(
             stream_read(thread_id),
             media_type="text/event-stream",
@@ -338,6 +367,7 @@ async def chat(
         )
 
     # ── no thread_id: direct streaming, backward-compatible ───────────────
+    t.emit(outcome="started_direct")
     cancel_event = asyncio.Event()
 
     async def _direct_stream():
@@ -393,18 +423,25 @@ async def api_rewind_thread(
     the same way — otherwise "regenerate" would be a free, unlimited bypass
     around the credit system.
     """
+    t = Timing("rewind_prelude", thread_id=thread_id, mode=body.mode,
+               is_guest=user_id.startswith("guest_"))
     # Charge-evaluate and ownership check are independent reads — run them
     # concurrently (~1 round trip instead of 2), then commit the charge
     # fire-and-forget once both gates pass. Rewind has no reconnect path.
+    _b = time.perf_counter()
     charge_result, owner = await asyncio.gather(
-        evaluate_charge_fast(user_id, body.mode),
-        get_thread_owner_async(thread_id),
+        t.atimed("charge", evaluate_charge_fast(user_id, body.mode)),
+        t.atimed("owner", get_thread_owner_async(thread_id)),
     )
+    t.record("batch", (time.perf_counter() - _b) * 1000)
     if owner is not None and owner != user_id:
+        t.emit(outcome="denied")
         raise HTTPException(status_code=403, detail="Thread access denied.")
     if not charge_result["charged"]:
+        t.emit(outcome="usage_limit")
         raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
     commit_charge_fast(user_id, body.mode)
+    t.emit(outcome="charged")
 
     profile = "pro" if body.mode == "pro" else "fast"
     agent = get_agent(profile)
