@@ -68,6 +68,11 @@ def _owner_cache_clear() -> None:
         _owner_cache.clear()
 
 
+def owner_cache_hit(thread_id: str) -> bool:
+    """Whether a live owner-cache entry exists (for timing/observability logs)."""
+    return _owner_cache_get(thread_id) is not None
+
+
 def get_thread_owner(thread_id: str) -> str | None:
     """
     Return the user_id that owns this thread.
