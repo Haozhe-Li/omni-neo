@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 
+from langsmith import tracing_context
+
 from core.agent import get_scheduled_agent, SCHEDULED_SKILL_FILES
 from core.database.db_user_threads import upsert_thread_messages
 from core.utils.citations import reset_citation_registry, all_citations
@@ -63,7 +65,8 @@ async def run_scheduled_task(thread_id: str, user_id: str, prompt: str) -> dict:
         "files": SCHEDULED_SKILL_FILES,
     }
 
-    result = await agent.ainvoke(input_state, config=config)
+    with tracing_context(project_name="scheduled-agent"):
+        result = await agent.ainvoke(input_state, config=config)
 
     structured = result.get("structured_response")
     if structured is None:
