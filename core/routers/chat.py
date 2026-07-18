@@ -47,16 +47,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
-# Redis write batching — text tokens are accumulated and flushed together to
-# reduce round-trips from 2×N (xadd + expire per event) down to ~1×ceil(N/15).
-# Non-text events (tool calls, artifacts, done …) bypass the batch and flush
-# immediately so the frontend doesn't wait for them.
+# Redis write batching — text/reasoning tokens are accumulated and flushed
+# together to reduce round-trips from 2×N (xadd + expire per event) down to
+# ~1×ceil(N/batch). Non-token events (tool calls, artifacts, done …) bypass
+# the batch and flush immediately so the frontend doesn't wait for them.
 _FLUSH_IMMEDIATELY: frozenset[str] = frozenset({
     "tool_call", "artifact", "sources", "done", "error", "stopped",
-    "widget", "drafting", "reasoning",
+    "widget", "drafting",
 })
 _BATCH_SIZE = 15        # flush when this many events are pending
 _BATCH_TIMEOUT_S = 0.03 # flush after 30 ms even if batch isn't full (slow models)
+# Reasoning renders inside a collapsed "Thinking" step, so its latency matters
+# less than answer text — buffer it bigger/longer to cut Redis round-trips
+# (gpt-oss emits reasoning one token per chunk, easily hundreds per turn).
+_BATCH_SIZE_REASONING = 30
+_BATCH_TIMEOUT_REASONING_S = 0.03
 
 
 async def _update_memory_background(user_id: str, user_query: str, assistant_text: str) -> None:
@@ -94,9 +99,13 @@ async def _generate_background(
     tg = Timing("chat_generation", thread_id=thread_id, mode=mode)
     n_events = 0
 
-    # Accumulate message fields for the final Postgres upsert.
+    # Accumulate message fields for the final Postgres upsert. `steps` is the
+    # same interleaved timeline the frontend builds: tool_call entries plus
+    # {type: "reasoning"} entries, one per contiguous thinking run (a tool call
+    # or answer text closes the open run).
     text = ""
     steps: list[dict] = []
+    open_reasoning: dict | None = None
     sources: list[dict] = []
     artifacts: list[dict] = []
     widgets: list[dict] = []
@@ -136,8 +145,20 @@ async def _generate_background(
             if ev_type == "text":
                 if "first_text_ms" not in tg.stages:
                     tg.mark("first_text")
+                open_reasoning = None
                 text += ev.get("content", "")
+            elif ev_type == "reasoning":
+                if open_reasoning is not None:
+                    open_reasoning["content"] += ev.get("content", "")
+                else:
+                    open_reasoning = {
+                        "type": "reasoning",
+                        "content": ev.get("content", ""),
+                        "timestamp": int(time.time() * 1000),
+                    }
+                    steps.append(open_reasoning)
             elif ev_type == "tool_call":
+                open_reasoning = None
                 steps.append({
                     "tool": ev.get("tool"),
                     "args": ev.get("args", {}),
@@ -156,10 +177,15 @@ async def _generate_background(
                 widgets.append({"widget": ev.get("widget"), "data": ev.get("data")})
 
             batch.append(event_str)
+            batch_size, batch_timeout = (
+                (_BATCH_SIZE_REASONING, _BATCH_TIMEOUT_REASONING_S)
+                if ev_type == "reasoning"
+                else (_BATCH_SIZE, _BATCH_TIMEOUT_S)
+            )
             if (
                 ev_type in _FLUSH_IMMEDIATELY
-                or len(batch) >= _BATCH_SIZE
-                or time.monotonic() - last_flush >= _BATCH_TIMEOUT_S
+                or len(batch) >= batch_size
+                or time.monotonic() - last_flush >= batch_timeout
             ):
                 await _flush()
 

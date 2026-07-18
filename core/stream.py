@@ -8,7 +8,10 @@ tool output before forwarding it.
 
 Wire protocol (one JSON object per `data:` line):
     widget    {type, widget, data}                     – pre-flight live-data card
-    reasoning {type, content}                           – status / thinking note
+    reasoning {type, content}                           – streamed reasoning/thinking
+                                                            tokens (fast: Groq gpt-oss
+                                                            reasoning_content; pro:
+                                                            Gemini thinking blocks)
     tool_call {type, tool, args}                        – agent is calling a tool
     tool      {type, tool, content}                     – raw tool result
     sources   {type, sources:[{n,title,url,content}]}    – accumulated citations;
@@ -140,6 +143,27 @@ def _text_of(content: Any) -> str:
             part.get("text", "")
             for part in content
             if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _reasoning_of(chunk: AIMessageChunk) -> str:
+    """Pull streamed reasoning/thinking text off an AIMessageChunk, if any.
+
+    Groq (fast, reasoning_format="parsed") surfaces it as a plain string in
+    additional_kwargs.reasoning_content. Gemini (pro, include_thoughts=True)
+    surfaces it as {"type": "thinking", "thinking": ...} blocks inside
+    `content` alongside the regular text blocks.
+    """
+    reasoning = chunk.additional_kwargs.get("reasoning_content")
+    if reasoning:
+        return reasoning
+    content = chunk.content
+    if isinstance(content, list):
+        return "".join(
+            part.get("thinking", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "thinking"
         )
     return ""
 
@@ -368,6 +392,9 @@ async def _stream_agent(
                             if key not in announced_drafts:
                                 announced_drafts.add(key)
                                 yield _sse({"type": "drafting", "tool": name})
+                    reasoning = _reasoning_of(chunk)
+                    if reasoning:
+                        yield _sse({"type": "reasoning", "content": reasoning})
                     text = _text_of(chunk.content)
                     if text:
                         produced_text = True
