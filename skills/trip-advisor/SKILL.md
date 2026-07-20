@@ -31,45 +31,41 @@ Do not proceed to Step 1 until the user has answered.
 
 ## Step 1 — Plan
 
-Call `write_todos` before any research. Structure the plan as:
+Structure the plan to cover:
 
 1. **Weather** — forecast or historical climate for travel dates
 2. **Flights** — options, price range, travel time from origin
 3. **Accommodation** — hotels or stays per destination city
 4. **Attractions & activities** — per city, matching stated interests
 5. **Restaurants** — per city, matching budget and dietary needs
-6. *(Repeat todos 3–5 for each additional destination city in a multi-stop trip)*
-7. **Report** — always the final todo; explicitly note: load `report-writing` and `mapping` skills
+6. *(Repeat 3–5 for each additional destination city in a multi-stop trip)*
+7. **Report** — last; explicitly note: load `report-writing` and `mapping` skills
 
-Aim for **8–14 todos** depending on trip complexity.
+Feel free to use `write_todos` to lay this out and track progress — use your judgment on when it's actually helpful.
 
 ---
 
 ## Step 2 — Research
 
-Execute todos in the order planned. Apply strict todo hygiene (identical to deep-research):
+Work through the plan in order. Roughly 5 tool calls max per item (e.g. 2 searches + a couple of follow-ups) — if that's not turning up results, move on rather than linger.
 
-- Mark todo `in_progress` immediately before starting its work.
-- The very next action after finishing must be `write_todos` marking it `completed` — before any other tool call or text.
-- **Per-todo tool cap: 5 tool calls max.** If the cap is hit with no result, mark `completed` and move on.
-
-### Weather todo
+### Weather
 - Travel dates **within 5 days**: call `get_weather_forecast`.
 - Travel dates **further out**: use `google_search` — query `"average weather in [city] in [month]"`.
 
-### Flights todo
+### Flights
 - Use `tavily_search` or `google_search` — query `"flights from [origin] to [destination] [month year] price"`.
 - Note price range, major airlines, and typical flight duration.
 
-### Accommodation todo (per city)
+### Accommodation (per city)
 - Use `google_search_places` — query `"hotels in [city]"` filtered to budget tier.
 - Supplement with `google_search` for specific property reviews if needed.
 
-### Attractions & activities todo (per city)
+### Attractions & activities (per city)
 - Use `google_search_places` — query `"top attractions in [city]"` or `"things to do in [city]"`.
 - Use `google_search` to check opening hours or entrance fees for key sites.
 
-### Restaurants todo (per city)
+### Restaurants (per city)
 - Use `google_search_places` — query `"best restaurants in [city]"` or `"[cuisine] restaurants in [city]"`.
 - Match results to the user's dietary constraints and budget tier.
 
@@ -78,7 +74,6 @@ Execute todos in the order planned. Apply strict todo hygiene (identical to deep
 ## Step 3 — Report (final step)
 
 **Immediately load the `report-writing` and `mapping` skills.**
-Do not call `write_todos` or any other tool as part of this step.
 
 Write a `<report>` following the report-writing skill rules. Target **~1500 words**.
 
@@ -129,10 +124,10 @@ tip or the best part of the itinerary. Then stop — no further tool calls.
 
 ## Budget
 
-- **Sources**: 10–20 total across all todos. More is expected than deep-research
+- **Sources**: 10–20 total across the whole trip. More is expected than deep-research
   given the number of research domains.
 - **Hard stop**: if approaching the tool-call limit, skip remaining research
-  todos and write the report with what you have — an honest partial plan beats
+  items and write the report with what you have — an honest partial plan beats
   running out of steps mid-research.
 
 ---
@@ -140,7 +135,7 @@ tip or the best part of the itinerary. Then stop — no further tool calls.
 ## Rules
 
 - Never fabricate hotel names, restaurant names, flight prices, or venue
-  details. If a todo yields no results, note the gap in the report honestly.
+  details. If an item yields no results, note the gap in the report honestly.
 - Calibrate all recommendations to the user's stated budget tier and interests.
 - Day-by-day pacing should be realistic — do not over-schedule.
 - If the trip spans multiple cities, ensure the itinerary flow makes geographic

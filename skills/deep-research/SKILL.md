@@ -15,14 +15,14 @@ Skip this step entirely if the request is already specific enough to plan direct
 
 ## Step 1 — Plan
 
-Call `write_todos` before any search. Structure as a research arc:
+Structure the work as a research arc:
 
 1. **Orient** — one broad search to map the landscape (key players, sub-topics, timeframe).
-2. **Dive** — one todo per major sub-topic or angle (3–5 dives). Each narrow enough to answer in 2–3 searches.
-3. **Compare** — if the task involves options or tradeoffs, add an explicit synthesis todo.
-4. **Report** — always the final todo. **Important:** for this step, explicitly write down use `charting` and `report-writing` skills!
+2. **Dive** — 3–5 major sub-topics or angles, each narrow enough to answer in 2–3 searches.
+3. **Compare** — if the task involves options or tradeoffs, add an explicit synthesis pass.
+4. **Report** — always last. **Important:** for this step, explicitly load the `charting` and `report-writing` skills!
 
-Aim for **6–10 todos**. Fewer is fine for tight scope.
+Feel free to use `write_todos` to lay this out and track progress as you go — use your judgment on when it's actually helpful; it's not a box-checking exercise.
 
 ---
 
@@ -31,7 +31,8 @@ Aim for **6–10 todos**. Fewer is fine for tight scope.
 **Searching:**
 - One targeted `google_search` per sub-topic. `load_web_page` only on clearly relevant, non-paywalled results.
 - Read 2–4 pages per sub-topic. Stop when two consecutive pages add nothing new.
-- **Hard cap: 2 searches per todo** (initial + one reformulation). Never a third — move on.
+- **Hard cap: 2 searches per sub-topic** (initial + one reformulation). Never a third — move on.
+- Roughly 5 tool calls max per sub-topic overall (e.g., 2 searches + 1–2 page loads + 1 compute) — if you hit that with no result, move on rather than linger.
 
 **Computing:**
 - For numbers, comparisons, or quantitative verification, use `run_python` — don't approximate in prose.
@@ -40,23 +41,17 @@ Aim for **6–10 todos**. Fewer is fine for tight scope.
 - Prefer primary sources and established outlets over aggregator summaries.
 - If sources contradict, surface the disagreement — don't silently pick one.
 
-**Todo hygiene (strict):**
-- Mark todo `in_progress` immediately before starting its work.
-- The very next action after finishing must be `write_todos` marking it `completed` — before any other tool call or text.
-- **Per-todo tool cap: 5 tool calls max** (e.g., 2 searches + 1–2 page loads + 1 compute). If the cap is reached with no result, mark the todo `completed` and move on — do not linger.
-
 ---
 
 ## Step 3 — Reflect
 
-After every 2–3 dives: *Is there a significant angle the sources haven't addressed?* If yes, add a todo. If no, proceed. This is a quick gut-check, not a reason to keep searching.
+After every 2–3 dives: *Is there a significant angle the sources haven't addressed?* If yes, go cover it. If no, proceed. This is a quick gut-check, not a reason to keep searching.
 
 ---
 
 ## Step 4 — Report
 
-This is the LAST step. Do not call `write_todos` or any other tool as part of it
-— the todo list is reconciled for you automatically once this step starts.
+This is the LAST step.
 
 1. IMPORTANT: immediately load the `charting` and `report-writing` skills.
 2. Explicitly follow the report-writing and charting rules! Write a high quality
@@ -72,7 +67,7 @@ This is the LAST step. Do not call `write_todos` or any other tool as part of it
 
 - **Sources**: 6–12 total. A handful of strong sources beats exhaustive searching.
 - **Stop signal**: two consecutive searches on the same sub-topic yield nothing new — stop gathering.
-- **Hard stop**: if approaching the tool-call limit, skip remaining gather todos and write the report with what you have. A partial honest report beats running out of steps mid-search.
+- **Hard stop**: if approaching the tool-call limit, skip remaining gather steps and write the report with what you have. A partial honest report beats running out of steps mid-search.
 
 ---
 
