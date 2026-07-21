@@ -27,7 +27,7 @@ os.environ["DISPLAY"] = ""
 
 
 @tool
-def run_python(code: str) -> str:
+def run_python(filename: str, code: str) -> str:
     """Execute Python code and return stdout, the final expression value, and any errors.
 
     Use this for computation, data analysis, math, simulations, string processing,
@@ -44,6 +44,9 @@ def run_python(code: str) -> str:
     Each call is isolated — do not rely on variables from previous calls.
 
     Args:
+        filename: A short, descriptive name for this snippet, e.g.
+            "binary_tree_demo.py" — shown to the user as the label for this
+            code. Always end it in ".py".
         code: Complete, self-contained Python code to execute.
 
     Returns:
@@ -85,4 +88,4 @@ def run_python(code: str) -> str:
 
 
 if __name__ == "__main__":
-    print(run_python.invoke({"code": "print(2 ** 32)"}))
+    print(run_python.invoke({"filename": "power_of_two.py", "code": "print(2 ** 32)"}))
