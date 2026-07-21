@@ -9,9 +9,10 @@ tool output before forwarding it.
 Wire protocol (one JSON object per `data:` line):
     widget    {type, widget, data}                     – pre-flight live-data card
     reasoning {type, content}                           – streamed reasoning/thinking
-                                                            tokens (fast: Groq gpt-oss
-                                                            reasoning_content; pro:
-                                                            Gemini thinking blocks)
+                                                            tokens (Groq gpt-oss:
+                                                            reasoning_content; Cerebras
+                                                            gpt-oss/glm/gemma: reasoning;
+                                                            pro: Gemini thinking blocks)
     tool_call {type, tool, args}                        – agent is calling a tool
     tool      {type, tool, content}                     – raw tool result
     sources   {type, sources:[{n,title,url,content}]}    – accumulated citations;
@@ -150,12 +151,17 @@ def _text_of(content: Any) -> str:
 def _reasoning_of(chunk: AIMessageChunk) -> str:
     """Pull streamed reasoning/thinking text off an AIMessageChunk, if any.
 
-    Groq (fast, reasoning_format="parsed") surfaces it as a plain string in
-    additional_kwargs.reasoning_content. Gemini (pro, include_thoughts=True)
-    surfaces it as {"type": "thinking", "thinking": ...} blocks inside
-    `content` alongside the regular text blocks.
+    Groq (reasoning_format="parsed") surfaces it as a plain string in
+    additional_kwargs.reasoning_content. Cerebras (gpt-oss-120b, glm-4.7,
+    gemma-4-31b) surfaces it under a differently-named key on the same kind
+    of chunk — additional_kwargs.reasoning, per langchain_cerebras's
+    ChatCerebras._astream, which mirrors Cerebras's own delta.reasoning
+    field verbatim instead of renaming it to match Groq's convention.
+    Gemini (pro, include_thoughts=True) surfaces it as
+    {"type": "thinking", "thinking": ...} blocks inside `content` alongside
+    the regular text blocks.
     """
-    reasoning = chunk.additional_kwargs.get("reasoning_content")
+    reasoning = chunk.additional_kwargs.get("reasoning_content") or chunk.additional_kwargs.get("reasoning")
     if reasoning:
         return reasoning
     content = chunk.content
