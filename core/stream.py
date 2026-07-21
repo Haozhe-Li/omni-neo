@@ -148,22 +148,32 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+# Plain-string reasoning lives in additional_kwargs, but each provider's
+# LangChain integration names the key differently even though the underlying
+# concept (a separate "parsed reasoning" string alongside `content`) is the
+# same. Verified against each package's installed source rather than assumed:
+#   - langchain_groq renames Cerebras/OpenAI-style APIs' own `reasoning` delta
+#     field to `reasoning_content` (ChatGroq._convert_chunk_to_message_chunk).
+#   - langchain_cerebras mirrors Cerebras's `reasoning` delta field verbatim,
+#     unrenamed (ChatCerebras._stream).
+# New providers just need their key added here — no other change required.
+_REASONING_KWARGS_KEYS = ("reasoning_content", "reasoning")
+
+
 def _reasoning_of(chunk: AIMessageChunk) -> str:
     """Pull streamed reasoning/thinking text off an AIMessageChunk, if any.
 
-    Groq (reasoning_format="parsed") surfaces it as a plain string in
-    additional_kwargs.reasoning_content. Cerebras (gpt-oss-120b, glm-4.7,
-    gemma-4-31b) surfaces it under a differently-named key on the same kind
-    of chunk — additional_kwargs.reasoning, per langchain_cerebras's
-    ChatCerebras._astream, which mirrors Cerebras's own delta.reasoning
-    field verbatim instead of renaming it to match Groq's convention.
-    Gemini (pro, include_thoughts=True) surfaces it as
-    {"type": "thinking", "thinking": ...} blocks inside `content` alongside
-    the regular text blocks.
+    Checks every known provider-specific additional_kwargs key (see
+    `_REASONING_KWARGS_KEYS`) for a plain-string reasoning value first.
+    Gemini (pro, include_thoughts=True) doesn't use additional_kwargs at all —
+    it surfaces reasoning as {"type": "thinking", "thinking": ...} blocks
+    inside `content` alongside the regular text blocks instead (verified
+    against langchain_google_genai's `_convert_to_parts`/response parsing).
     """
-    reasoning = chunk.additional_kwargs.get("reasoning_content") or chunk.additional_kwargs.get("reasoning")
-    if reasoning:
-        return reasoning
+    for key in _REASONING_KWARGS_KEYS:
+        reasoning = chunk.additional_kwargs.get(key)
+        if reasoning:
+            return reasoning
     content = chunk.content
     if isinstance(content, list):
         return "".join(
