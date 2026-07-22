@@ -48,12 +48,13 @@ qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completio
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
 llama3_1_8b = ChatGroq(model="llama-3.1-8b-instant")
-glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
-gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="medium")
+# glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
+gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="low")
+gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="high")
 llama_guard_2 = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
 
 fast_llm = gpt_oss_120b_low
-pro_llm = gemini_flash
+pro_llm = gemma_4_31b_high
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = llama_guard_2
 update_memories_llm = gpt_oss_20b
