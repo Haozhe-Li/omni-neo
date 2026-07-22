@@ -1,6 +1,33 @@
-from langchain_cerebras import ChatCerebras
+from langchain_cerebras import ChatCerebras as _BaseChatCerebras
 from langchain_groq import ChatGroq
 from langchain.chat_models import init_chat_model
+
+
+class ChatCerebras(_BaseChatCerebras):
+    """langchain_cerebras (0.8.2) only extracts the delta's `reasoning` field
+    into additional_kwargs inside its sync `_stream` override. Async calls
+    (agent.astream, used for every request in this app) fall through to
+    BaseChatOpenAI._astream, which has no Cerebras-specific handling, so
+    reasoning silently vanished on every real request regardless of the
+    `reasoning`/`reasoning_content` key lookup in core/stream.py. Both
+    `_stream` and `_astream` funnel every chunk through
+    `_convert_chunk_to_generation_chunk`, so overriding that single hook
+    fixes both call paths instead of re-overriding `_astream` separately.
+    """
+
+    def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
+        generation_chunk = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if generation_chunk is None:
+            return generation_chunk
+        choices = chunk.get("choices", [])
+        if choices:
+            reasoning = choices[0].get("delta", {}).get("reasoning")
+            if reasoning:
+                generation_chunk.message.additional_kwargs["reasoning"] = reasoning
+        return generation_chunk
+
 
 gpt_oss_120b_low = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="low")
 gpt_oss_120b_high = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="high")
