@@ -341,7 +341,10 @@ async def _stream_agent(
         input_state = None
         doc_sources: list[dict] = []
     else:
-        config = {"configurable": {"thread_id": thread_id}}
+        # `turn` rides along in `configurable` purely so the checkpointer's
+        # aput hook can key the rewind_points map by it (see
+        # core/database/checkpointer.py) — nothing in the graph itself reads it.
+        config = {"configurable": {"thread_id": thread_id, "turn": turn}}
         content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content, query, personalization, attached_file_ids, thread_id
         )

@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
-from core.database.checkpointer import sync_checkpointer
+from core.database.checkpointer import sync_checkpointer, delete_rewind_points
 from core.utils import redis_sources, vector_sources
 
 logger = logging.getLogger(__name__)
@@ -225,6 +225,10 @@ def _delete_checkpoint_state(thread_id: str) -> None:
         sync_checkpointer.delete_thread(thread_id)
     except Exception as e:
         logger.error(f"[db_threads_control] checkpoint cleanup error for {thread_id}: {e}")
+    try:
+        delete_rewind_points(thread_id)
+    except Exception as e:
+        logger.error(f"[db_threads_control] rewind_points cleanup error for {thread_id}: {e}")
 
 
 def delete_thread(thread_id: str) -> bool:

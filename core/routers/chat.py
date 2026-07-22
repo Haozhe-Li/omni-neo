@@ -8,10 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from langchain_core.messages import HumanMessage as LCHumanMessage
+from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessage
 
 from core.agent import get_agent
 from core.stream import run_agent_stream, build_message_content
+import core.database.checkpointer as checkpointer_module
+from core.database.checkpointer import (
+    get_rewind_checkpoint_id,
+    backfill_rewind_point,
+    _rewind_points_key,
+)
 from core.redis_stream import (
     stream_write_batch,
     stream_set_status,
@@ -425,7 +431,113 @@ class RewindRequest(BaseModel):
     new_query: str | None = None  # None = pure regenerate; set to edit the last user msg
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
+    # 1-indexed turn to rewind to (see QueryRequest.turn) — the boundary
+    # checkpoint targeted is "state right after this turn's HumanMessage,
+    # before the agent replied". None means "the most recent turn", matching
+    # the endpoint's original regenerate-only behavior.
     turn: int | None = None
+
+
+async def _resolve_checkpoint_state(agent, thread_id: str, checkpoint_id: str):
+    """Fetch the state at `checkpoint_id` and confirm it's still a valid
+    turn boundary (last message is Human) — a map entry can go stale if its
+    checkpoint expired (TTL) or was hard-deleted independently."""
+    cfg = {"configurable": {"thread_id": thread_id, "checkpoint_id": checkpoint_id}}
+    try:
+        state = await agent.aget_state(cfg)
+    except Exception:
+        return None
+    msgs = state.values.get("messages", [])
+    if msgs and isinstance(msgs[-1], LCHumanMessage):
+        return state
+    return None
+
+
+async def _find_rewind_target(agent, thread_id: str, target_turn: int | None):
+    """Locate the checkpoint whose last message is the boundary HumanMessage
+    for `target_turn` (or the most recent turn if None). Returns
+    ``(state, turn)`` or ``(None, None)``.
+
+    Prefers the O(1) rewind_points map the checkpointer maintains on every
+    write (core/database/checkpointer.py) — a single Upstash round trip
+    either way — and only falls back to the old O(checkpoints-in-thread)
+    backward scan for threads/turns the map doesn't know about yet (written
+    before this feature existed, or an expired/evicted entry). The fallback
+    backfills the map as it scans, so a given turn is only ever slow once.
+    """
+    lg_config = {"configurable": {"thread_id": thread_id}}
+
+    if target_turn is not None:
+        checkpoint_id = await get_rewind_checkpoint_id(thread_id, target_turn)
+        if checkpoint_id is not None:
+            state = await _resolve_checkpoint_state(agent, thread_id, checkpoint_id)
+            if state is not None:
+                return state, target_turn
+    elif checkpointer_module.checkpointer is not None:
+        # "Most recent" — the map's largest turn key, one HGETALL away
+        # instead of a scan.
+        entries = await checkpointer_module.checkpointer.client.hgetall(_rewind_points_key(thread_id))
+        if entries:
+            latest_turn = max(int(k) for k in entries)
+            state = await _resolve_checkpoint_state(agent, thread_id, entries[str(latest_turn)])
+            if state is not None:
+                return state, latest_turn
+
+    # Fallback: scan backward, grouping consecutive "last message is Human"
+    # checkpoints by the Human message's stable id. A single turn produces
+    # several near-identical checkpoints in a row — one per middleware step
+    # that runs before the model node touches `messages` — all state-
+    # identical, so only the first checkpoint of each new group matters.
+    #
+    # The turn number itself isn't recoverable from checkpoint metadata
+    # (LangGraph doesn't persist custom `configurable` keys per-checkpoint,
+    # only thread_id/checkpoint_ns/checkpoint_id), so it's derived
+    # positionally: turn N is "state right after the Nth HumanMessage",
+    # matching how the frontend assigns `turn` (see QueryRequest.turn) — so
+    # counting HumanMessages already in the checkpoint's own message list
+    # recovers it exactly, no bookkeeping needed.
+    current_group_id = None
+    async for state in agent.aget_state_history(lg_config):
+        msgs = state.values.get("messages", [])
+        if not msgs or not isinstance(msgs[-1], LCHumanMessage):
+            continue
+        if msgs[-1].id == current_group_id:
+            continue
+        current_group_id = msgs[-1].id
+        turn_here = sum(1 for m in msgs if isinstance(m, LCHumanMessage))
+        await backfill_rewind_point(thread_id, turn_here, state.config["configurable"]["checkpoint_id"])
+        if target_turn is None or turn_here == target_turn:
+            return state, turn_here
+        if target_turn is not None and turn_here < target_turn:
+            break  # scanned past it — that turn doesn't exist
+    return None, None
+
+
+async def _strip_trailing_messages(agent, cfg: dict, boundary_message_id: str) -> dict:
+    """Trim state back to exactly the boundary HumanMessage, removing
+    anything recorded after it.
+
+    Forking from a historical checkpoint can silently fold in writes the
+    *original* run had already computed for it but not yet applied — the
+    Upstash saver (like other checkpointers) keeps a task's completed output
+    as a "pending write" tied to its checkpoint_id until the next checkpoint
+    applies it, and both a plain regenerate (astream from that checkpoint's
+    config as-is) and an edit (aupdate_state on it) were confirmed via direct
+    testing to resurrect that stale, would-have-been-generated-anyway AI
+    response alongside the freshly generated one instead of replacing it —
+    leaving the model (and thread history) with two contradictory replies to
+    the same turn. Explicitly removing anything after the boundary message
+    guarantees a clean slate before generating.
+    """
+    state = await agent.aget_state(cfg)
+    msgs = state.values.get("messages", [])
+    idx = next((i for i, m in enumerate(msgs) if getattr(m, "id", None) == boundary_message_id), None)
+    if idx is None:
+        return cfg
+    trailing_ids = [m.id for m in msgs[idx + 1:] if getattr(m, "id", None)]
+    if not trailing_ids:
+        return cfg
+    return await agent.aupdate_state(cfg, {"messages": [RemoveMessage(id=mid) for mid in trailing_ids]})
 
 
 @router.post("/api/threads/{thread_id}/rewind")
@@ -471,42 +583,44 @@ async def api_rewind_thread(
 
     profile = "pro" if body.mode == "pro" else "fast"
     agent = get_agent(profile)
-    lg_config = {"configurable": {"thread_id": thread_id}}
 
-    # Find the most recent checkpoint where the last message is a HumanMessage
-    # (i.e. the point just after the user sent their message, before the agent replied).
-    target = None
-    async for state in agent.aget_state_history(lg_config):
-        msgs = state.values.get("messages", [])
-        if msgs and isinstance(msgs[-1], LCHumanMessage):
-            target = state
-            break
-
+    # Locate the checkpoint right after the target turn's HumanMessage,
+    # before the agent replied — body.turn selects which turn (None = most
+    # recent, preserving the original regenerate-only behavior).
+    target, target_turn = await _find_rewind_target(agent, thread_id, body.turn)
     if target is None:
         raise HTTPException(status_code=404, detail="No rewindable checkpoint found.")
 
     doc_sources: list[dict] = []
+    last_human = target.values["messages"][-1]
+    doc_files: dict | None = None
     if body.new_query is not None:
-        # Edit mode: replace the last HumanMessage in-place (same id → add_messages
-        # reducer treats it as an update, not an append).
+        # Edit mode: replace the last HumanMessage's content.
         personalization_str = format_personalization(body.personalization)
         # build_message_content assigns a citation number to any newly-attached
         # document via register_document_citation, which needs the thread/turn
         # context this sets up — same ordering requirement as in _stream_agent.
-        await reset_citation_registry_async(thread_id, body.turn)
+        await reset_citation_registry_async(thread_id, target_turn)
         new_content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             body.new_query, personalization_str, body.attached_file_ids, thread_id,
         )
-        last_human = target.values["messages"][-1]
-        updated_msg = LCHumanMessage(id=last_human.id, content=new_content)
-        state_update = {"messages": [updated_msg]}
-        if doc_files:
-            state_update["files"] = doc_files
-        rewind_config = await agent.aupdate_state(target.config, state_update)
     else:
-        # Regenerate mode: replay from the existing checkpoint as-is.
-        rewind_config = target.config
+        # Regenerate mode: same content, unchanged.
+        new_content = last_human.content
+
+    # Same id → add_messages reducer treats this as an update, not an append,
+    # for both modes. Always going through aupdate_state (even for a plain
+    # regenerate, where the content is unchanged) matters, not just for
+    # edits: it's what actually materializes the fork — see
+    # _strip_trailing_messages for why forking is the only point a stale
+    # already-computed response becomes visible/removable at all.
+    updated_msg = LCHumanMessage(id=last_human.id, content=new_content)
+    state_update = {"messages": [updated_msg]}
+    if doc_files:
+        state_update["files"] = doc_files
+    rewind_config = await agent.aupdate_state(target.config, state_update)
+    rewind_config = await _strip_trailing_messages(agent, rewind_config, updated_msg.id)
 
     p = body.personalization
     personalization_str = format_personalization(p)
@@ -527,7 +641,7 @@ async def api_rewind_thread(
                 attached_file_ids=body.attached_file_ids,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
-                turn=body.turn,
+                turn=target_turn,
                 rewind_config=rewind_config,
                 extra_sources=doc_sources,
                 cancellation_event=cancel_event,

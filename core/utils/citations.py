@@ -47,19 +47,40 @@ _turn: ContextVar[int | None] = ContextVar("citation_turn", default=None)
 _lock = threading.Lock()
 
 
+def _capped_at_turn(records: list[dict], turn: int | None) -> list[dict]:
+    """Drop citations from turns after `turn`.
+
+    Without this, rewinding to an earlier turn and abandoning a later one
+    still loads that later turn's citations — `load_citations` reads
+    everything the thread has *ever* produced, with no notion of which
+    branch is currently live. That pollutes both numbering (new citations
+    start counting from the abandoned future's count) and dedup (a URL
+    re-fetched in the rewound timeline resolves to the abandoned citation's
+    `n`, which was never actually surfaced in the current context) — exactly
+    the class of bug `/check_source` already guards against downstream with
+    its own `turn <= request.turn` filter. For a normal, non-rewound
+    conversation this is a no-op: turn only ever increases, so every
+    persisted citation already satisfies `turn <= turn`.
+    """
+    if turn is None:
+        return records
+    return [c for c in records if c.get("turn") is None or c["turn"] <= turn]
+
+
 def reset_citation_registry(thread_id: str | None = None, turn: int | None = None) -> None:
     """Start the registry for a new turn.
 
     If `thread_id` is given, hydrates from every citation this thread has
-    ever produced (so numbering and de-dupe carry across turns); otherwise
-    starts empty, matching the old run-scoped-only behavior. `turn` is
-    stamped onto any newly-registered citation this run.
+    ever produced up to `turn` (so numbering and de-dupe carry across turns,
+    without leaking citations from a rewound-past future); otherwise starts
+    empty, matching the old run-scoped-only behavior. `turn` is also stamped
+    onto any newly-registered citation this run.
     """
     _thread_id.set(thread_id)
     _turn.set(turn)
     if thread_id:
         try:
-            _registry.set(redis_sources.load_citations(thread_id))
+            _registry.set(_capped_at_turn(redis_sources.load_citations(thread_id), turn))
             return
         except Exception:
             # Redis hiccup shouldn't break the chat — fall back to a fresh,
@@ -75,7 +96,7 @@ async def reset_citation_registry_async(thread_id: str | None = None, turn: int 
     _turn.set(turn)
     if thread_id:
         try:
-            _registry.set(await redis_sources.load_citations_async(thread_id))
+            _registry.set(_capped_at_turn(await redis_sources.load_citations_async(thread_id), turn))
             return
         except Exception:
             pass
