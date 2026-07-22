@@ -492,10 +492,14 @@ async def _find_rewind_target(agent, thread_id: str, target_turn: int | None):
     # The turn number itself isn't recoverable from checkpoint metadata
     # (LangGraph doesn't persist custom `configurable` keys per-checkpoint,
     # only thread_id/checkpoint_ns/checkpoint_id), so it's derived
-    # positionally: turn N is "state right after the Nth HumanMessage",
-    # matching how the frontend assigns `turn` (see QueryRequest.turn) — so
-    # counting HumanMessages already in the checkpoint's own message list
-    # recovers it exactly, no bookkeeping needed.
+    # positionally instead. The frontend's `turn` (QueryRequest.turn) is the
+    # length of its local `messages` array *including* the new user message,
+    # right before sending — and every completed turn contributes exactly
+    # one user + one assistant entry to that array. So for the Kth
+    # HumanMessage (1-indexed), the frontend would have sent turn = 2K-1
+    # (K-1 prior turns × 2 entries, plus this one's own user entry) — e.g.
+    # K=1 -> 1, K=2 -> 3, K=3 -> 5. Counting HumanMessages already in the
+    # checkpoint's own message list recovers K, and hence turn, exactly.
     current_group_id = None
     async for state in agent.aget_state_history(lg_config):
         msgs = state.values.get("messages", [])
@@ -504,7 +508,8 @@ async def _find_rewind_target(agent, thread_id: str, target_turn: int | None):
         if msgs[-1].id == current_group_id:
             continue
         current_group_id = msgs[-1].id
-        turn_here = sum(1 for m in msgs if isinstance(m, LCHumanMessage))
+        human_count = sum(1 for m in msgs if isinstance(m, LCHumanMessage))
+        turn_here = 2 * human_count - 1
         await backfill_rewind_point(thread_id, turn_here, state.config["configurable"]["checkpoint_id"])
         if target_turn is None or turn_here == target_turn:
             return state, turn_here
