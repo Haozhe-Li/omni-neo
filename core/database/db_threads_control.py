@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
 from core.database.checkpointer import sync_checkpointer, delete_rewind_points
-from core.utils import redis_sources, vector_sources
+from core.utils import redis_sources, redis_widgets, vector_sources
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,10 @@ def delete_thread(thread_id: str) -> bool:
         except Exception as e:
             logger.error(f"[db_threads_control] redis source cleanup error for {thread_id}: {e}")
         try:
+            redis_widgets.delete_thread_widgets(thread_id)
+        except Exception as e:
+            logger.error(f"[db_threads_control] redis widget cleanup error for {thread_id}: {e}")
+        try:
             vector_sources.delete_thread_vectors(thread_id)
         except Exception as e:
             logger.error(f"[db_threads_control] vector source cleanup error for {thread_id}: {e}")
@@ -271,6 +275,10 @@ def delete_threads_bulk(thread_ids: list[str]) -> None:
             redis_sources.delete_threads_sources_bulk(thread_ids)
         except Exception as e:
             logger.error(f"[db_threads_control] redis source cleanup error for {thread_ids}: {e}")
+        try:
+            redis_widgets.delete_threads_widgets_bulk(thread_ids)
+        except Exception as e:
+            logger.error(f"[db_threads_control] redis widget cleanup error for {thread_ids}: {e}")
         for thread_id in thread_ids:
             try:
                 vector_sources.delete_thread_vectors(thread_id)

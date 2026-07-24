@@ -9,7 +9,10 @@ hit's data is then fetched and pushed to the frontend as a ``widget`` SSE event
 *before* the answer streams.
 
 This path is intentionally fully decoupled from the agent's own tool loop: it
-never feeds back into the agent, and an occasional duplicate fetch is acceptable.
+never feeds back into the agent, and an occasional duplicate fetch against the
+agent's own tools is acceptable. Duplicates *within* a thread are not: a
+widget already shown earlier in the same thread is deduped via Redis (see
+``redis_widgets.py``) and skipped rather than re-fetched and re-emitted.
 
 Word-count gate: if the query contains more than 10 words (CJK characters are
 counted individually), the predictor skips classification entirely and returns
@@ -30,6 +33,7 @@ from core.llm import widget_predictor_llm
 from core.tools.weather_tool import get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
+from core.utils import redis_widgets
 
 
 # ── Word-count gate ─────────────────────────────────────────────────────────
@@ -151,6 +155,8 @@ _HAOZHE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_HAOZHE_DEDUP_KEY = "entity:haozhe-li"
+
 _HAOZHE_WIDGET: dict[str, Any] = {
     "widget": "entity",
     "data": {
@@ -164,6 +170,27 @@ _HAOZHE_WIDGET: dict[str, Any] = {
 
 
 # ── Main predictor ───────────────────────────────────────────────────────────
+
+def _dedup_key(name: str, args: dict[str, Any]) -> str:
+    """Stable per-thread identity for a predicted widget, used to skip
+    re-showing the same card on a later turn of the same thread.
+
+    Keyed on the tool call's own arguments (not the fetched data, whose shape
+    differs per widget) and normalized so trivial variation — case, stray
+    whitespace — doesn't produce a spurious new key.
+    """
+    if name == "WeatherWidget":
+        return f"weather:{args.get('location', '').strip().lower()}"
+    if name == "StockWidget":
+        return f"stock:{args.get('ticker', '').strip().upper()}"
+    if name == "CurrencyWidget":
+        base = args.get("base_currency", "").strip().upper()
+        target = args.get("target_currency", "").strip().upper()
+        return f"currency:{base}:{target}"
+    if name == "EntityWidget":
+        return f"entity:{args.get('entity_name', '').strip().lower()}"
+    return name
+
 
 def _fetch(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
     """Fetch the data payload for a predicted widget (runs in a worker thread)."""
@@ -190,17 +217,40 @@ async def predict_widgets(
     query: str,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
+    thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Classify ``query`` and return a list of ready-to-emit widget payloads.
 
     Each item looks like ``{"widget": "weather", "data": {...}}``. Returns an
     empty list when nothing matches, the query is too long, or on any error.
+
+    When ``thread_id`` is given, widgets already shown earlier in that thread
+    (tracked in Redis, see ``redis_widgets.py``) are skipped — both to avoid
+    redundant fetches and to keep the same card from appearing twice in one
+    conversation. Without a ``thread_id`` (e.g. the unauthenticated/no-thread
+    path) dedup is skipped and every call is treated as fresh, matching the
+    old behavior.
     """
     print(f"[widget_predictor] called, query={query!r}, word_count={_word_count(query)}, limit={_WORD_LIMIT}")
 
+    already_shown: set[str] = set()
+    if thread_id:
+        try:
+            already_shown = await redis_widgets.load_shown_async(thread_id)
+        except Exception as exc:
+            print(f"[widget_predictor] failed to load shown widgets for thread {thread_id}: {exc}")
+
     # Easter egg: any mention of Haozhe Li (in any form) → instant card, no LLM.
     if _HAOZHE_RE.search(query):
+        if _HAOZHE_DEDUP_KEY in already_shown:
+            print("[widget_predictor] haozhe easter egg already shown in this thread — skipping")
+            return []
         print("[widget_predictor] haozhe easter egg triggered")
+        if thread_id:
+            try:
+                await redis_widgets.mark_shown_async(thread_id, [_HAOZHE_DEDUP_KEY])
+            except Exception as exc:
+                print(f"[widget_predictor] failed to mark haozhe widget shown for thread {thread_id}: {exc}")
         return [_HAOZHE_WIDGET]
 
     # Gate: long queries are rarely single-widget requests — skip entirely.
@@ -238,7 +288,33 @@ async def predict_widgets(
     if not tool_calls:
         return []
 
+    # Drop calls that duplicate a widget already shown earlier in this thread,
+    # as well as duplicates within this same batch (the classifier can call
+    # the same tool twice with equivalent args in one turn).
+    seen_this_call: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    keys: list[str] = []
+    for tc in tool_calls:
+        key = _dedup_key(tc["name"], tc.get("args", {}))
+        if key in already_shown or key in seen_this_call:
+            print(f"[widget_predictor] skipping duplicate widget {key!r} for thread {thread_id}")
+            continue
+        seen_this_call.add(key)
+        candidates.append(tc)
+        keys.append(key)
+
+    if not candidates:
+        return []
+
     results = await asyncio.gather(
-        *(asyncio.to_thread(_fetch, tc["name"], tc.get("args", {})) for tc in tool_calls)
+        *(asyncio.to_thread(_fetch, tc["name"], tc.get("args", {})) for tc in candidates)
     )
+
+    new_keys = [key for r, key in zip(results, keys) if r]
+    if thread_id and new_keys:
+        try:
+            await redis_widgets.mark_shown_async(thread_id, new_keys)
+        except Exception as exc:
+            print(f"[widget_predictor] failed to mark widgets shown for thread {thread_id}: {exc}")
+
     return [r for r in results if r]

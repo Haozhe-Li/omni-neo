@@ -545,6 +545,7 @@ async def run_agent_stream(
                 query,
                 user_location=user_location,
                 user_local_datetime=user_local_datetime,
+                thread_id=thread_id,
             ):
                 await queue.put(_sse({"type": "widget", **w}))
         except Exception as exc:  # widgets must never break the chat
