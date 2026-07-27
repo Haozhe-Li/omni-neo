@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _CHUNK_SIZE = 256
 _CHUNK_OVERLAP = 32
 _INDEX_NAME = "omni_chunks"
-_MIN_SCORE = 0.6
+_MIN_SCORE = 0.8
 _QUERY_LIMIT = 100
 
 _splitter = RecursiveCharacterTextSplitter(

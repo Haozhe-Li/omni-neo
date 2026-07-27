@@ -6,9 +6,9 @@ from core.utils.redis_cache import l1cache
 _CHECK_SOURCE_CACHE_TTL = 60 * 60 * 24 * 10
 
 # rerank_candidates hands every candidate to gpt-oss-20b in one prompt — past
-# a handful it starts misjudging keep/drop and mangling excerpts. Candidates
-# are already score-sorted descending by vector_sources.search_similar_chunks,
-# so capping here just keeps the top-scored ones.
+# a handful it starts mangling excerpts. Candidates are already score-sorted
+# descending by vector_sources.search_similar_chunks, so capping here just
+# keeps the top-scored ones.
 _MAX_RERANK_CANDIDATES = 5
 
 
