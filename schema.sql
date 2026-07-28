@@ -84,7 +84,9 @@ ALTER TABLE user_usage ADD COLUMN IF NOT EXISTS extra_used    NUMERIC(10,2) NOT 
 CREATE TABLE IF NOT EXISTS redeem_codes (
     code       VARCHAR(64) PRIMARY KEY,
     credits    NUMERIC(10,2) NOT NULL DEFAULT 1000,
-    max_uses   INT NOT NULL DEFAULT 1,   -- 1 = single-use; >1 = shared campaign code
+    max_uses   INT NOT NULL DEFAULT 1,   -- 1 = single-use; >1 = shared campaign code;
+                                         -- <=0 = unlimited users (still once each,
+                                         -- enforced by code_redemptions' unique index)
     used_count INT NOT NULL DEFAULT 0,
     expires_at TIMESTAMPTZ,              -- NULL = never expires
     active     BOOLEAN NOT NULL DEFAULT TRUE,

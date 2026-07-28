@@ -11,7 +11,7 @@ Table schema (managed in Supabase, see schema.sql):
     CREATE TABLE IF NOT EXISTS redeem_codes (
         code VARCHAR(64) PRIMARY KEY,
         credits NUMERIC(10,2) NOT NULL DEFAULT 1000,
-        max_uses INT NOT NULL DEFAULT 1,
+        max_uses INT NOT NULL DEFAULT 1,   -- <=0 = unlimited, see redeem_code()
         used_count INT NOT NULL DEFAULT 0,
         expires_at TIMESTAMPTZ,
         active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -121,7 +121,13 @@ def redeem_code(user_id: str, code: str) -> dict:
         return {"status": "invalid_code"}
     if _expired(row.get("expires_at")):
         return {"status": "code_expired"}
-    if int(row.get("used_count") or 0) >= int(row.get("max_uses") or 1):
+    # max_uses <= 0 means unlimited — an evergreen/default code anyone can
+    # claim. Note what "unlimited" does NOT mean: the UNIQUE (code, user_id)
+    # guard still applies, so it's unlimited *users*, one redemption each. A
+    # code that the same person could redeem repeatedly would be an infinite
+    # credit tap.
+    max_uses = int(row.get("max_uses") or 0)
+    if max_uses > 0 and int(row.get("used_count") or 0) >= max_uses:
         return {"status": "code_exhausted"}
 
     credits = float(row["credits"])
