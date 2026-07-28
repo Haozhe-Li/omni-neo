@@ -3,13 +3,15 @@ Database operations for the user_usage table — a unified credit ledger for
 both guests and signed-in users, replacing the old pro-only `guest_usage`
 table.
 
-Table schema:
+Table schema (see schema.sql):
     CREATE TABLE IF NOT EXISTS user_usage (
         user_id VARCHAR(255) PRIMARY KEY,
         day DATE NOT NULL DEFAULT CURRENT_DATE,
         day_used NUMERIC(10,2) NOT NULL DEFAULT 0,
         month VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
         month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
+        extra_granted NUMERIC(10,2) NOT NULL DEFAULT 0,
+        extra_used NUMERIC(10,2) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -23,9 +25,15 @@ Model:
     - Limits differ for guests vs signed-in users (see *_CREDIT_LIMIT below),
       keyed the same way every other per-user table in this codebase is:
       `user_id` is either a Clerk sub or a `guest_<uuid>` string.
-    - Charging is all-or-nothing: if applying the cost would push either the
-      day or month counter over its limit, nothing is charged at all (the
-      request should be rejected outright, not partially billed).
+    - On top of the two caps sits a THIRD bucket: extra credits redeemed with
+      a code (see db_redeem_codes.py). It is a balance, not a cap — it never
+      resets, it is spent before the day/month allowances, and what it pays
+      for does not count against either cap. A charge takes as much as it can
+      from the extra balance and bills only the remainder to day/month, so a
+      balance smaller than one pro turn (4.7) can't get stranded.
+    - Charging is all-or-nothing: if the part left for day/month would push
+      either counter over its limit, nothing is charged at all (the request
+      should be rejected outright, not partially billed).
 
 Note: NUMERIC values can come back over PostgREST as strings (to preserve
 precision), so every value read from a day_used/month_used column is cast to
@@ -86,6 +94,114 @@ def _rolled_over_usage(row: dict | None, today_iso: str, month: str) -> tuple[fl
     return day_used, month_used
 
 
+# The ledger's columns are NUMERIC(10,2), so Postgres rounds every write to 2dp
+# anyway. Rounding here too keeps the in-process snapshot and the stored row
+# agreeing to the cent, and stops float residue (4.7 - 2.0 = 2.7000000000000002)
+# from accumulating in the extra balance across many charges — an epsilon left
+# behind there would otherwise be permanently unspendable.
+_EPSILON = 0.005
+
+
+def _q2(x: float) -> float:
+    return round(x + 0.0, 2)
+
+
+def _extra_balance(row: dict | None) -> tuple[float, float]:
+    """(granted, used) for the redeemed-credit bucket.
+
+    No rollover logic on purpose — unlike day_used/month_used these do not
+    reset when the stored day/month goes stale. Missing keys read as 0 so a
+    row written before the columns existed still charges correctly.
+    """
+    if not row:
+        return 0.0, 0.0
+    return float(row.get("extra_granted") or 0), float(row.get("extra_used") or 0)
+
+
+# ---------------------------------------------------------------------------
+# Reading the row. Two shapes, because DDL here is applied by hand in the
+# Supabase SQL editor (see schema.sql) and therefore does NOT land atomically
+# with a deploy. If code that selects extra_granted/extra_used ships before the
+# ALTER runs, PostgREST answers every read with 42703 (undefined_column) — and
+# since a read failure fails OPEN, that would silently hand every user
+# unlimited free usage until someone noticed. So: try the wide select, and on
+# 42703 fall back to the pre-migration columns for the rest of the process's
+# life (a restart after the migration picks the wide shape back up).
+# ---------------------------------------------------------------------------
+_USAGE_COLUMNS_WITH_EXTRA = "day, day_used, month, month_used, extra_granted, extra_used"
+_USAGE_COLUMNS_LEGACY = "day, day_used, month, month_used"
+_extra_columns_present = True
+
+
+def _usage_columns() -> str:
+    return _USAGE_COLUMNS_WITH_EXTRA if _extra_columns_present else _USAGE_COLUMNS_LEGACY
+
+
+def _is_missing_extra_columns(e: Exception) -> bool:
+    """Whether this error is 'the extra_* columns aren't in the DB yet'."""
+    if not _extra_columns_present:
+        return False
+    code = getattr(e, "code", None)
+    text = str(e)
+    return (code == "42703" or "42703" in text) and "extra_" in text
+
+
+def _note_missing_extra_columns() -> None:
+    global _extra_columns_present
+    if _extra_columns_present:
+        _extra_columns_present = False
+        logger.warning(
+            "[db_user_usage] extra_granted/extra_used missing from user_usage — "
+            "falling back to legacy columns. Run the ALTER TABLE statements in "
+            "schema.sql; redeemed credits are inert until then."
+        )
+
+
+def _read_usage_row(user_id: str) -> dict | None:
+    """Blocking read of a user's ledger row, with the column fallback above."""
+    try:
+        res = (
+            supabase.table("user_usage").select(_usage_columns())
+            .eq("user_id", user_id).limit(1).execute()
+        )
+    except Exception as e:
+        if not _is_missing_extra_columns(e):
+            raise
+        _note_missing_extra_columns()
+        res = (
+            supabase.table("user_usage").select(_usage_columns())
+            .eq("user_id", user_id).limit(1).execute()
+        )
+    return res.data[0] if res.data else None
+
+
+async def _read_usage_row_async(user_id: str) -> dict | None:
+    """Async twin of `_read_usage_row`."""
+    sb = await get_async_supabase()
+    try:
+        res = (
+            await sb.table("user_usage").select(_usage_columns())
+            .eq("user_id", user_id).limit(1).execute()
+        )
+    except Exception as e:
+        if not _is_missing_extra_columns(e):
+            raise
+        _note_missing_extra_columns()
+        res = (
+            await sb.table("user_usage").select(_usage_columns())
+            .eq("user_id", user_id).limit(1).execute()
+        )
+    return res.data[0] if res.data else None
+
+
+def _strip_extra(write: dict | None) -> dict | None:
+    """Drop extra_used from a write payload when the column doesn't exist yet —
+    otherwise the write would fail the same way the read did."""
+    if write is None or _extra_columns_present:
+        return write
+    return {k: v for k, v in write.items() if k != "extra_used"}
+
+
 def _charge_context(user_id: str, mode: str) -> dict:
     """Per-call constants shared by the sync and async charge paths."""
     today = datetime.now(timezone.utc).date()
@@ -104,27 +220,49 @@ def _charge_decision(user_id: str, row: dict | None, ctx: dict) -> tuple[dict | 
 
     Shared by charge_credits and charge_credits_async so the limit/rollover
     logic lives in exactly one place; only the I/O around it differs.
+
+    Redeemed extra credits are spent first: `from_extra` comes off that
+    balance and is invisible to both caps, and only `remainder` is billed to
+    the day/month counters — which is what makes a leftover balance smaller
+    than one turn's cost still usable instead of stranded.
     """
     day_used, month_used = _rolled_over_usage(row, ctx["today_iso"], ctx["month"])
-    new_day = day_used + ctx["cost"]
-    new_month = month_used + ctx["cost"]
+    extra_granted, extra_used = _extra_balance(row)
+    extra_remaining = max(extra_granted - extra_used, 0.0)
+    if extra_remaining < _EPSILON:
+        extra_remaining = 0.0  # sub-cent dust is spent, not a fractional charge
+
+    from_extra = min(ctx["cost"], extra_remaining)
+    remainder = _q2(ctx["cost"] - from_extra)
+    new_day = _q2(day_used + remainder)
+    new_month = _q2(month_used + remainder)
+    new_extra_used = _q2(extra_used + from_extra)
+
     common = {
         "day_limit": ctx["day_limit"], "month_limit": ctx["month_limit"],
         "resets_day_at": ctx["resets_day_at"], "resets_month_at": ctx["resets_month_at"],
+        "extra_granted": extra_granted,
     }
     if new_day <= ctx["day_limit"] and new_month <= ctx["month_limit"]:
+        # The full row is written even when extra paid for everything: `day`
+        # and `month` still have to be re-stamped so a rolled-over counter is
+        # persisted as reset rather than left stale for the next read.
         write = {
             "user_id": user_id,
             "day": ctx["today_iso"], "day_used": new_day,
             "month": ctx["month"], "month_used": new_month,
+            "extra_used": new_extra_used,
             "updated_at": utcnow_iso(),
         }
         return write, {"charged": True, "day_used": new_day, "month_used": new_month,
+                       "extra_used": new_extra_used,
+                       "extra_remaining": _q2(extra_granted - new_extra_used),
                        "exceeded_scope": None, **common}
     day_over = new_day > ctx["day_limit"]
     month_over = new_month > ctx["month_limit"]
     scope = "both" if (day_over and month_over) else ("day" if day_over else "month")
     return None, {"charged": False, "day_used": day_used, "month_used": month_used,
+                  "extra_used": extra_used, "extra_remaining": extra_remaining,
                   "exceeded_scope": scope, **common}
 
 
@@ -133,6 +271,7 @@ def _charge_failopen(ctx: dict) -> dict:
     gracefully (let the turn through), not take chat down with it."""
     return {
         "charged": True, "day_used": 0.0, "month_used": 0.0,
+        "extra_granted": 0.0, "extra_used": 0.0, "extra_remaining": 0.0,
         "day_limit": ctx["day_limit"], "month_limit": ctx["month_limit"],
         "resets_day_at": ctx["resets_day_at"], "resets_month_at": ctx["resets_month_at"],
         "exceeded_scope": None,
@@ -153,14 +292,8 @@ def charge_credits(user_id: str, mode: str) -> dict:
     """
     ctx = _charge_context(user_id, mode)
     try:
-        res = (
-            supabase.table("user_usage")
-            .select("day, day_used, month, month_used")
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        write, result = _charge_decision(user_id, res.data[0] if res.data else None, ctx)
+        write, result = _charge_decision(user_id, _read_usage_row(user_id), ctx)
+        write = _strip_extra(write)
         if write is not None:
             supabase.table("user_usage").upsert(write, on_conflict="user_id").execute()
         return result
@@ -180,16 +313,8 @@ async def evaluate_charge_async(user_id: str, mode: str) -> tuple[dict, dict | N
     must not charge)."""
     ctx = _charge_context(user_id, mode)
     try:
-        sb = await get_async_supabase()
-        res = (
-            await sb.table("user_usage")
-            .select("day, day_used, month, month_used")
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        write, result = _charge_decision(user_id, res.data[0] if res.data else None, ctx)
-        return result, write
+        write, result = _charge_decision(user_id, await _read_usage_row_async(user_id), ctx)
+        return result, _strip_extra(write)
     except Exception as e:
         logger.error(f"[db_user_usage] evaluate_charge_async error for {user_id}: {e}")
         return _charge_failopen(ctx), None
@@ -227,22 +352,50 @@ _usage_snapshot: dict[str, dict] = {}
 _usage_lock = threading.Lock()
 
 
-def _snapshot_get(user_id: str, today_iso: str, month: str) -> tuple[float, float] | None:
+def _snapshot_get(user_id: str, today_iso: str, month: str) -> dict | None:
+    """The cached row for this user, shaped like a DB row so it can be handed
+    straight to `_charge_decision`, or None on a miss/expiry."""
     ent = _usage_snapshot.get(user_id)
     if not ent or ent["expiry"] <= time.monotonic():
         return None
-    day_used = ent["day_used"] if ent["day"] == today_iso else 0.0
-    month_used = ent["month_used"] if ent["month"] == month else 0.0
-    return day_used, month_used
+    return {
+        "day": today_iso,
+        "day_used": ent["day_used"] if ent["day"] == today_iso else 0.0,
+        "month": month,
+        "month_used": ent["month_used"] if ent["month"] == month else 0.0,
+        # Not rollover-gated, same as the real row: an extra balance survives
+        # the day/month flip untouched.
+        "extra_granted": ent["extra_granted"],
+        "extra_used": ent["extra_used"],
+    }
 
 
-def _snapshot_put(user_id: str, today_iso: str, day_used: float, month: str, month_used: float) -> None:
+def _snapshot_put(user_id: str, today_iso: str, month: str, result: dict) -> None:
+    """Cache a charge result as this user's next gate input."""
     with _usage_lock:
         _usage_snapshot[user_id] = {
-            "day": today_iso, "day_used": day_used,
-            "month": month, "month_used": month_used,
+            "day": today_iso, "day_used": result["day_used"],
+            "month": month, "month_used": result["month_used"],
+            "extra_granted": result.get("extra_granted", 0.0),
+            "extra_used": result.get("extra_used", 0.0),
             "expiry": time.monotonic() + _USAGE_SNAPSHOT_TTL,
         }
+
+
+def invalidate_usage_snapshot(user_id: str) -> None:
+    """Drop this user's cached gate input so the next charge re-reads the DB.
+
+    Redeeming a code MUST call this. Without it the snapshot keeps answering
+    with the pre-redemption balance for up to `_USAGE_SNAPSHOT_TTL` seconds —
+    so a user who just redeemed watches the UI show a full extra bar while
+    /chat keeps 429-ing them, with no way to tell that it will fix itself.
+
+    Only clears this process's copy. Under multiple instances the others keep
+    their own stale entries until TTL, which is the same bounded staleness the
+    snapshot already accepts everywhere else.
+    """
+    with _usage_lock:
+        _usage_snapshot.pop(user_id, None)
 
 
 async def evaluate_charge_fast(user_id: str, mode: str) -> dict:
@@ -252,18 +405,16 @@ async def evaluate_charge_fast(user_id: str, mode: str) -> dict:
     which the caller invokes only when it actually proceeds (so a reconnect,
     which never calls it, never charges)."""
     ctx = _charge_context(user_id, mode)
-    snap = _snapshot_get(user_id, ctx["today_iso"], ctx["month"])
-    if snap is not None:
-        row = {"day": ctx["today_iso"], "day_used": snap[0],
-               "month": ctx["month"], "month_used": snap[1]}
+    row = _snapshot_get(user_id, ctx["today_iso"], ctx["month"])
+    if row is not None:
         _, result = _charge_decision(user_id, row, ctx)
         # Optimistic local bump so a rapid burst sees rising usage; the
         # background reconcile re-anchors to DB truth right after.
         if result["charged"]:
-            _snapshot_put(user_id, ctx["today_iso"], result["day_used"], ctx["month"], result["month_used"])
+            _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
         return result
     result, _write = await evaluate_charge_async(user_id, mode)
-    _snapshot_put(user_id, ctx["today_iso"], result["day_used"], ctx["month"], result["month_used"])
+    _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
     return result
 
 
@@ -281,7 +432,7 @@ def commit_charge_fast(user_id: str, mode: str) -> None:
             ctx = _charge_context(user_id, mode)
             result, write = await evaluate_charge_async(user_id, mode)
             await commit_charge_async(write)
-            _snapshot_put(user_id, ctx["today_iso"], result["day_used"], ctx["month"], result["month_used"])
+            _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
         except Exception as e:
             logger.error(f"[db_user_usage] commit_charge_fast reconcile error for {user_id}: {e}")
 
@@ -297,16 +448,11 @@ def get_usage(user_id: str) -> dict:
     resets_day_at, resets_month_at = _reset_times(today)
 
     day_used = month_used = 0.0
+    extra_granted = extra_used = 0.0
     try:
-        res = (
-            supabase.table("user_usage")
-            .select("day, day_used, month, month_used")
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        row = res.data[0] if res.data else None
+        row = _read_usage_row(user_id)
         day_used, month_used = _rolled_over_usage(row, today_iso, month)
+        extra_granted, extra_used = _extra_balance(row)
     except Exception as e:
         logger.error(f"[db_user_usage] get_usage error for {user_id}: {e}")
 
@@ -316,6 +462,10 @@ def get_usage(user_id: str) -> dict:
         "day_remaining": max(day_limit - day_used, 0),
         "month_used": month_used, "month_limit": month_limit,
         "month_remaining": max(month_limit - month_used, 0),
+        # Redeemed-code balance. `extra_granted` is 0 for the vast majority of
+        # users; the frontend hides the whole meter in that case.
+        "extra_granted": extra_granted, "extra_used": extra_used,
+        "extra_remaining": max(_q2(extra_granted - extra_used), 0.0),
         "mode_cost": MODE_CREDIT_COST,
         "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,
     }

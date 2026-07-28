@@ -14,6 +14,7 @@ from core.database.db_threads_control import (
 from core.database.db_user_memories import migrate_guest_memory, delete_user_memory
 from core.database.db_user_files import get_user_file_buckets, delete_user_files
 from core.database.db_user_usage import get_usage, delete_user_usage
+from core.database.db_redeem_codes import redeem_code
 from core.RAG.file_parser import delete_user_uploads_from_s3
 
 router = APIRouter(prefix="/api", tags=["users"])
@@ -28,6 +29,48 @@ def api_get_usage(user_id: str = Depends(get_current_user)):
     differ by tier, everything else about the shape is the same.
     """
     return get_usage(user_id)
+
+
+class RedeemRequest(BaseModel):
+    code: str
+
+
+# Failure reason -> HTTP status. The body always carries the reason verbatim as
+# `detail.error` so the frontend can pick its own copy per case rather than
+# parsing a sentence.
+_REDEEM_STATUS_CODES = {
+    "invalid_code": 404,
+    "code_expired": 410,
+    "code_exhausted": 409,
+    "already_redeemed": 409,
+    "error": 500,
+}
+
+
+@router.post("/redeem")
+def api_redeem_code(
+    body: RedeemRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Redeem a prepaid credit code, granting extra credits that are spent before
+    the daily/monthly allowances and don't count against either.
+
+    Signed-in only. A guest id is a client-generated uuid, so a guest could
+    redeem the same code from an unlimited supply of fresh identities and the
+    UNIQUE (code, user_id) guard would never see a duplicate. There's a second
+    reason too: /users/merge deletes the guest's usage row on sign-in, which
+    would silently destroy the credits they just redeemed.
+    """
+    if user_id.startswith("guest_"):
+        raise HTTPException(status_code=403, detail={"error": "sign_in_required"})
+    result = redeem_code(user_id, body.code)
+    if result["status"] != "ok":
+        raise HTTPException(
+            status_code=_REDEEM_STATUS_CODES.get(result["status"], 400),
+            detail={"error": result["status"]},
+        )
+    return result
 
 
 class MergeRequest(BaseModel):

@@ -56,14 +56,59 @@ CREATE TABLE IF NOT EXISTS user_memories (
 -- ---------------------------------------------------------------------------
 -- user_usage: unified credit ledger (guests + signed-in)
 -- ---------------------------------------------------------------------------
+-- extra_granted/extra_used: the redeemed-code balance. Deliberately in this
+-- same row rather than a table of its own — the charge path reads its whole
+-- decision input in one select and that latency budget is the reason the
+-- fast-path snapshot below it exists; a second table would double it.
+-- These two NEVER roll over: day_used/month_used reset when `day`/`month`
+-- go stale, extra credits are a permanent balance until spent.
 CREATE TABLE IF NOT EXISTS user_usage (
-    user_id    VARCHAR(255) PRIMARY KEY,
-    day        DATE NOT NULL DEFAULT CURRENT_DATE,
-    day_used   NUMERIC(10,2) NOT NULL DEFAULT 0,
-    month      VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
-    month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    user_id       VARCHAR(255) PRIMARY KEY,
+    day           DATE NOT NULL DEFAULT CURRENT_DATE,
+    day_used      NUMERIC(10,2) NOT NULL DEFAULT 0,
+    month         VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
+    month_used    NUMERIC(10,2) NOT NULL DEFAULT 0,
+    extra_granted NUMERIC(10,2) NOT NULL DEFAULT 0,
+    extra_used    NUMERIC(10,2) NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+-- Migration for the live database (the CREATE above only helps fresh deploys):
+ALTER TABLE user_usage ADD COLUMN IF NOT EXISTS extra_granted NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE user_usage ADD COLUMN IF NOT EXISTS extra_used    NUMERIC(10,2) NOT NULL DEFAULT 0;
+
+-- ---------------------------------------------------------------------------
+-- redeem_codes: prepaid credit codes (see core/database/db_redeem_codes.py)
+-- ---------------------------------------------------------------------------
+-- `code` is stored normalized (upper-cased, dashes/spaces stripped) so lookup
+-- is a plain primary-key hit and users can type it however they like.
+CREATE TABLE IF NOT EXISTS redeem_codes (
+    code       VARCHAR(64) PRIMARY KEY,
+    credits    NUMERIC(10,2) NOT NULL DEFAULT 1000,
+    max_uses   INT NOT NULL DEFAULT 1,   -- 1 = single-use; >1 = shared campaign code
+    used_count INT NOT NULL DEFAULT 0,
+    expires_at TIMESTAMPTZ,              -- NULL = never expires
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    note       TEXT,                     -- free-form: what campaign this was for
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------
+-- code_redemptions: who redeemed what, and the double-redeem guard
+-- ---------------------------------------------------------------------------
+-- The UNIQUE (code, user_id) index is not bookkeeping — it IS the protection
+-- against double redemption. PostgREST can't do a guarded atomic upsert, so
+-- the redeem path inserts here FIRST and only grants credit if that insert
+-- won; a duplicate raises 23505 and is reported as already_redeemed. Same
+-- shape as the qstash_message_id idempotency guard on scheduled_task_runs.
+CREATE TABLE IF NOT EXISTS code_redemptions (
+    id          BIGSERIAL PRIMARY KEY,
+    code        VARCHAR(64) NOT NULL REFERENCES redeem_codes(code),
+    user_id     VARCHAR(255) NOT NULL,
+    credits     NUMERIC(10,2) NOT NULL,
+    redeemed_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_code_redemptions_code_user UNIQUE (code, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_redemptions_user_id ON code_redemptions(user_id);
 
 -- ---------------------------------------------------------------------------
 -- user_files: uploaded file metadata
