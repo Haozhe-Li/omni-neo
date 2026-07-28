@@ -21,6 +21,7 @@ from typing import Literal
 
 from langchain.agents.middleware import (
     AgentMiddleware,
+    ModelFallbackMiddleware,
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
 )
@@ -707,8 +708,16 @@ SYSTEM_PROMPTS = [FAST_PROMPT, PRO_PROMPT, _SCHEDULED_PROMPT]
 # falls back from `cerebras:gpt-oss-120b` to `cerebras`, so a provider key keeps
 # working when a model is swapped — and every profile-level setting here is
 # identical across fast/pro anyway (the fast/pro difference lives entirely in
-# the prompts). `google_genai` covers the scheduled agent.
-_HARNESS_PROVIDER_KEYS = ("cerebras", "google_genai")
+# the prompts).
+#
+# All three providers we can run a chat turn on are registered, even though the
+# profile is resolved once at build time from the *primary* model and never
+# re-resolved: `ModelFallbackMiddleware` swaps the model long after the system
+# prompt is assembled, so a fallback can never change which profile applies.
+# Registering `groq` anyway means promoting a fallback to primary stays a
+# one-line change in core/llm.py instead of silently restoring deepagents'
+# `BASE_AGENT_PROMPT` and the `task` subagent.
+_HARNESS_PROVIDER_KEYS = ("cerebras", "groq", "google_genai")
 
 _harness_profiles_registered = False
 
@@ -799,7 +808,15 @@ def build_agent(profile: Profile):
             middleware=[
                 ToolRetryMiddleware(max_retries=1),
                 ToolCallLimitMiddleware(run_limit=8),
+                # Order matters, and only between these two: `wrap_model_call`
+                # middleware compose first-in-list-outermost, so the vision
+                # swap has to sit OUTSIDE the fallback. Reversed, the fallback
+                # would hand each retry back to the vision middleware, which
+                # unconditionally re-overrides the model on any image turn and
+                # would put the failing Cerebras model straight back — a
+                # fallback chain that silently retries the same dead endpoint.
                 FastVisionModelMiddleware(gemma_4_31b),
+                ModelFallbackMiddleware(*FAST_LLM_FALLBACKS),
             ],
         )
 
@@ -818,6 +835,7 @@ def build_agent(profile: Profile):
                     initial_delay=1.0,
                 ),
                 ToolCallLimitMiddleware(run_limit=30),
+                ModelFallbackMiddleware(*PRO_LLM_FALLBACKS),
             ],
         )
 

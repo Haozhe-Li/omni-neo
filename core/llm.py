@@ -33,12 +33,19 @@ gpt_oss_120b_low = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning
 gpt_oss_120b_high = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="high")
 gpt_oss_120b_medium = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
 
-gpt_oss_120b_low_groq = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="low")
-gpt_oss_120b_high_groq = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="high")
 # reasoning_format="parsed": keeps reasoning tokens out of `content` (Groq's
 # default "raw" inlines them as <think>...</think>) and puts them in
 # additional_kwargs.reasoning_content instead, so core/stream.py can stream
 # them as their own `reasoning` SSE event instead of leaking into the answer.
+# Set on every Groq gpt-oss instance, not just the one that happened to need it
+# first: any of these can end up serving a chat turn via the fallback chain
+# below, and a raw <think> block landing in the answer stream is a visible bug.
+gpt_oss_120b_low_groq = ChatGroq(
+    model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="low", reasoning_format="parsed"
+)
+gpt_oss_120b_high_groq = ChatGroq(
+    model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="high", reasoning_format="parsed"
+)
 gpt_oss_120b_medium_groq = ChatGroq(
     model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium", reasoning_format="parsed"
 )
@@ -64,3 +71,23 @@ generate_cover_llm = gpt_oss_20b
 # Structured extraction only (title/instruction/schedule) — low reasoning
 # effort is enough and keeps the interactive create-flow snappy.
 research_schedule_llm = gpt_oss_120b_low
+
+# ── Chat fallbacks ──────────────────────────────────────────────────────────
+# Cerebras hosts both interactive models and has been flaky, so each chat
+# profile carries an ordered fallback chain, tried left to right by
+# ModelFallbackMiddleware when the primary call raises (see core/agent.py).
+# Only the two interactive profiles have one: everything else here is a
+# short, non-interactive call where a failure degrades one feature rather than
+# breaking the answer the user is waiting on.
+#
+# fast: the same gpt-oss-120b at the same reasoning effort, hosted by Groq —
+# identical behaviour, different provider. Gemini Flash-Lite backs it up as a
+# last resort AND as the multimodal escape hatch: the fast profile swaps to a
+# vision model when an image is in the conversation, and if Cerebras is the
+# thing that's down, neither Cerebras Gemma nor text-only gpt-oss can serve
+# that turn. The doomed Groq attempt costs one failed request on the rare
+# image-plus-outage overlap, which beats special-casing the chain per request.
+#
+# pro: Gemini Flash-Lite, the same model the scheduled agent already runs on.
+FAST_LLM_FALLBACKS = [gpt_oss_120b_low_groq, gemini_flash_lite_latest]
+PRO_LLM_FALLBACKS = [gemini_flash_lite_latest]
