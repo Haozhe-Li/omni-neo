@@ -22,15 +22,20 @@ def format_personalization(personalization: Personalization) -> str:
     return result
 
 
-def append_memory_context(personalization_str: str, memory_content: str | None) -> str:
-    """Append the user's server-persisted long-term memory to the personalization block.
+def format_user_memory(memory_content: str | None) -> str:
+    """Format the user's server-persisted long-term memory.
 
-    Kept separate from format_personalization because memory is fetched from
-    Postgres by the router (async, keyed by user_id), not supplied by the client.
+    Returns the body of the `<user_memory>` block that
+    `build_message_content` wraps, or "" when there's nothing stored. Kept
+    separate from `format_personalization` on two counts: memory is fetched
+    from Postgres by the router (async, keyed by user_id) rather than supplied
+    by the client, and it is a distinct block in the user message — the prompt
+    tells the model to treat memory as background it may ignore, which is a
+    weaker claim than the one personalization makes.
     """
     if not memory_content:
-        return personalization_str
-    return personalization_str + (
-        "\n\nUser Memory (long-term facts about this user; "
-        f"not all of it may be relevant to the current task):\n{memory_content}\n"
+        return ""
+    return (
+        "Long-term facts about this user. Not all of it is relevant to the "
+        f"current turn.\n{memory_content}"
     )

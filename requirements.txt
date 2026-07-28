@@ -1,5 +1,7 @@
 # For building agents
-deepagents
+# Pinned to a minor line: core/agent.py registers a HarnessProfile, and
+# `deepagents.profiles` is a documented beta API that may change shape.
+deepagents>=0.6.12,<0.7
 langchain
 langchain_community
 langgraph

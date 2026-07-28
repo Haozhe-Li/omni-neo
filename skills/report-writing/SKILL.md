@@ -8,7 +8,7 @@ description: Stream a long-form report. Always use this when the answer involves
 ## When to write a report
 Write a report ONLY if at least one of these holds:
 - The user explicitly asked for a report, document, write-up, or deep analysis.
-- You are running the deep-research workflow.
+- You are running the web-research workflow.
 - A complete, high-quality answer would clearly exceed ~500 words AND benefits from
   being a structured document.
 
@@ -37,8 +37,9 @@ Here's the report you asked for — it's opening in the reader on the right.
 - Put a concise `title="…"` (max ~10 words) on the opening tag. It becomes the
   reader's tab + heading. If you omit it, the first heading is used.
 - Write exactly ONE `<report>` block per turn, and never nest one inside another.
-- The body is normal GFM: `##` / `###` headings, lists, tables, and `$…$` /
-  `$$…$$` for math. Do NOT wrap the whole report in a code fence.
+- The body is normal GFM: `##` / `###` headings, lists, tables, and LaTeX
+  `\(…\)` / `\[…\]` for math — never dollar signs. Do NOT wrap the whole report
+  in a code fence.
 - You may embed charts directly in the report using ```echarts fenced blocks (see
   the charting skill) — they render inline inside the report.
 - Outside the block, write a short chat reply (1–3 sentences) that introduces the

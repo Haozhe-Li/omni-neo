@@ -213,13 +213,39 @@ def _dedupe_document_name(
     return f"{stem}({rank}){ext}"
 
 
+def _tagged_block(tag: str, body: str) -> str:
+    """Render one ``<tag>`` block, or "" when there's nothing to say.
+
+    Empty blocks are dropped rather than emitted hollow: a bare
+    ``<user_memory></user_memory>`` reads to the model as "this user has no
+    history", which is a claim we don't want to make on every anonymous turn.
+    """
+    body = (body or "").strip()
+    if not body:
+        return ""
+    return f"<{tag}>\n{body}\n</{tag}>"
+
+
 def build_message_content(
     query: str,
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
     thread_id: str | None = None,
+    *,
+    user_memory: str = "",
+    follow_up_content: str | None = None,
+    skill: str | None = None,
 ) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
+
+    Every piece of context is wrapped in its own tag and the real question goes
+    last, in the order the prompt's "Input Format" section documents:
+    attachments, personalization, memory, requested skill, follow-up selection,
+    then ``<user_query>``. Tags here (rather than the Markdown the system
+    prompt uses) mark the boundary between *data* and *instructions* — most of
+    these blocks are app-supplied context that must never be read as the user
+    making a request, which is exactly what ``<user_memory>`` used to risk when
+    it was appended as loose prose.
 
     Returns ``(content, files, doc_sources)``. ``files`` holds virtual-path ->
     FileData entries for ready documents, to be merged into the agent's
@@ -234,15 +260,11 @@ def build_message_content(
     Must be called after `reset_citation_registry(thread_id, turn)` —
     `register_document_citation` below needs that context already set up.
     """
-    base_query = f"User Query: {query}\n\nPersonalization: {personalization}\n\n"
-    if not attached_file_ids:
-        return base_query, {}, []
-
     image_blocks: list[dict] = []
     document_notes: list[str] = []
     files: dict[str, dict] = {}
     doc_sources: list[dict] = []
-    for file_info in attached_file_ids:
+    for file_info in attached_file_ids or []:
         for file_id, filename in file_info.items():
             record = get_file_record(file_id)
             if not record:
@@ -273,18 +295,30 @@ def build_message_content(
                 doc_sources.append({"n": n, "title": filename, "url": "", "content": full_text[:1000]})
                 document_notes.append(f"{filename} -> mounted at {path}, cite as [{n}] when you use it")
 
+    attached_files = ""
     if document_notes:
-        base_query = (
-            "The user has uploaded these files, available in your filesystem. "
-            "Use `ls`, `read_file`, or `grep` to read them:\n"
-            + "\n".join(document_notes)
-            + "\n\n"
-            + base_query
+        attached_files = (
+            "The user uploaded these files. They are mounted in your "
+            "filesystem — use `ls`, `read_file`, or `grep` to read them.\n"
+            + "\n".join(f"- {note}" for note in document_notes)
         )
 
+    text = "\n\n".join(
+        block
+        for block in (
+            _tagged_block("attached_files", attached_files),
+            _tagged_block("personalization", personalization),
+            _tagged_block("user_memory", user_memory),
+            _tagged_block("requested_skill", skill),
+            _tagged_block("follow_up_selection", follow_up_content),
+            _tagged_block("user_query", query),
+        )
+        if block
+    )
+
     if image_blocks:
-        return [{"type": "text", "text": base_query}, *image_blocks], files, doc_sources
-    return base_query, files, doc_sources
+        return [{"type": "text", "text": text}, *image_blocks], files, doc_sources
+    return text, files, doc_sources
 
 
 def _normalize_stream_item(item: Any) -> tuple[str | None, Any]:
@@ -313,6 +347,9 @@ async def _stream_agent(
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
     *,
+    user_memory: str = "",
+    follow_up_content: str | None = None,
+    skill: str | None = None,
     turn: int | None = None,
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
@@ -346,7 +383,14 @@ async def _stream_agent(
         # core/database/checkpointer.py) — nothing in the graph itself reads it.
         config = {"configurable": {"thread_id": thread_id, "turn": turn}}
         content, doc_files, doc_sources = await asyncio.to_thread(
-            build_message_content, query, personalization, attached_file_ids, thread_id
+            build_message_content,
+            query,
+            personalization,
+            attached_file_ids,
+            thread_id,
+            user_memory=user_memory,
+            follow_up_content=follow_up_content,
+            skill=skill,
         )
         # Both profiles are deep agents with a StateBackend: hand them the skill
         # files (so SkillsMiddleware can surface/read them) plus any uploaded
@@ -520,6 +564,9 @@ async def run_agent_stream(
     mode: str = "fast",
     personalization: str = "",
     attached_file_ids: list[dict[str, str]] | None = None,
+    user_memory: str = "",
+    follow_up_content: str | None = None,
+    skill: str | None = None,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
     turn: int | None = None,
@@ -556,6 +603,9 @@ async def run_agent_stream(
         try:
             async for event in _stream_agent(
                 query, thread_id, mode, personalization, attached_file_ids,
+                user_memory=user_memory,
+                follow_up_content=follow_up_content,
+                skill=skill,
                 turn=turn,
                 rewind_config=rewind_config,
                 extra_sources=extra_sources,

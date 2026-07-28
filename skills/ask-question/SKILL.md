@@ -184,7 +184,7 @@ genuine survey/clarification question.
 
 ## When to use
 
-- **Before deep research or trip planning**: gather all necessary inputs in one
+- **Before web research or trip planning**: gather all necessary inputs in one
   round — ask all your clarifying questions together rather than one per turn.
 - **Personalizing recommendations**: when the right answer depends on the
   user's situation (budget, location, use case).
