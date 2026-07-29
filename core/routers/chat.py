@@ -119,6 +119,10 @@ async def _generate_background(
     sources: list[dict] = []
     artifacts: list[dict] = []
     widgets: list[dict] = []
+    # Set the moment an `error` SSE event streams through. Used below to
+    # decide what this fallback path persists — see the "safety cutoff"
+    # block right after the streaming loop.
+    error_info: dict | None = None
 
     batch: list[str] = []
     last_flush = time.monotonic()
@@ -188,6 +192,12 @@ async def _generate_background(
                 })
             elif ev_type == "widget":
                 widgets.append({"widget": ev.get("widget"), "data": ev.get("data")})
+            elif ev_type == "error":
+                error_info = {
+                    "code": ev.get("code"),
+                    "message": ev.get("message"),
+                    "requestId": ev.get("request_id"),
+                }
 
             batch.append(event_str)
             batch_size, batch_timeout = (
@@ -204,6 +214,22 @@ async def _generate_background(
 
         await _flush()  # drain any remaining buffered events
 
+        # A safety cutoff (prompt-leakage guard or harmful-query gate) means
+        # whatever streamed before the cutoff — answer text, reasoning, tool
+        # steps, sources — is exactly what tripped the guard or led up to it.
+        # Discard all of it here too, not just in the frontend: this is the
+        # fallback persistence path below, and without this it would happily
+        # write the leaked text straight into Postgres. `error_info` is kept
+        # so the persisted turn still shows the same "conversation ended for
+        # safety" state on reload instead of just silently vanishing.
+        is_safety_cutoff = bool(error_info) and error_info.get("code") == "safety_terminated"
+        if is_safety_cutoff:
+            text = ""
+            steps = []
+            sources = []
+            artifacts = []
+            widgets = []
+
         # Shrink TTL now that generation is complete.
         await stream_expire(thread_id)
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
@@ -217,15 +243,21 @@ async def _generate_background(
         # event via POST /sync. Writing here unconditionally races that sync and
         # produces a duplicate assistant message. So we wait a short grace period
         # for the client to sync, then write only if it didn't (e.g. tab closed).
-        if thread_id and text:
+        # A safety cutoff still needs to persist (`text` is now "") so the fallback
+        # doesn't just drop that turn and reload doesn't show a confusing gap.
+        if thread_id and (text or error_info):
             await asyncio.sleep(PERSIST_GRACE_SECONDS)
             existing = await asyncio.to_thread(get_thread_messages, thread_id, user_id) or []
-            # Skip if the client already synced this turn (its text is present),
-            # which also guards against a stale fallback after a rapid next turn.
+            # Skip if the client already synced this turn, which also guards
+            # against a stale fallback after a rapid next turn. Content alone
+            # is ambiguous once a safety cutoff blanks it to "" (any other
+            # blanked turn would collide), so also require the error code to
+            # match in that case.
             already_synced = any(
                 isinstance(m, dict)
                 and m.get("role") == "assistant"
                 and m.get("content") == text
+                and (not error_info or (m.get("error") or {}).get("code") == error_info.get("code"))
                 for m in existing
             )
             if not already_synced:
@@ -235,14 +267,17 @@ async def _generate_background(
                 # before that early sync landed).
                 if not (msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user"):
                     msgs.append({"role": "user", "content": query})
-                msgs.append({
+                assistant_msg = {
                     "role": "assistant",
                     "content": text,
                     "steps": steps,
                     "sources": sources,
                     "artifacts": artifacts,
                     "widgets": widgets,
-                })
+                }
+                if error_info:
+                    assistant_msg["error"] = error_info
+                msgs.append(assistant_msg)
                 await asyncio.to_thread(
                     upsert_thread_messages, thread_id, user_id, msgs,
                 )
