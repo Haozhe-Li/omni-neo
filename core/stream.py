@@ -73,6 +73,54 @@ CITATION_NORM = os.getenv("CITATION_NORM", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
 
+# Dev/QA hook: a leading `@test:<code>` query short-circuits straight to the
+# matching `error` SSE event, skipping the agent entirely — lets the frontend
+# error-banner UI (see omni-neo-frontend's chat-view.tsx) be exercised on demand
+# without having to actually provoke the harmful-query gate or the prompt-leak
+# guard. Off unless ENABLE_ERROR_TEST_COMMANDS is set, so it never ships live
+# for real users by accident — same on/off-by-default pattern as CITATION_NORM
+# above. Deliberately does NOT test the *detection* logic (has_prompt_leakage
+# already has its own standalone test coverage) — this only tests the plumbing
+# from SSE event to rendered banner.
+ENABLE_ERROR_TEST_COMMANDS = os.getenv("ENABLE_ERROR_TEST_COMMANDS", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
+_TEST_COMMAND_RE = re.compile(r"^@test:\s*(.+?)\s*$", re.IGNORECASE)
+
+# Aliases map onto the closed `ErrorCode` vocabulary (core/utils/errors.py) —
+# several spellings per code so `@test: prompt leak`, `@test:prompt-leak`, and
+# `@test:safety_terminated` all resolve the same way. The numeric aliases
+# (400/500/204) are for anyone reaching for the HTTP intuition ("client-ish"
+# vs "server-ish" vs "empty") even though this channel isn't HTTP-status-coded.
+_TEST_ERROR_ALIASES: dict[str, ErrorCode] = {
+    "safety_terminated": ErrorCode.SAFETY_TERMINATED,
+    "safety": ErrorCode.SAFETY_TERMINATED,
+    "leak": ErrorCode.SAFETY_TERMINATED,
+    "prompt_leak": ErrorCode.SAFETY_TERMINATED,
+    "harmful": ErrorCode.SAFETY_TERMINATED,
+    "harmful_query": ErrorCode.SAFETY_TERMINATED,
+    "400": ErrorCode.SAFETY_TERMINATED,
+    "generation_failed": ErrorCode.GENERATION_FAILED,
+    "fail": ErrorCode.GENERATION_FAILED,
+    "error": ErrorCode.GENERATION_FAILED,
+    "500": ErrorCode.GENERATION_FAILED,
+    "no_output": ErrorCode.NO_OUTPUT,
+    "empty": ErrorCode.NO_OUTPUT,
+    "204": ErrorCode.NO_OUTPUT,
+}
+
+
+def _match_test_error_command(query: str) -> ErrorCode | None:
+    if not ENABLE_ERROR_TEST_COMMANDS:
+        return None
+    m = _TEST_COMMAND_RE.match(query.strip())
+    if not m:
+        return None
+    key = re.sub(r"[\s-]+", "_", m.group(1).strip().lower())
+    return _TEST_ERROR_ALIASES.get(key)
+
+
 # Held back at the end of the buffer so a marker never leaks to the frontend
 # half-written or in the wrong position:
 #  - an unclosed opener, e.g. "...as reported" + "[1" — the close might be in
@@ -622,6 +670,11 @@ async def run_agent_stream(
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
+    test_code = _match_test_error_command(query)
+    if test_code is not None:
+        yield _sse(error_payload(test_code, detail=f"test_command:{query.strip()}"))
+        return
+
     if await is_harmful(query):
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
