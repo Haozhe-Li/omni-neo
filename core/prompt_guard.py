@@ -30,6 +30,25 @@ Known limitation, by design: a paraphrased or translated leak shares no
 surface n-grams and will not fire. This guard's job is to make the cheap
 attack (verbatim dump) fail loudly and observably — the durable defense
 remains keeping real secrets out of the prompt entirely.
+
+Fingerprinting alone has a second, separate blind spot: it can only match
+text that was registered ahead of time via `register_sensitive_prompts`
+(the static FAST_PROMPT/PRO_PROMPT/_SCHEDULED_PROMPT strings). It has no way
+to catch a model reciting `<personalization>`/`<user_memory>` — per-request
+context built fresh for every turn in `build_message_content`
+(core/stream.py), never a fixed string to fingerprint — or the raw
+provider/chat-template scaffolding (e.g. gpt-oss's Harmony format headers)
+that Omni's own code never constructs as a literal string in the first
+place. `_STRUCTURAL_LEAK_PATTERNS` below covers that gap with a small,
+separately-justified set of exact markers rather than vocabulary: the
+`_tagged_block` wrapper tags the system prompt already explicitly forbids
+ever appearing in output ("Never mention these tags, quote them back, or
+restate their contents" — see core/stream.py), plus a couple of gpt-oss/
+Harmony template tokens/phrases with no legitimate reason to appear in a
+rendered answer either. Unlike the old keyword layer, none of these are
+ordinary words — each one is either an app-owned literal constant or a
+provider special token, so the false-positive risk is the same as matching
+on a UUID: essentially zero.
 """
 
 import logging
@@ -50,6 +69,30 @@ _ZERO_WIDTH_RE = re.compile(r"[​-‏⁠﻿]")
 # a single unsplittable token, so it can never form an n-gram at all.
 _CJK_RE = re.compile(r"([㐀-鿿豈-﫿])")
 _TOKEN_RE = re.compile(r"\w+")
+
+# See the module docstring's "Fingerprinting alone has a second, separate
+# blind spot" paragraph. Checked verbatim (no tokenization/normalization —
+# these are exact app/template strings, not prose) before the n-gram signals,
+# so they fire even on a window too short for the fingerprint check to run at
+# all (a bare `<user_memory>` is well under `containment_min_tokens`).
+_STRUCTURAL_LEAK_PATTERNS = [
+    # `_tagged_block`'s wrapper tags (core/stream.py) — the system prompt's
+    # Input Format section explicitly forbids the model from ever mentioning,
+    # quoting, or restating these, so any appearance — with or without the
+    # per-request content inside — is itself conclusive, independent of what
+    # that content is.
+    re.compile(
+        r"</?(?:personalization|user_memory|attached_files|requested_skill|follow_up_selection|user_query)>",
+        re.IGNORECASE,
+    ),
+    # gpt-oss / Harmony response-format special tokens and the fixed
+    # boilerplate phrase from its system-message header. This belongs to the
+    # chat template the model ships with, not anything Omni's code authors —
+    # there is no source string to fingerprint it against — but it never has
+    # a legitimate reason to reach a rendered answer either.
+    re.compile(r"<\|(?:start|end|message|channel|constrain)\|>"),
+    re.compile(r"Valid channels:\s*analysis,\s*commentary,\s*final", re.IGNORECASE),
+]
 
 
 def _tokenize(text: str) -> list[str]:
@@ -103,13 +146,23 @@ class PromptLeakGuard:
     def detect(self, text: str) -> tuple[bool, str, float]:
         """Return (leaking, reason, score).
 
-        reason is one of "empty", "too_short", "verbatim_run",
-        "dense_overlap", "clean". score is the longest shared token run for
-        "verbatim_run"/"clean", or the n-gram containment ratio for
+        reason is one of "empty", "structural_marker", "too_short",
+        "verbatim_run", "dense_overlap", "clean". score is 1.0 for
+        "structural_marker" (binary — there's no "how leaked" scale for a
+        tag that should never appear at all), the longest shared token run
+        for "verbatim_run"/"clean", or the n-gram containment ratio for
         "dense_overlap".
         """
         if not text or not isinstance(text, str):
             return False, "empty", 0.0
+
+        sample = text.strip()
+        if not sample:
+            return False, "empty", 0.0
+
+        if any(p.search(sample) for p in _STRUCTURAL_LEAK_PATTERNS):
+            return True, "structural_marker", 1.0
+
         if not self._ngrams:
             return False, "empty", 0.0
 
