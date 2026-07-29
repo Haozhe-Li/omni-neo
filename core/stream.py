@@ -42,7 +42,7 @@ from langsmith import tracing_context
 from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
-from core.prompt_guard import is_harmful
+from core.prompt_guard import is_harmful, has_prompt_leakage
 from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
@@ -129,6 +129,18 @@ def _normalize_citations(text: str) -> str:
     return _CITE_CLUSTER_RE.sub(_merge_citation_cluster, text)
 
 _REFUSAL = "I’m sorry, but I can’t help with that."
+
+# System-prompt / instruction leakage: distinct fallback from `_REFUSAL` above
+# so the two failure modes (harmful query vs. the model dumping its own
+# instructions mid-answer) read differently if a user reports one.
+_LEAK_REFUSAL = "I’m sorry, but I can’t share that."
+
+# Trailing-window size (characters) fed to `has_prompt_leakage` on every
+# streamed chunk. Checking the whole answer-so-far on every token would make
+# the guard's cost grow with response length; a bounded trailing window keeps
+# it O(1) per chunk while staying comfortably larger than the keyword/n-gram
+# matches PromptLeakageGuard looks for.
+_LEAK_CHECK_WINDOW = 800
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -417,6 +429,19 @@ async def _stream_agent(
     produced_text = False
     pending_text = ""  # holds back a trailing unclosed "[n" citation marker
 
+    # Rolling trailing-window buffers fed to `has_prompt_leakage` — kept
+    # separate for text vs. reasoning since they're independent streams that
+    # can each leak the system prompt on their own.
+    text_leak_buffer = ""
+    reasoning_leak_buffer = ""
+
+    def _leak_intercept_events():
+        """SSE events substituted for the rest of the answer once a streamed
+        chunk trips the prompt-leakage guard — text and reasoning share this
+        so either surface cuts the turn the same way."""
+        yield _sse({"type": "text", "content": _LEAK_REFUSAL})
+        yield _sse({"type": "done", "sources": all_sources, "artifacts": artifact_ids})
+
     # Documents never go through a tool call, so they never hit the
     # ToolMessage-sourced citation path below — surface them the same way
     # tool-fetched sources are: dedup, accumulate, and push an SSE event now.
@@ -457,6 +482,11 @@ async def _stream_agent(
                                 yield _sse({"type": "drafting", "tool": name})
                     reasoning = _reasoning_of(chunk)
                     if reasoning:
+                        reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
+                        if has_prompt_leakage(reasoning_leak_buffer):
+                            for ev in _leak_intercept_events():
+                                yield ev
+                            return
                         yield _sse({"type": "reasoning", "content": reasoning})
                     text = _text_of(chunk.content)
                     if text:
@@ -469,6 +499,11 @@ async def _stream_agent(
                             else (pending_text, "")
                         )
                         if safe:
+                            text_leak_buffer = (text_leak_buffer + safe)[-_LEAK_CHECK_WINDOW:]
+                            if has_prompt_leakage(text_leak_buffer):
+                                for ev in _leak_intercept_events():
+                                    yield ev
+                                return
                             yield _sse({"type": "text", "content": _normalize_citations(safe)})
                 continue
 
@@ -544,6 +579,11 @@ async def _stream_agent(
                             yield _sse({"type": "sources", "sources": new_sources})
 
         if pending_text:
+            text_leak_buffer = (text_leak_buffer + pending_text)[-_LEAK_CHECK_WINDOW:]
+            if has_prompt_leakage(text_leak_buffer):
+                for ev in _leak_intercept_events():
+                    yield ev
+                return
             yield _sse({"type": "text", "content": _normalize_citations(pending_text)})
 
         if not produced_text and not artifact_ids:
