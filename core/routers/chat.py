@@ -30,6 +30,7 @@ from core.redis_stream import (
 from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest
 from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry_async
+from core.utils.errors import ErrorCode, error_payload
 from core.utils.utils import format_personalization, format_user_memory
 from core.auth import get_current_user
 from core.database.db_user_threads import (
@@ -255,7 +256,7 @@ async def _generate_background(
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        error_event = f'data: {json.dumps({"type": "error", "content": str(exc)})}\n\n'
+        error_event = f'data: {json.dumps(error_payload(ErrorCode.GENERATION_FAILED, detail=str(exc)))}\n\n'
         batch.append(error_event)
         await _flush()
         await stream_set_status(thread_id, "error", STREAM_TTL_DONE)
