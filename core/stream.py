@@ -21,7 +21,14 @@ Wire protocol (one JSON object per `data:` line):
     text      {type, content}                           – streamed answer token(s)
     artifact  {type, id, title, kind, spec}             – chart for the side panel
     done      {type, sources, artifacts}                – terminal summary
-    error     {type, content}
+    error     {type, code, message, request_id}         – see core/utils/errors.py.
+                                                            `code` is a closed
+                                                            enum the frontend
+                                                            switches on; `message`
+                                                            is display copy;
+                                                            `request_id` is for
+                                                            correlating a user
+                                                            report to server logs.
 
 Reports are NOT a distinct event: the agent writes them inline as a
 `<report>…</report>` block within the normal `text` stream (just like charts are
@@ -42,8 +49,9 @@ from langsmith import tracing_context
 from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
-from core.prompt_guard import is_harmful
+from core.prompt_guard import is_harmful, has_prompt_leakage
 from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
+from core.utils.errors import ErrorCode, error_payload
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -128,7 +136,13 @@ def _normalize_citations(text: str) -> str:
         return text
     return _CITE_CLUSTER_RE.sub(_merge_citation_cluster, text)
 
-_REFUSAL = "I’m sorry, but I can’t help with that."
+
+# Trailing-window size (characters) fed to `has_prompt_leakage` on every
+# streamed chunk. Checking the whole answer-so-far on every token would make
+# the guard's cost grow with response length; a bounded trailing window keeps
+# it O(1) per chunk while staying comfortably larger than the n-gram runs
+# PromptLeakGuard looks for.
+_LEAK_CHECK_WINDOW = 800
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -417,6 +431,24 @@ async def _stream_agent(
     produced_text = False
     pending_text = ""  # holds back a trailing unclosed "[n" citation marker
 
+    # Rolling trailing-window buffers fed to `has_prompt_leakage` — kept
+    # separate for text vs. reasoning since they're independent streams that
+    # can each leak the system prompt on their own.
+    text_leak_buffer = ""
+    reasoning_leak_buffer = ""
+
+    def _leak_intercept_events():
+        """SSE events substituted for the rest of the answer once a streamed
+        chunk trips the prompt-leakage guard — text and reasoning share this
+        so either surface cuts the turn the same way.
+
+        Sends a structured `error` event (SAFETY_TERMINATED), not a fake
+        assistant reply — the frontend renders this as an explicit
+        conversation-ending state rather than a normal answer bubble.
+        """
+        yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="prompt_leakage"))
+        yield _sse({"type": "done", "sources": all_sources, "artifacts": artifact_ids})
+
     # Documents never go through a tool call, so they never hit the
     # ToolMessage-sourced citation path below — surface them the same way
     # tool-fetched sources are: dedup, accumulate, and push an SSE event now.
@@ -457,6 +489,11 @@ async def _stream_agent(
                                 yield _sse({"type": "drafting", "tool": name})
                     reasoning = _reasoning_of(chunk)
                     if reasoning:
+                        reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
+                        if has_prompt_leakage(reasoning_leak_buffer):
+                            for ev in _leak_intercept_events():
+                                yield ev
+                            return
                         yield _sse({"type": "reasoning", "content": reasoning})
                     text = _text_of(chunk.content)
                     if text:
@@ -469,6 +506,11 @@ async def _stream_agent(
                             else (pending_text, "")
                         )
                         if safe:
+                            text_leak_buffer = (text_leak_buffer + safe)[-_LEAK_CHECK_WINDOW:]
+                            if has_prompt_leakage(text_leak_buffer):
+                                for ev in _leak_intercept_events():
+                                    yield ev
+                                return
                             yield _sse({"type": "text", "content": _normalize_citations(safe)})
                 continue
 
@@ -544,10 +586,15 @@ async def _stream_agent(
                             yield _sse({"type": "sources", "sources": new_sources})
 
         if pending_text:
+            text_leak_buffer = (text_leak_buffer + pending_text)[-_LEAK_CHECK_WINDOW:]
+            if has_prompt_leakage(text_leak_buffer):
+                for ev in _leak_intercept_events():
+                    yield ev
+                return
             yield _sse({"type": "text", "content": _normalize_citations(pending_text)})
 
         if not produced_text and not artifact_ids:
-            yield _sse({"type": "error", "content": "The agent produced no output."})
+            yield _sse(error_payload(ErrorCode.NO_OUTPUT))
 
         yield _sse(
             {
@@ -576,7 +623,7 @@ async def run_agent_stream(
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
     if await is_harmful(query):
-        yield _sse({"type": "error", "content": _REFUSAL})
+        yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=200)
@@ -616,7 +663,7 @@ async def run_agent_stream(
             import traceback
 
             traceback.print_exc()
-            await queue.put(_sse({"type": "error", "content": str(exc)}))
+            await queue.put(_sse(error_payload(ErrorCode.GENERATION_FAILED, detail=str(exc))))
         finally:
             await queue.put(_DONE)
 
