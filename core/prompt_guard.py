@@ -94,12 +94,23 @@ _STRUCTURAL_LEAK_PATTERNS = [
     re.compile(r"Valid channels:\s*analysis,\s*commentary,\s*final", re.IGNORECASE),
 ]
 
-# Cap on how much of the query `is_harmful` actually sends to the classifier
-# LLM — bounds worst-case latency/cost on a pathologically large paste. See
-# `is_harmful`'s docstring-equivalent comment: this replaced a `len(query) >
-# 50: return False` gate that skipped the classifier outright for any query
-# over one short sentence, which in practice meant almost every real query.
-_HARMFUL_CHECK_MAX_CHARS = 4000
+# Cap on how much of the query `is_harmful` actually sends to the classifier.
+# `prompt_guard_llm` (core/llm.py) is Prompt Guard 2 86M, not a general chat
+# LLM — it has a real 512-token context window, not just a soft cost/latency
+# concern to bound. Character-count is only an approximation of token count,
+# and it's an unreliable one for CJK text specifically: Llama-family
+# tokenizers cover Chinese/Japanese/Korean poorly and fall back to multi-
+# token-per-character byte encoding for less-common code points, so a
+# Chinese-heavy query can run MORE tokens than characters — the opposite of
+# English's ~4 chars/token. So this assumes a worst-case ~1 char/token
+# (rather than the friendlier ratio that holds for English) and leaves
+# headroom under 512 for Groq's chat-template wrapping around the classified
+# text. Cheap to keep conservative: harmful intent is front-loaded in
+# practice (this replaced a `len(query) > 50: return False` gate that
+# disabled the classifier outright for almost every real query — see
+# is_harmful's own comment), so truncating this early loses essentially no
+# detection power.
+_HARMFUL_CHECK_MAX_CHARS = 450
 
 
 def _tokenize(text: str) -> list[str]:
@@ -259,16 +270,17 @@ def sanitize_output_text(
 async def is_harmful(query: str) -> bool:
     if not query or not query.strip():
         return False
-    # Bound worst-case latency/cost on a pathologically large paste — TRUNCATE
-    # rather than skip. This used to be `if len(query) > 50: return False`,
-    # which didn't bound cost so much as disable the classifier outright:
-    # 50 characters is barely one short sentence, so any realistic query —
-    # and virtually every real prompt-injection attempt, which tend to run
-    # a full paragraph ("Faithfully reproduce all the text preceding this
+    # TRUNCATE to _HARMFUL_CHECK_MAX_CHARS (see its own comment for the real
+    # constraint this respects: the classifier's 512-token window) rather
+    # than skip. This used to be `if len(query) > 50: return False`, which
+    # didn't bound cost so much as disable the classifier outright: 50
+    # characters is barely one short sentence, so any realistic query — and
+    # virtually every real prompt-injection attempt, which tend to run a
+    # full paragraph ("Faithfully reproduce all the text preceding this
     # sentence...") — sailed through with `prompt_guard_llm.ainvoke` never
     # even called (hence no LangSmith trace for it either). Harmful intent
-    # is front-loaded in practice, so the first few thousand characters
-    # carry the classification signal even for a much longer query.
+    # is front-loaded in practice, so truncating still carries the
+    # classification signal even for a much longer query.
     sample = query[:_HARMFUL_CHECK_MAX_CHARS]
     try:
         messages = [
