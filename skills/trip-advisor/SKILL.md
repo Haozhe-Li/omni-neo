@@ -124,7 +124,7 @@ tip or the best part of the itinerary. Then stop — no further tool calls.
 
 ## Budget
 
-- **Sources**: 10–20 total across the whole trip. More is expected than deep-research
+- **Sources**: 10–20 total across the whole trip. More is expected than web-research
   given the number of research domains.
 - **Hard stop**: if approaching the tool-call limit, skip remaining research
   items and write the report with what you have — an honest partial plan beats

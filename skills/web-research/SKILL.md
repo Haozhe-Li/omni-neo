@@ -1,9 +1,9 @@
 ---
-name: deep-research
+name: web-research
 description: Use for deep, multi-faceted research requests — when the user asks to "research", "deeply analyze", "investigate", compare many options, or wants a comprehensive overview of a topic. Runs a plan → gather → synthesize → report workflow. Do NOT use for quick factual lookups.
 ---
 
-# Deep Research
+# Web Research
 
 ## Step 0 — Clarify
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessage
 
-from core.agent import get_agent
+from core.agent import get_agent, resolve_skill_name
 from core.stream import run_agent_stream, build_message_content
 import core.database.checkpointer as checkpointer_module
 from core.database.checkpointer import (
@@ -30,7 +30,7 @@ from core.redis_stream import (
 from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest
 from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry_async
-from core.utils.utils import format_personalization, append_memory_context
+from core.utils.utils import format_personalization, format_user_memory
 from core.auth import get_current_user
 from core.database.db_user_threads import (
     get_thread_messages,
@@ -97,6 +97,9 @@ async def _generate_background(
     turn: int | None,
     cancel_event: asyncio.Event | None,
     memory_enabled: bool = False,
+    user_memory: str = "",
+    follow_up_content: str | None = None,
+    skill: str | None = None,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
     # Structured timing for the generation task: how long until the first event
@@ -133,6 +136,9 @@ async def _generate_background(
             mode=mode,
             personalization=personalization,
             attached_file_ids=attached_file_ids,
+            user_memory=user_memory,
+            follow_up_content=follow_up_content,
+            skill=skill,
             user_location=user_location,
             user_local_datetime=user_local_datetime,
             turn=turn,
@@ -355,15 +361,15 @@ async def chat(
         loop = asyncio.get_event_loop()
         loop.run_in_executor(db_executor, touch_thread, thread_id, user_id)
 
+    # The follow-up selection and the requested skill are no longer glued onto
+    # the query string: `build_message_content` gives each its own block so the
+    # model can tell the user's actual question apart from the context around
+    # it (see the prompt's "Input Format" section).
     query_text = request.query
-    if request.follow_up_content:
-        query_text += f"\n\nFollow up text selection: {request.follow_up_content}"
-    if request.skill:
-        query_text += f"\n\nUser explicitly asked for the '{request.skill}' skill. Please first activate this skill."
+    requested_skill = resolve_skill_name(request.skill)
 
     personalization_str = format_personalization(request.personalization)
-    if memory_enabled:
-        personalization_str = append_memory_context(personalization_str, stored_memory)
+    user_memory_str = format_user_memory(stored_memory) if memory_enabled else ""
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
     if thread_id:
@@ -383,6 +389,9 @@ async def chat(
                 mode=request.mode,
                 personalization=personalization_str,
                 attached_file_ids=request.attached_file_ids,
+                user_memory=user_memory_str,
+                follow_up_content=request.follow_up_content,
+                skill=requested_skill,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=request.turn,
@@ -410,6 +419,9 @@ async def chat(
                 mode=request.mode,
                 personalization=personalization_str,
                 attached_file_ids=request.attached_file_ids,
+                user_memory=user_memory_str,
+                follow_up_content=request.follow_up_content,
+                skill=requested_skill,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=request.turn,
@@ -596,12 +608,21 @@ async def api_rewind_thread(
     if target is None:
         raise HTTPException(status_code=404, detail="No rewindable checkpoint found.")
 
+    # Resolved up front: an edited message is rebuilt through
+    # build_message_content below and must carry the same context blocks a
+    # fresh turn would, memory included.
+    p = body.personalization
+    personalization_str = format_personalization(p)
+    user_memory_str = ""
+    if p and p.memory_enabled:
+        stored_memory = await asyncio.to_thread(get_user_memory, user_id)
+        user_memory_str = format_user_memory(stored_memory)
+
     doc_sources: list[dict] = []
     last_human = target.values["messages"][-1]
     doc_files: dict | None = None
     if body.new_query is not None:
         # Edit mode: replace the last HumanMessage's content.
-        personalization_str = format_personalization(body.personalization)
         # build_message_content assigns a citation number to any newly-attached
         # document via register_document_citation, which needs the thread/turn
         # context this sets up — same ordering requirement as in _stream_agent.
@@ -609,6 +630,7 @@ async def api_rewind_thread(
         new_content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             body.new_query, personalization_str, body.attached_file_ids, thread_id,
+            user_memory=user_memory_str,
         )
     else:
         # Regenerate mode: same content, unchanged.
@@ -627,11 +649,6 @@ async def api_rewind_thread(
     rewind_config = await agent.aupdate_state(target.config, state_update)
     rewind_config = await _strip_trailing_messages(agent, rewind_config, updated_msg.id)
 
-    p = body.personalization
-    personalization_str = format_personalization(p)
-    if p and p.memory_enabled:
-        stored_memory = await asyncio.to_thread(get_user_memory, user_id)
-        personalization_str = append_memory_context(personalization_str, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
     cancel_event = asyncio.Event()
     cancellation_events[thread_id] = cancel_event
