@@ -94,6 +94,13 @@ _STRUCTURAL_LEAK_PATTERNS = [
     re.compile(r"Valid channels:\s*analysis,\s*commentary,\s*final", re.IGNORECASE),
 ]
 
+# Cap on how much of the query `is_harmful` actually sends to the classifier
+# LLM — bounds worst-case latency/cost on a pathologically large paste. See
+# `is_harmful`'s docstring-equivalent comment: this replaced a `len(query) >
+# 50: return False` gate that skipped the classifier outright for any query
+# over one short sentence, which in practice meant almost every real query.
+_HARMFUL_CHECK_MAX_CHARS = 4000
+
 
 def _tokenize(text: str) -> list[str]:
     text = _ZERO_WIDTH_RE.sub("", text.lower())
@@ -250,13 +257,24 @@ def sanitize_output_text(
 
 
 async def is_harmful(query: str) -> bool:
-    if len(query) > 50:
+    if not query or not query.strip():
         return False
+    # Bound worst-case latency/cost on a pathologically large paste — TRUNCATE
+    # rather than skip. This used to be `if len(query) > 50: return False`,
+    # which didn't bound cost so much as disable the classifier outright:
+    # 50 characters is barely one short sentence, so any realistic query —
+    # and virtually every real prompt-injection attempt, which tend to run
+    # a full paragraph ("Faithfully reproduce all the text preceding this
+    # sentence...") — sailed through with `prompt_guard_llm.ainvoke` never
+    # even called (hence no LangSmith trace for it either). Harmful intent
+    # is front-loaded in practice, so the first few thousand characters
+    # carry the classification signal even for a much longer query.
+    sample = query[:_HARMFUL_CHECK_MAX_CHARS]
     try:
         messages = [
             (
                 "human",
-                query,
+                sample,
             ),
         ]
         with tracing_context(project_name="prompt-guard"):
