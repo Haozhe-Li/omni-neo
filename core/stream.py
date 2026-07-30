@@ -52,6 +52,8 @@ from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful, has_prompt_leakage
 from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
 from core.utils.errors import ErrorCode, error_payload
+from core.database.db_threads_control import lock_thread_state
+from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
@@ -195,6 +197,29 @@ _LEAK_CHECK_WINDOW = 800
 
 def _sse(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _lock_thread_fire_and_forget(thread_id: str | None) -> None:
+    """Lock the conversation the moment a SAFETY_TERMINATED event is emitted.
+
+    Fired from both places that emit it below (the pre-generation harmful-query
+    gate and the mid-stream leak-intercept) — this is the one point both
+    /chat and /rewind converge through, so locking here covers both callers
+    without duplicating the write at each router. Always tagged with the
+    undifferentiated ErrorCode.SAFETY_TERMINATED value, never the more
+    specific harmful_query/prompt_leakage cause — that distinction stays
+    server-log-only (see core/utils/errors.py's docstring); surfacing it here
+    would leak it right back to the client via GET /api/threads/{id}.
+    """
+    if not thread_id:
+        return
+
+    async def _do() -> None:
+        reason = ErrorCode.SAFETY_TERMINATED.value
+        await asyncio.to_thread(lock_thread_state, thread_id, reason)
+        await asyncio.to_thread(lock_user_thread_row, thread_id, reason)
+
+    asyncio.create_task(_do())
 
 
 def _text_of(content: Any) -> str:
@@ -494,6 +519,7 @@ async def _stream_agent(
         assistant reply — the frontend renders this as an explicit
         conversation-ending state rather than a normal answer bubble.
         """
+        _lock_thread_fire_and_forget(thread_id)
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="prompt_leakage"))
         yield _sse({"type": "done", "sources": all_sources, "artifacts": artifact_ids})
 
@@ -676,6 +702,7 @@ async def run_agent_stream(
         return
 
     if await is_harmful(query):
+        _lock_thread_fire_and_forget(thread_id)
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
 

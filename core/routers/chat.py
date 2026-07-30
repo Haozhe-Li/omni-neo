@@ -38,7 +38,12 @@ from core.database.db_user_threads import (
     upsert_thread_messages,
 )
 from core.database.db_user_usage import evaluate_charge_fast, commit_charge_fast, usage_snapshot_hit
-from core.database.db_threads_control import touch_thread, get_thread_owner_async, owner_cache_hit
+from core.database.db_threads_control import (
+    touch_thread,
+    get_thread_owner_async,
+    owner_cache_hit,
+    get_thread_lock_state_async,
+)
 from core.utils.timing import Timing
 from core.database.db_user_memories import get_user_memory, save_user_memory
 from core.memories_update_llm import get_update_memories
@@ -321,6 +326,17 @@ def _usage_limit_detail(user_id: str, usage: dict) -> dict:
     }
 
 
+def _thread_locked_detail(locked_reason: str | None) -> dict:
+    """The structured 403 body for a thread SAFETY_TERMINATED already locked —
+    same shape convention as _usage_limit_detail, for the frontend to switch on
+    without pattern-matching the human-readable message."""
+    return {
+        "error": "thread_locked",
+        "reason": locked_reason,
+        "message": "This conversation has been locked and can no longer be continued.",
+    }
+
+
 @router.post("/chat")
 async def chat(
     request: QueryRequest,
@@ -361,12 +377,16 @@ async def chat(
     async def _memory():
         return await asyncio.to_thread(get_user_memory, user_id) if memory_enabled else ""
 
+    async def _lock_state():
+        return await get_thread_lock_state_async(thread_id) if thread_id else (False, None)
+
     _batch_start = time.perf_counter()
-    charge_result, owner, is_generating_now, stored_memory = await asyncio.gather(
+    charge_result, owner, is_generating_now, stored_memory, (is_locked, locked_reason) = await asyncio.gather(
         t.atimed("charge", evaluate_charge_fast(user_id, request.mode)),
         t.atimed("owner", _owner()),
         t.atimed("is_generating", _generating()),
         t.atimed("memory", _memory()),
+        t.atimed("lock_state", _lock_state()),
     )
     t.record("batch", (time.perf_counter() - _batch_start) * 1000)
 
@@ -376,7 +396,9 @@ async def chat(
         t.emit(outcome="denied")
         raise HTTPException(status_code=403, detail="Thread access denied.")
     # 2. reconnect gate — a generation is already in flight: just re-attach.
-    #    No charge (already paid when it started), no new LLM run.
+    #    No charge (already paid when it started), no new LLM run. Allowed even
+    #    on a locked thread — this only reads the in-flight stream (which may
+    #    be the very turn that's about to trip the lock), not start a new one.
     if thread_id and is_generating_now:
         t.emit(outcome="reconnect")
         headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
@@ -385,7 +407,11 @@ async def chat(
             media_type="text/event-stream",
             headers=headers,
         )
-    # 3. usage gate
+    # 3. lock gate — conversation was ended for safety, no new turns.
+    if is_locked:
+        t.emit(outcome="locked")
+        raise HTTPException(status_code=403, detail=_thread_locked_detail(locked_reason))
+    # 4. usage gate
     if not charge_result["charged"]:
         t.emit(outcome="usage_limit")
         raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
@@ -620,14 +646,18 @@ async def api_rewind_thread(
     # concurrently (~1 round trip instead of 2), then commit the charge
     # fire-and-forget once both gates pass. Rewind has no reconnect path.
     _b = time.perf_counter()
-    charge_result, owner = await asyncio.gather(
+    charge_result, owner, (is_locked, locked_reason) = await asyncio.gather(
         t.atimed("charge", evaluate_charge_fast(user_id, body.mode)),
         t.atimed("owner", get_thread_owner_async(thread_id)),
+        t.atimed("lock_state", get_thread_lock_state_async(thread_id)),
     )
     t.record("batch", (time.perf_counter() - _b) * 1000)
     if owner is not None and owner != user_id:
         t.emit(outcome="denied")
         raise HTTPException(status_code=403, detail="Thread access denied.")
+    if is_locked:
+        t.emit(outcome="locked")
+        raise HTTPException(status_code=403, detail=_thread_locked_detail(locked_reason))
     if not charge_result["charged"]:
         t.emit(outcome="usage_limit")
         raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))

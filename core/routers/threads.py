@@ -8,7 +8,7 @@ from core.auth import get_current_user, get_optional_user
 from core.redis_stream import stream_is_generating, stream_get_status, stream_read
 from core.database.db_user_threads import (
     get_threads_for_user,
-    get_thread_messages,
+    get_thread_row,
     upsert_thread_messages,
     register_thread,
     update_thread_title,
@@ -104,14 +104,26 @@ def api_batch_delete_threads(
 
 @router.get("/api/threads/{thread_id}")
 async def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user)):
-    """Return the stored ui_messages for a single thread, with generation status."""
-    messages = get_thread_messages(thread_id, user_id)
-    if messages is None:
+    """Return the stored ui_messages for a single thread, with generation and
+    safety-lock status. A locked thread (SAFETY_TERMINATED tripped on some
+    turn) is still fully readable here — the frontend gates new turns off
+    `is_locked`, not the read path."""
+    row = get_thread_row(thread_id, user_id)
+    if row is None:
         raise HTTPException(
             status_code=404, detail="Thread not found or access denied."
         )
     generating = await stream_is_generating(thread_id)
-    return {"messages": messages, "is_generating": generating}
+    locked_at = row["locked_at"]
+    if hasattr(locked_at, "isoformat"):
+        locked_at = locked_at.isoformat()
+    return {
+        "messages": row["messages"],
+        "is_generating": generating,
+        "is_locked": row["is_locked"],
+        "locked_reason": row["locked_reason"],
+        "locked_at": locked_at,
+    }
 
 
 @router.get("/api/threads/{thread_id}/stream")

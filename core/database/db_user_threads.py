@@ -53,7 +53,7 @@ def get_threads_for_user(user_id: str) -> list[dict]:
     try:
         res = (
             supabase.table("user_threads")
-            .select("thread_id, title, is_pinned, updated_at")
+            .select("thread_id, title, is_pinned, is_locked, updated_at")
             .eq("user_id", user_id)
             .is_("origin", "null")
             .order("is_pinned", desc=True)
@@ -201,7 +201,7 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
     try:
         res = (
             supabase.table("user_threads")
-            .select("thread_id, title, is_pinned, updated_at, search_text")
+            .select("thread_id, title, is_pinned, is_locked, updated_at, search_text")
             .eq("user_id", user_id)
             .is_("origin", "null")
             .execute()
@@ -219,6 +219,7 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
                 "thread_id": r["thread_id"],
                 "title": r["title"],
                 "is_pinned": r["is_pinned"],
+                "is_locked": r.get("is_locked", False),
                 "updated_at": r["updated_at"],
                 "snippet": _make_snippet(r.get("search_text") or "", query),
             }
@@ -359,6 +360,58 @@ def pin_user_thread(thread_id: str, user_id: str, is_pinned: bool) -> bool:
     except Exception as e:
         logger.error(f"[db_user_threads] pin_user_thread error: {e}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Safety lock
+# ---------------------------------------------------------------------------
+
+def lock_user_thread_row(thread_id: str, reason: str) -> bool:
+    """
+    Mirror of lock_thread_state (db_threads_control) onto user_threads, so
+    GET /api/threads/{id} and the thread list can read lock state off the same
+    row as ui_messages. Not scoped to a specific user_id — this fires from a
+    background safety-cutoff path that only has the thread_id.
+    """
+    try:
+        res = (
+            supabase.table("user_threads")
+            .update({"is_locked": True, "locked_reason": reason, "locked_at": utcnow_iso()})
+            .eq("thread_id", thread_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"[db_user_threads] lock_user_thread_row error: {e}")
+        return False
+
+
+def get_thread_row(thread_id: str, user_id: str) -> dict | None:
+    """Return ui_messages + lock state for an owned thread, or None if not found."""
+    try:
+        res = (
+            supabase.table("user_threads")
+            .select("ui_messages, is_locked, locked_reason, locked_at")
+            .eq("thread_id", thread_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return None
+        row = res.data[0]
+        msgs = row["ui_messages"]
+        if isinstance(msgs, str):
+            msgs = json.loads(msgs)
+        return {
+            "messages": msgs or [],
+            "is_locked": bool(row.get("is_locked")),
+            "locked_reason": row.get("locked_reason"),
+            "locked_at": row.get("locked_at"),
+        }
+    except Exception as e:
+        logger.error(f"[db_user_threads] get_thread_row error: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

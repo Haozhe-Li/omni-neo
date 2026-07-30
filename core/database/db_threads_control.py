@@ -73,6 +73,75 @@ def owner_cache_hit(thread_id: str) -> bool:
     return _owner_cache_get(thread_id) is not None
 
 
+# ---------------------------------------------------------------------------
+# In-process lock-state cache
+# ---------------------------------------------------------------------------
+# Separate from the owner cache above: it's read on the same hot path (chat/
+# rewind, batched into the same asyncio.gather as the owner/charge/is_generating
+# reads) but locking is a distinct, much rarer write, so keeping its own small
+# cache avoids coupling the two reads' invalidation together.
+_LOCK_TTL = 30.0
+_lock_cache: dict[str, tuple[bool, str | None, float]] = {}
+_lock_lock = threading.Lock()
+
+
+def _lock_cache_get(thread_id: str) -> tuple[bool, str | None] | None:
+    ent = _lock_cache.get(thread_id)
+    if ent is not None and ent[2] > time.monotonic():
+        return (ent[0], ent[1])
+    return None
+
+
+def _lock_cache_put(thread_id: str, is_locked: bool, locked_reason: str | None) -> None:
+    with _lock_lock:
+        _lock_cache[thread_id] = (is_locked, locked_reason, time.monotonic() + _LOCK_TTL)
+
+
+def _lock_cache_invalidate(thread_id: str) -> None:
+    with _lock_lock:
+        _lock_cache.pop(thread_id, None)
+
+
+async def get_thread_lock_state_async(thread_id: str) -> tuple[bool, str | None]:
+    """Return (is_locked, locked_reason) for the hot chat/rewind path."""
+    cached = _lock_cache_get(thread_id)
+    if cached is not None:
+        return cached
+    try:
+        sb = await get_async_supabase()
+        res = (
+            await sb.table("threads_control")
+            .select("is_locked, locked_reason")
+            .eq("thread_id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        is_locked = bool(res.data[0]["is_locked"]) if res.data else False
+        locked_reason = res.data[0]["locked_reason"] if res.data else None
+        _lock_cache_put(thread_id, is_locked, locked_reason)
+        return is_locked, locked_reason
+    except Exception as e:
+        logger.error(f"[db_threads_control] get_thread_lock_state_async error: {e}")
+        return False, None
+
+
+def lock_thread_state(thread_id: str, reason: str) -> bool:
+    """Set threads_control.is_locked (idempotent — a repeat call just refreshes
+    locked_at/locked_reason). Returns True if the row was found and updated."""
+    try:
+        res = (
+            supabase.table("threads_control")
+            .update({"is_locked": True, "locked_reason": reason, "locked_at": utcnow_iso()})
+            .eq("thread_id", thread_id)
+            .execute()
+        )
+        _lock_cache_invalidate(thread_id)
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"[db_threads_control] lock_thread_state error for {thread_id}: {e}")
+        return False
+
+
 def get_thread_owner(thread_id: str) -> str | None:
     """
     Return the user_id that owns this thread.

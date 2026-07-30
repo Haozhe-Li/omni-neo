@@ -14,29 +14,52 @@
 -- threads_control: ownership + retention bookkeeping (parent of user_threads)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS threads_control (
-    thread_id  TEXT PRIMARY KEY,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    is_pinned  BOOLEAN DEFAULT FALSE,
-    user_id    VARCHAR(255)   -- NULL=unclaimed, 'guest_xxx'=guest, Clerk id=user
+    thread_id     TEXT PRIMARY KEY,
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    is_pinned     BOOLEAN DEFAULT FALSE,
+    user_id       VARCHAR(255),   -- NULL=unclaimed, 'guest_xxx'=guest, Clerk id=user
+    -- Safety lock: set once a turn on this thread trips SAFETY_TERMINATED
+    -- (core/utils/errors.py). locked_reason is always "safety_terminated" —
+    -- never the more granular harmful_query/prompt_leakage cause, which stays
+    -- server-log-only so a locked thread's own owner can't use this field to
+    -- learn which guard they tripped (see core/utils/errors.py's docstring on
+    -- why that distinction is never surfaced past the log).
+    is_locked     BOOLEAN DEFAULT FALSE,
+    locked_reason VARCHAR(50),
+    locked_at     TIMESTAMPTZ
 );
+-- Migration for the live database (the CREATE above only helps fresh deploys):
+ALTER TABLE threads_control ADD COLUMN IF NOT EXISTS is_locked     BOOLEAN DEFAULT FALSE;
+ALTER TABLE threads_control ADD COLUMN IF NOT EXISTS locked_reason VARCHAR(50);
+ALTER TABLE threads_control ADD COLUMN IF NOT EXISTS locked_at     TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
 -- user_threads: chat history + search text (child of threads_control)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS user_threads (
-    thread_id   VARCHAR(255) PRIMARY KEY,
-    user_id     VARCHAR(255) NOT NULL,
-    title       VARCHAR(255),
-    ui_messages JSONB DEFAULT '[]',
-    search_text TEXT NOT NULL DEFAULT '',
-    is_pinned   BOOLEAN DEFAULT FALSE,
-    origin      VARCHAR(20),   -- NULL=chat, 'scheduled_task'=scheduled research run
-    created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    thread_id     VARCHAR(255) PRIMARY KEY,
+    user_id       VARCHAR(255) NOT NULL,
+    title         VARCHAR(255),
+    ui_messages   JSONB DEFAULT '[]',
+    search_text   TEXT NOT NULL DEFAULT '',
+    is_pinned     BOOLEAN DEFAULT FALSE,
+    origin        VARCHAR(20),   -- NULL=chat, 'scheduled_task'=scheduled research run
+    -- Mirrors threads_control.is_locked (same is_pinned-style dual-write) so
+    -- GET /api/threads/{id} and the thread list can read lock state from the
+    -- same row as ui_messages without a second round trip.
+    is_locked     BOOLEAN DEFAULT FALSE,
+    locked_reason VARCHAR(50),
+    locked_at     TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_user_threads_thread
         FOREIGN KEY (thread_id) REFERENCES threads_control(thread_id)
 );
 CREATE INDEX IF NOT EXISTS idx_user_threads_user_id ON user_threads(user_id);
+-- Migration for the live database (the CREATE above only helps fresh deploys):
+ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS is_locked     BOOLEAN DEFAULT FALSE;
+ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS locked_reason VARCHAR(50);
+ALTER TABLE user_threads ADD COLUMN IF NOT EXISTS locked_at     TIMESTAMPTZ;
 -- Thread search runs in the app now (substring + fuzzy rank), so the old
 -- pg_trgm GIN indexes are no longer required. Kept here (commented) for
 -- reference in case server-side ranking is reintroduced:
