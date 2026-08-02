@@ -356,6 +356,18 @@ async def chat(
     thread_id = request.thread_id
     p = request.personalization
     memory_enabled = bool(p and p.memory_enabled)
+    # Memory is durable, cross-turn context: once injected into a thread's
+    # first turn, LangGraph's checkpointer keeps that whole message (memory
+    # block included) in history forever, so re-fetching and re-injecting it
+    # on every later turn is pure duplication — it only has to go in once.
+    # `request.turn` is the frontend's 1-indexed per-thread turn counter (see
+    # QueryRequest.turn); `turn is None` means a legacy client that doesn't
+    # send it, where we keep injecting every turn to stay safe. A thread-less
+    # direct-stream request has no persisted history at all, so it always
+    # needs its own copy regardless of turn.
+    should_inject_memory = memory_enabled and (
+        thread_id is None or request.turn is None or request.turn == 1
+    )
 
     # Structured timing for the non-LLM prelude (see core/utils/timing.py).
     t = Timing("chat_prelude", thread_id=thread_id, mode=request.mode,
@@ -375,7 +387,7 @@ async def chat(
         return await stream_is_generating(thread_id) if thread_id else False
 
     async def _memory():
-        return await asyncio.to_thread(get_user_memory, user_id) if memory_enabled else ""
+        return await asyncio.to_thread(get_user_memory, user_id) if should_inject_memory else ""
 
     async def _lock_state():
         return await get_thread_lock_state_async(thread_id) if thread_id else (False, None)
@@ -431,7 +443,7 @@ async def chat(
     requested_skill = resolve_skill_name(request.skill)
 
     personalization_str = format_personalization(request.personalization)
-    user_memory_str = format_user_memory(stored_memory) if memory_enabled else ""
+    user_memory_str = format_user_memory(stored_memory) if should_inject_memory else ""
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
     if thread_id:
@@ -676,11 +688,14 @@ async def api_rewind_thread(
 
     # Resolved up front: an edited message is rebuilt through
     # build_message_content below and must carry the same context blocks a
-    # fresh turn would, memory included.
+    # fresh turn would, memory included — but only on the thread's first
+    # turn, same rule as /chat: later turns already have it in history via
+    # the checkpointer, so re-injecting it on an edit further into the
+    # thread would just duplicate it.
     p = body.personalization
     personalization_str = format_personalization(p)
     user_memory_str = ""
-    if p and p.memory_enabled:
+    if p and p.memory_enabled and target_turn == 1:
         stored_memory = await asyncio.to_thread(get_user_memory, user_id)
         user_memory_str = format_user_memory(stored_memory)
 

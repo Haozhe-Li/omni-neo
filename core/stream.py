@@ -390,12 +390,24 @@ def build_message_content(
             + "\n".join(f"- {note}" for note in document_notes)
         )
 
+    # Block order is deliberate for prompt-cache prefix matching (Groq/Gemini
+    # both cache on shared prefixes, longest-common-prefix style): most stable
+    # across a user's requests first, most unique-to-this-request last, so the
+    # cache "divergence point" lands as late as possible.
+    #   user_memory        — same for ~every turn/thread of this user until
+    #                         they update it; put right after the (separately
+    #                         cached, fully static) system prompt.
+    #   personalization    — mostly stable (language/location), only its
+    #                         trailing datetime field changes every turn.
+    #   attached_files/requested_skill/follow_up_selection — per-turn, usually
+    #                         absent entirely (dropped by _tagged_block).
+    #   user_query         — always unique, must stay last.
     text = "\n\n".join(
         block
         for block in (
-            _tagged_block("attached_files", attached_files),
-            _tagged_block("personalization", personalization),
             _tagged_block("user_memory", user_memory),
+            _tagged_block("personalization", personalization),
+            _tagged_block("attached_files", attached_files),
             _tagged_block("requested_skill", skill),
             _tagged_block("follow_up_selection", follow_up_content),
             _tagged_block("user_query", query),

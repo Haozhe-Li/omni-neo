@@ -9,15 +9,23 @@ def smart_split(text):
 
 
 def format_personalization(personalization: Personalization) -> str:
+    """Format the `<personalization>` block.
+
+    Field order is deliberate for prompt-cache prefix matching (Groq/Gemini
+    both cache on shared prefixes): `response_language` and `user_location`
+    are stable across a user's requests, `user_local_datetime` changes on
+    every single turn — so the ever-changing field goes last, keeping the
+    stable fields' shared prefix intact instead of splitting it in two.
+    """
     if not personalization:
         return ""
     result = ""
     if personalization.response_language:
         result += f"Response Language: {personalization.response_language}\n"
-    if personalization.user_local_datetime:
-        result += f"User Local Date Time: {personalization.user_local_datetime}\n"
     if personalization.user_location:
         result += f"User Location: {personalization.user_location}\n"
+    if personalization.user_local_datetime:
+        result += f"User Local Date Time: {personalization.user_local_datetime}\n"
 
     return result
 
