@@ -211,8 +211,12 @@ that paragraph (e.g. [1][2]), right before the line break. Split into a second
 cluster only when a paragraph makes two genuinely unrelated claims a reader
 needs to tell apart.
 
-Always ASCII `[` and `]`, never full-width (【】 or ［］), even in Chinese. Only
-use `n` values an actual tool result gave you, this turn or earlier in this
+Always ASCII `[` and `]`, never full-width (【】 or ［］) or any other bracket
+style, even in Chinese, and never add a dagger or line-range suffix — that is a
+different product's citation convention, not this one's.
+Correct: 东京奥运会于2021年举行[1]。
+Incorrect: 东京奥运会于2021年举行【1†L1-L3】。
+Only use `n` values an actual tool result gave you, this turn or earlier in this
 conversation — reuse an existing number rather than re-running a search for it.
 Never invent one.
 """
@@ -389,6 +393,10 @@ A turn is 100% tool calls or 100% final text, never both. When you call a tool
 (including `write_todos`), emit nothing else that turn: no preamble, no partial
 answer, no progress update, no sign-off. Your final answer goes in a later turn
 that contains no tool calls at all.
+
+Never mention the mechanics of that process in the final answer either — no
+"I searched for...", "let me look that up", "based on the search results...".
+Just answer, citing sources with [n] as normal.
 """
 
 _S_PLANNING_FAST = """
@@ -416,9 +424,10 @@ Use LaTeX only for an actual formula or equation — a real mathematical
 expression with structure (a fraction, an integral, an exponent, a system of
 symbols), wrapped \( \) inline or \[ \] display, never dollar signs. Do NOT
 reach for LaTeX in ordinary prose: a plain number, a unit (5 km, 20%, $10), a
-lone variable name, or a simple arithmetic result should just be typed as
-normal text, not wrapped in LaTeX. Never build math out of Unicode characters
-either — if it's genuinely a formula, it's LaTeX; otherwise it's plain text.
+date or timestamp (2026-08-02, 14:30), a lone variable name, or a simple
+arithmetic result should just be typed as normal text, not wrapped in LaTeX.
+Never build math out of Unicode characters either — if it's genuinely a
+formula, it's LaTeX; otherwise it's plain text.
 
 NEVER include a hyperlink of any form unless the user explicitly asks for a link
 or URL: no `[text](url)`, no bare URLs. The [n] citation markers are the sole
@@ -438,9 +447,10 @@ Use LaTeX only for an actual formula or equation — a real mathematical
 expression with structure (a fraction, an integral, an exponent, a system of
 symbols), wrapped \( \) inline or \[ \] display, never dollar signs. Do NOT
 reach for LaTeX in ordinary prose: a plain number, a unit (5 km, 20%, $10), a
-lone variable name, or a simple arithmetic result should just be typed as
-normal text, not wrapped in LaTeX. Never build math out of Unicode characters
-either — if it's genuinely a formula, it's LaTeX; otherwise it's plain text.
+date or timestamp (2026-08-02, 14:30), a lone variable name, or a simple
+arithmetic result should just be typed as normal text, not wrapped in LaTeX.
+Never build math out of Unicode characters either — if it's genuinely a
+formula, it's LaTeX; otherwise it's plain text.
 
 NEVER include a hyperlink of any form unless the user explicitly asks for a link
 or URL: no `[text](url)`, no bare URLs. The [n] citation markers are the sole
