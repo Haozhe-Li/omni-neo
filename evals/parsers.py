@@ -1,0 +1,374 @@
+"""Pure text extraction — no scoring, no I/O.
+
+Everything the deterministic checks need to know about an answer is derived
+here: the `<report>` block, the ```echarts / ```map fences, the `<question>`
+block, citation markers, word counts. Kept separate from `checks.py` so the
+parsing can be unit-tested against real model output without dragging in the
+check registry.
+
+The block syntaxes mirror what the frontend actually parses (see the charting /
+mapping / report-writing / ask-question skills). Where the frontend is
+forgiving, this is too; where it is strict, so is this — the point is to fail a
+check exactly when the real UI would fail to render.
+"""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+# ── word counting ───────────────────────────────────────────────────────────
+# CJK text has no spaces, so `len(text.split())` reports a 900-character
+# Chinese report as ~3 "words" and every min_words check passes or fails at
+# random. Count CJK codepoints individually and Latin runs as words, then add.
+_CJK_RE = re.compile(
+    r"[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]"
+)
+_LATIN_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’\-]*")
+
+
+def count_words(text: str) -> int:
+    if not text:
+        return 0
+    return len(_CJK_RE.findall(text)) + len(_LATIN_WORD_RE.findall(text))
+
+
+# ── language detection ──────────────────────────────────────────────────────
+# Deliberately a character-class ratio rather than a language-ID model: the
+# only distinction that matters here is Chinese vs English, the signal is
+# unambiguous at the codepoint level, and a deterministic check must not depend
+# on a model download or a network call.
+#
+# The thresholds are wide apart on purpose, because both languages legitimately
+# borrow from the other. An English answer explaining what 你好 means still
+# quotes CJK; a Chinese answer about LangChain valuations is full of Latin
+# product names and numbers. Anything landing between the two thresholds is
+# reported as "mixed" rather than forced into a bucket — a genuinely
+# half-and-half answer is a real failure worth surfacing, not a coin flip.
+# Because CJK is counted per character while English is counted per word, real
+# Chinese prose sits far above this floor even when dense with English product
+# names and numbers (measured: ~0.7-0.9). The floor is set well clear of 0.5 so
+# that a genuinely half-and-half answer lands in the "mixed" band instead of
+# being rounded into whichever language won by a character or two.
+_ZH_FLOOR = 0.55   # at or above -> Chinese
+_EN_CEIL = 0.15    # at or below -> English
+
+
+@dataclass
+class LanguageVerdict:
+    lang: str        # zh | en | mixed | unknown
+    cjk_chars: int
+    latin_words: int
+    ratio: float
+
+    def __str__(self) -> str:
+        return f"{self.lang} (cjk={self.cjk_chars}, latin={self.latin_words}, ratio={self.ratio:.2f})"
+
+
+def detect_language(text: str) -> LanguageVerdict:
+    """Classify prose as Chinese or English by CJK share.
+
+    Fenced blocks are stripped first: an ECharts option or a ```map payload is
+    JSON with English keys regardless of what language the answer is written
+    in, and letting it count would drag every Chinese answer containing a chart
+    toward "mixed".
+    """
+    body = _strip_all_fences(text or "")
+    cjk = len(_CJK_RE.findall(body))
+    latin = len(_LATIN_WORD_RE.findall(body))
+    total = cjk + latin
+    if total < 5:
+        return LanguageVerdict("unknown", cjk, latin, 0.0)
+    ratio = cjk / total
+    if ratio >= _ZH_FLOOR:
+        lang = "zh"
+    elif ratio <= _EN_CEIL:
+        lang = "en"
+    else:
+        lang = "mixed"
+    return LanguageVerdict(lang, cjk, latin, ratio)
+
+
+# ── blocks ──────────────────────────────────────────────────────────────────
+_REPORT_RE = re.compile(
+    r"<report(?P<attrs>[^>]*)>(?P<body>.*?)</report\s*>", re.S | re.I
+)
+_REPORT_TITLE_RE = re.compile(r"""title\s*=\s*["'](?P<title>[^"']*)["']""", re.I)
+_QUESTION_RE = re.compile(r"<question\s*>(?P<body>.*?)</question\s*>", re.S | re.I)
+
+
+@dataclass
+class Report:
+    title: str | None
+    body: str
+    start: int
+    end: int
+
+    @property
+    def words(self) -> int:
+        return count_words(self.body)
+
+
+def extract_reports(text: str) -> list[Report]:
+    out = []
+    for m in _REPORT_RE.finditer(text or ""):
+        tm = _REPORT_TITLE_RE.search(m.group("attrs") or "")
+        out.append(
+            Report(
+                title=tm.group("title").strip() if tm else None,
+                body=m.group("body").strip(),
+                start=m.start(),
+                end=m.end(),
+            )
+        )
+    return out
+
+
+def extract_fences(text: str, lang: str) -> list[str]:
+    """Return the bodies of every ```<lang> fenced block.
+
+    Written as a scanner rather than one regex because charts legitimately
+    appear *inside* a report body that itself may contain other fences, and a
+    non-greedy regex across nested content picks the wrong closing fence. Also
+    tolerates the 4-backtick form the mapping skill's own docs use.
+    """
+    out: list[str] = []
+    if not text:
+        return out
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(?P<ticks>`{3,})\s*(?P<lang>[A-Za-z0-9_-]+)\s*$", lines[i])
+        if not m or m.group("lang").lower() != lang.lower():
+            i += 1
+            continue
+        ticks = m.group("ticks")
+        body: list[str] = []
+        i += 1
+        while i < len(lines) and not re.match(rf"^{ticks}\s*$", lines[i]):
+            body.append(lines[i])
+            i += 1
+        i += 1  # step over the closing fence
+        out.append("\n".join(body))
+    return out
+
+
+@dataclass
+class ParsedBlock:
+    raw: str
+    data: Any | None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def _parse_json_block(raw: str) -> ParsedBlock:
+    try:
+        return ParsedBlock(raw=raw, data=json.loads(raw))
+    except json.JSONDecodeError as e:
+        return ParsedBlock(raw=raw, data=None, error=f"invalid JSON: {e}")
+
+
+def extract_charts(text: str) -> list[ParsedBlock]:
+    return [_parse_json_block(b) for b in extract_fences(text, "echarts")]
+
+
+def extract_maps(text: str) -> list[ParsedBlock]:
+    return [_parse_json_block(b) for b in extract_fences(text, "map")]
+
+
+@dataclass
+class QuestionBlock:
+    parsed: ParsedBlock
+    is_last: bool
+    trailing: str
+
+
+def extract_question(text: str) -> QuestionBlock | None:
+    """The ask-question skill requires the block to be the last thing in the
+    message — the frontend renders it as a form and anything after it is
+    unreachable — so `is_last` is part of the parse, not a separate check."""
+    matches = list(_QUESTION_RE.finditer(text or ""))
+    if not matches:
+        return None
+    m = matches[-1]
+    trailing = (text[m.end():] or "").strip()
+    return QuestionBlock(
+        parsed=_parse_json_block(m.group("body").strip()),
+        is_last=not trailing,
+        trailing=trailing[:200],
+    )
+
+
+# ── citations ───────────────────────────────────────────────────────────────
+_CITE_RE = re.compile(r"\[(\d{1,3})\]")
+# Full-width / dagger-suffixed forms the prompt explicitly bans.
+_BAD_CITE_RE = re.compile(r"[【［]\s*\d+\s*[†‡]?[^】］]*[】］]")
+# A [n] immediately followed by a word character is mid-sentence, not the
+# end-of-paragraph cluster the prompt mandates.
+_MIDSENTENCE_CITE_RE = re.compile(
+    r"\[\d{1,3}\](?=\s*[A-Za-z0-9一-鿿])"
+)
+
+
+@dataclass
+class Citations:
+    numbers: list[int] = field(default_factory=list)
+    bad_format: list[str] = field(default_factory=list)
+    midsentence: list[str] = field(default_factory=list)
+
+    @property
+    def distinct(self) -> set[int]:
+        return set(self.numbers)
+
+
+def find_citations(text: str) -> Citations:
+    text = text or ""
+    return Citations(
+        numbers=[int(n) for n in _CITE_RE.findall(text)],
+        bad_format=_BAD_CITE_RE.findall(text)[:5],
+        midsentence=[
+            text[max(0, m.start() - 30):m.end() + 20]
+            for m in _MIDSENTENCE_CITE_RE.finditer(text)
+        ][:5],
+    )
+
+
+# ── format-compliance helpers ───────────────────────────────────────────────
+_MD_LINK_RE = re.compile(r"\[[^\]]+\]\((?:https?://|www\.)[^)]+\)")
+_BARE_URL_RE = re.compile(r"(?<![(\w/])(?:https?://|www\.)[^\s<>()\[\]]+")
+# Box-drawing, block and heavy-ASCII glyphs that only ever appear in text art.
+_ART_CHARS = set("│─┌┐└┘├┤┬┴┼║═╔╗╚╝╠╣╦╩╬▀▄█▌▐░▒▓▲▼◄►↑↓←→")
+
+
+def find_hyperlinks(text: str) -> list[str]:
+    """Markdown links and bare URLs, excluding anything inside a code fence.
+
+    Code fences are stripped first because an ```echarts option or a
+    ```map block legitimately contains URLs in its data, and a chart's JSON is
+    not prose the "no hyperlinks" rule is about.
+    """
+    stripped = _strip_all_fences(text)
+    return (_MD_LINK_RE.findall(stripped) + _BARE_URL_RE.findall(stripped))[:5]
+
+
+def find_ascii_art(text: str) -> list[str]:
+    """Fenced blocks that are drawings rather than code.
+
+    A block counts as art when box-drawing glyphs appear, or when its lines are
+    overwhelmingly made of `|`, `+`, `-` and spaces — the shape a hand-drawn
+    table or flowchart takes. Language-tagged fences we know to be data
+    (echarts / map) and real code are exempt.
+    """
+    out = []
+    for raw, lang in _iter_fences(text):
+        if lang.lower() in {"echarts", "map", "json", "python", "js", "ts", "bash", "sql"}:
+            continue
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        if any(ch in _ART_CHARS for ch in raw):
+            out.append(raw[:200])
+            continue
+        arty = sum(1 for ln in lines if re.fullmatch(r"[\s|+\-_=<>^v*.]{4,}", ln))
+        if len(lines) >= 3 and arty / len(lines) >= 0.6:
+            out.append(raw[:200])
+    return out[:3]
+
+
+_LATEX_DOLLAR_RE = re.compile(r"(?<!\\)\$\$?(?!\s)[^$\n]{1,120}?(?<!\\)\$\$?")
+# \(5\) / \(2026\) — a bare number or unit wrapped in math delimiters, which the
+# prompt calls out specifically as the wrong reflex.
+_LATEX_TRIVIAL_RE = re.compile(r"\\\(\s*[\d.,%\s]{1,12}\s*\\\)")
+
+
+def find_latex_problems(text: str) -> list[str]:
+    stripped = _strip_all_fences(text)
+    return (
+        [f"dollar-delimited: {m}" for m in _LATEX_DOLLAR_RE.findall(stripped)[:3]]
+        + [f"trivial: {m}" for m in _LATEX_TRIVIAL_RE.findall(stripped)[:3]]
+    )
+
+
+_HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+
+
+def starts_with_header(text: str) -> bool:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return bool(_HEADER_RE.match(line))
+    return False
+
+
+_RULE_RE = re.compile(r"^\s*---\s*$", re.M)
+
+
+def count_horizontal_rules(text: str) -> int:
+    return len(_RULE_RE.findall(_strip_all_fences(text or "")))
+
+
+def ends_with_question(text: str) -> bool:
+    """Last non-empty line reads as a question — the follow-up the prompt asks
+    for after a writing task. Matches both ASCII and full-width marks."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return bool(lines) and lines[-1].endswith(("?", "？"))
+
+
+# ── prose extraction ────────────────────────────────────────────────────────
+def prose_only(text: str) -> str:
+    """The answer with every structured block removed.
+
+    Word counts run on this: a `word_count max` on a chat answer is about how
+    much the model *said*, and letting a 400-line ECharts option or an embedded
+    report count toward it would make the threshold meaningless.
+    """
+    out = _REPORT_RE.sub(" ", text or "")
+    out = _QUESTION_RE.sub(" ", out)
+    return _strip_all_fences(out)
+
+
+def paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
+
+
+_FENCE_OPEN_RE = re.compile(r"^(?P<ticks>`{3,})\s*(?P<lang>[A-Za-z0-9_-]*)\s*$")
+
+
+def _iter_fences(text: str):
+    """Yield `(body, lang)` for every fenced block."""
+    lines = (text or "").splitlines()
+    i = 0
+    while i < len(lines):
+        m = _FENCE_OPEN_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        ticks, lang = m.group("ticks"), m.group("lang") or ""
+        body: list[str] = []
+        i += 1
+        while i < len(lines) and not re.match(rf"^{ticks}\s*$", lines[i]):
+            body.append(lines[i])
+            i += 1
+        i += 1
+        yield "\n".join(body), lang
+
+
+def _strip_all_fences(text: str) -> str:
+    lines = (text or "").splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        m = _FENCE_OPEN_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        ticks = m.group("ticks")
+        i += 1
+        while i < len(lines) and not re.match(rf"^{ticks}\s*$", lines[i]):
+            i += 1
+        i += 1
+    return "\n".join(out)

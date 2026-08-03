@@ -735,7 +735,17 @@ SYSTEM_PROMPTS = [FAST_PROMPT, PRO_PROMPT, _SCHEDULED_PROMPT]
 # Registering `groq` anyway means promoting a fallback to primary stays a
 # one-line change in core/llm.py instead of silently restoring deepagents'
 # `BASE_AGENT_PROMPT` and the `task` subagent.
-_HARNESS_PROVIDER_KEYS = ("cerebras", "groq", "google_genai")
+#
+# `openai` and `anthropic` are registered even though no role in core/llm.py
+# points at them today. The frontier candidates at the bottom of that module
+# exist to be benchmarked, and without a profile here deepagents falls back to
+# its defaults for them — re-adding `BASE_AGENT_PROMPT` (which tells the model
+# to be concise and to narrate progress, contradicting the pro profile's Answer
+# Depth and Tool Call Discipline sections) and re-enabling the general-purpose
+# subagent. That would make an eval of an OpenAI model a measurement of a
+# different prompt than every other model in the matrix, which is worse than
+# not measuring it at all.
+_HARNESS_PROVIDER_KEYS = ("cerebras", "groq", "google_genai", "openai", "anthropic")
 
 _harness_profiles_registered = False
 

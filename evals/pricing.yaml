@@ -1,0 +1,161 @@
+# Token pricing for the evaluation's cost calculations — hand-maintained,
+# provided by the user (2026-08-03), not scraped or inferred.
+#
+# This file is the pricing ORACLE: `evals/pricing.py` reads it directly at
+# cost-compute time, so `eval_results.cost_usd` is derived from whatever is
+# written here, not from a value baked into Python or the `eval_pricing`
+# Supabase table. The DB table is still seeded from this file (see
+# `store.upsert_pricing_from_yaml`) so the numbers are inspectable over SQL,
+# but it is a mirror, not the source — editing this file and re-running the
+# CLI is the whole update procedure.
+#
+# Keyed by `(provider, family)`, matching `evals.models.ModelSpec.family` —
+# NOT by our label. `gpt-oss-120b-low` / `-medium` / `-high` all cost the same
+# per token on Cerebras (reasoning effort changes how many tokens get
+# generated, not the $/token rate), so one price entry serves all three
+# instead of being copy-pasted per effort level.
+#
+# ── the two assumptions that make this file possible ────────────────────────
+#
+# 1. cache_hit_ratio (0.75, hardcoded): what fraction of a request's INPUT
+#    tokens are assumed to be prompt-cache hits, applied uniformly across every
+#    provider and model. This is a deliberate simplification, not a measured
+#    average — real per-request cache-hit telemetry is inconsistent across
+#    providers (Cerebras and Gemini report `cache_read` in usage_metadata,
+#    Groq reports none at all), so blending a single fixed ratio into an
+#    effective input price is the only rule that produces a comparable number
+#    for every model in the matrix. `evals/pricing.py` computes
+#    `effective_input = cache_hit_ratio * cached_input + (1 - cache_hit_ratio) * input`
+#    and bills all input tokens at that blended rate — see compute_cost().
+#
+# 2. openai_long_context_threshold_tokens (200000): OpenAI's table splits
+#    Short/Long context pricing but doesn't state the token boundary in what
+#    was provided here. 200k is this file's own assumption (a common tiering
+#    boundary), not a vendor-confirmed number — flagged so it's the first
+#    thing to check if an OpenAI cost figure looks off. Applied per RUN using
+#    `peak_context_tokens` (the largest single LLM call in that run), since the
+#    eval only records aggregate token counts, not a per-call breakdown a
+#    precise per-call tier lookup would need.
+
+# Bump this when a price changes; don't silently edit a number in place. The
+# same discipline the DB schema originally specified for `eval_pricing`
+# ("insert a new row with a higher version") applies here: `version` is
+# recorded on every `eval_runs` row as `pricing_version`, so a historical
+# run's cost stays reproducible even after this file changes.
+version: 1
+updated: "2026-08-03"
+
+assumptions:
+  cache_hit_ratio: 0.75
+  openai_long_context_threshold_tokens: 200000
+  # "Cache writes" (OpenAI's table has a 4th column, priced above the plain
+  # input rate) has no corresponding token count in the usage_metadata this
+  # harness collects — LangChain's aggregated usage doesn't surface a
+  # cache-creation count for Chat/Responses API the way it does for Anthropic.
+  # Recorded in the per-model data below for completeness / future use, but
+  # `compute_cost()` does not bill it.
+  cache_writes_modeled: false
+
+# All prices in USD per 1,000,000 tokens.
+providers:
+  cerebras:
+    # No prompt-cache discount on this provider: a cached input token costs
+    # the same as a fresh one. Encoded explicitly (cached_input == input)
+    # rather than omitted, so compute_cost's blend formula needs no
+    # provider-specific branch — the math self-cancels to `input_tokens * input`
+    # regardless of the assumed hit ratio when the two rates are equal.
+    models:
+      gpt-oss-120b:
+        input: 0.35
+        cached_input: 0.35
+        output: 0.75
+        speed_tokens_per_s: 3000
+      gemma-4-31b:
+        input: 0.99
+        cached_input: 0.99
+        output: 1.49
+        speed_tokens_per_s: 1800
+      # Not wired into core/llm.py yet (`glm_4_7` is commented out there) —
+      # priced ahead of time so the eval needs no further pricing work the
+      # day it's uncommented and added to the roster.
+      zai-glm-4.7:
+        input: 2.25
+        cached_input: 2.25
+        output: 2.75
+        speed_tokens_per_s: 1000
+
+  groq:
+    # 50% off input tokens on a cache hit.
+    models:
+      gpt-oss-120b:
+        input: 0.15
+        cached_input: 0.075   # 50% of input
+        output: 0.60
+      gpt-oss-20b:
+        input: 0.075
+        cached_input: 0.0375  # 50% of input
+        output: 0.30
+      qwen3.6-27b:
+        input: 0.60
+        cached_input: 0.30    # 50% of input
+        output: 3.00
+
+  openai:
+    # Two tiers per model (short_context / long_context), each with its own
+    # input / cached_input / output — and, where published, cache_writes
+    # (recorded but not billed; see assumptions.cache_writes_modeled above).
+    # A model with no `long_context` block (gpt-5.4-mini, gpt-5.4-nano) is
+    # billed at short_context rates regardless of peak_context_tokens — those
+    # two don't publish a long-context tier in the data given.
+    models:
+      gpt-5.6-sol:
+        short_context: {input: 5.00,  cached_input: 0.50, cache_writes: 6.25,  output: 30.00}
+        long_context:  {input: 10.00, cached_input: 1.00, cache_writes: 12.50, output: 45.00}
+      gpt-5.6-terra:
+        short_context: {input: 2.00,  cached_input: 0.20, cache_writes: 2.50,  output: 12.00}
+        long_context:  {input: 4.00,  cached_input: 0.40, cache_writes: 5.00,  output: 18.00}
+      gpt-5.6-luna:
+        short_context: {input: 0.20,  cached_input: 0.02, cache_writes: 0.25,  output: 1.20}
+        long_context:  {input: 0.40,  cached_input: 0.04, cache_writes: 0.50,  output: 1.80}
+      gpt-5.5:
+        short_context: {input: 5.00,  cached_input: 0.50, cache_writes: null,  output: 30.00}
+        long_context:  {input: 10.00, cached_input: 1.00, cache_writes: null,  output: 45.00}
+      gpt-5.5-pro:
+        short_context: {input: 30.00, cached_input: null, cache_writes: null,  output: 180.00}
+        long_context:  {input: 60.00, cached_input: null, cache_writes: null,  output: 270.00}
+      gpt-5.4:
+        short_context: {input: 2.50,  cached_input: 0.25, cache_writes: null,  output: 15.00}
+        long_context:  {input: 5.00,  cached_input: 0.50, cache_writes: null,  output: 22.50}
+      gpt-5.4-mini:
+        short_context: {input: 0.75,  cached_input: 0.075, cache_writes: null, output: 4.50}
+        # no long_context tier published
+      gpt-5.4-nano:
+        short_context: {input: 0.20,  cached_input: 0.02, cache_writes: null,  output: 1.25}
+        # no long_context tier published
+      gpt-5.4-pro:
+        short_context: {input: 30.00, cached_input: null, cache_writes: null,  output: 180.00}
+        long_context:  {input: 60.00, cached_input: null, cache_writes: null,  output: 270.00}
+
+  google_genai:
+    # Cached input is billed at 10% of the fresh-input rate (not "10% off" —
+    # the cached rate itself is one-tenth of the input price). Keyed by
+    # `family`, which for Gemini is the raw model string (`gemini.family` ==
+    # `gemini.model_id`, no provider-routing prefix to strip) — matches
+    # `evals.models.discover_models()` exactly, confirmed by running it rather
+    # than assumed:
+    #   gemini-flash               -> family gemini-3-flash-preview
+    #   gemini-flash-lite-latest   -> family gemini-flash-lite-latest
+    #   gemini-3-6-flash           -> family gemini-3.6-flash
+    models:
+      gemini-3-flash-preview:
+        input: 0.50
+        cached_input: 0.05   # 10% of input
+        output: 3.00
+      gemini-flash-lite-latest:
+        input: 0.25
+        cached_input: 0.025  # 10% of input
+        output: 1.50
+      gemini-3.6-flash:
+        input: 1.50
+        cached_input: 0.15   # 10% of input
+        output: 7.50

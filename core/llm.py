@@ -55,7 +55,10 @@ qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completio
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
 llama3_1_8b = ChatGroq(model="llama-3.1-8b-instant")
-# glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
+# Enabled for the eval roster (pricing already on file in
+# evals/pricing.yaml). Not wired to any role — nothing in core/ points at it —
+# so this only exists for evals.models' reflective discovery to pick up.
+glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
 gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="low")
 gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="high")
 # NOT the content-moderation "Llama Guard" family despite the model id's
@@ -64,6 +67,32 @@ gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_
 # with a real 512-token context window (core/prompt_guard.py's is_harmful
 # truncates to that budget before calling it).
 prompt_guard_2_86m = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
+
+# ── Frontier candidates (evaluation only) ───────────────────────────────────
+# Not wired into any profile — no `fast_llm`/`pro_llm`/helper role points at
+# these. They exist so `evals/models.py`, which reflects over this module,
+# picks them up automatically and benchmarks them against the models that do
+# serve traffic. Promote one by pointing a role at it; nothing else needs to
+# change.
+#
+# Verified against the live APIs: all five stream, and all five report
+# `usage_metadata` (gemini-3.6-flash also reports reasoning tokens), so the
+# eval's token and cost accounting works for them without special-casing.
+gemini_3_6_flash = init_chat_model("google_genai:gemini-3.6-flash")
+
+# `use_responses_api=True` on all four, and it is not optional for the 5.6
+# pair: on /v1/chat/completions they reject function tools outright —
+# "Function tools with reasoning_effort are not supported ... use /v1/responses
+# or set reasoning_effort to 'none'" — so an agent with tools 400s on every
+# turn. The other way out, forcing reasoning off, would benchmark a
+# deliberately hobbled model. The Responses API also reports reasoning tokens
+# for these models where chat completions returns 0, so it is what makes their
+# effort spend measurable at all. Applied to 5.4-mini/nano too, so the four
+# share one request path and differ only in weights.
+gpt_5_6_luna = init_chat_model("openai:gpt-5.6-luna", use_responses_api=True)
+gpt_5_6_terra = init_chat_model("openai:gpt-5.6-terra", use_responses_api=True)
+gpt_5_4_mini = init_chat_model("openai:gpt-5.4-mini", use_responses_api=True)
+gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 
 fast_llm = gpt_oss_120b_low
 pro_llm = gemma_4_31b_high

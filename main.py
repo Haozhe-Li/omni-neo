@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.agent import SYSTEM_PROMPTS, initialize_agents
 from core.database.checkpointer import setup_checkpointer, teardown_checkpointer
 from core.prompt_guard import register_sensitive_prompts
-from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks
+from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks, evals
 
 
 @asynccontextmanager
@@ -45,3 +45,4 @@ app.include_router(users.router)
 app.include_router(misc.router)
 app.include_router(memories.router)
 app.include_router(scheduled_tasks.router)
+app.include_router(evals.router)
