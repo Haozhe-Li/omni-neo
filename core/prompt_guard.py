@@ -19,7 +19,7 @@ the prompts themselves instead:
 - slides over the candidate window's n-grams and fires on either signal:
     1. verbatim run — `min_run_tokens` *consecutive* normalized tokens
        shared with a prompt (overlapping n-gram hits chain into runs). A
-       dozen-word exact quote of a specific prompt is essentially
+       full-sentence exact quote of a specific prompt is essentially
        impossible to produce by accident.
     2. dense overlap — the window is long enough, and a large fraction of
        ALL its n-grams appear in a prompt. Catches quote-with-ellipsis
@@ -124,25 +124,34 @@ class PromptLeakGuard:
 
     Args:
         prompt_texts: the sensitive texts to fingerprint (system prompts).
-        ngram_size: tokens per fingerprint n-gram. 5 is small enough that a
-            12-token quote yields 8 chainable hits, large enough that a
-            5-gram colliding with ordinary prose is rare.
+        ngram_size: tokens per fingerprint n-gram. Raised from 5 to 6 —
+            5-grams collided with ordinary prose often enough to trip on
+            benign replies; a 6-gram needs one more shared word before it
+            can chain into a run at all, which cuts a meaningful slice of
+            that accidental-collision surface.
         min_run_tokens: consecutive shared tokens that count as a verbatim
-            quote. 12 ~= a full clause — generic 5-8 word phrases ("you are
-            a helpful assistant that") stay safely below it.
+            quote. Raised from 12 to 20 — 12 tokens (~a clause) was firing
+            on ordinary answers that happen to share a clause's worth of
+            common phrasing with a prompt; 20 tokens is closer to a full
+            sentence, which accidental overlap essentially never reaches.
         containment_threshold: fraction of the window's n-grams that must be
-            prompt n-grams for the dense-overlap signal.
+            prompt n-grams for the dense-overlap signal. Raised from 0.35 to
+            0.6 so a window needs to be *mostly* prompt n-grams, not just
+            over a third, before this fires.
         containment_min_tokens: dense overlap is only meaningful on a window
             with some substance; shorter windows rely on the run signal.
+            Raised from 40 to 60 to keep the dense-overlap check off shorter
+            windows where a coincidental cluster of shared n-grams is more
+            likely to dominate the ratio.
     """
 
     def __init__(
         self,
         prompt_texts: Iterable[str],
-        ngram_size: int = 5,
-        min_run_tokens: int = 12,
-        containment_threshold: float = 0.35,
-        containment_min_tokens: int = 40,
+        ngram_size: int = 6,
+        min_run_tokens: int = 20,
+        containment_threshold: float = 0.6,
+        containment_min_tokens: int = 60,
     ):
         self.ngram_size = ngram_size
         self.min_run_tokens = min_run_tokens
@@ -217,10 +226,10 @@ class PromptLeakGuard:
 
 def build_prompt_leakage_guard(
     prompt_texts: Iterable[str],
-    ngram_size: int = 5,
-    min_run_tokens: int = 12,
-    containment_threshold: float = 0.35,
-    containment_min_tokens: int = 40,
+    ngram_size: int = 6,
+    min_run_tokens: int = 20,
+    containment_threshold: float = 0.6,
+    containment_min_tokens: int = 60,
 ) -> PromptLeakGuard:
     return PromptLeakGuard(
         prompt_texts=prompt_texts,
