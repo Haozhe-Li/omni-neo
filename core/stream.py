@@ -49,7 +49,7 @@ from langsmith import tracing_context
 from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
-from core.prompt_guard import is_harmful, has_prompt_leakage, detect_leakage
+from core.prompt_guard import is_harmful, has_prompt_leakage, has_structural_leak
 from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
 from core.utils.errors import ErrorCode, error_payload
 from core.database.db_threads_control import lock_thread_state
@@ -516,16 +516,11 @@ async def _stream_agent(
     produced_text = False
     pending_text = ""  # holds back a trailing unclosed "[n" citation marker
 
-    # Rolling trailing-window buffers fed to `has_prompt_leakage` — kept
-    # separate for text vs. reasoning since they're independent streams that
-    # can each leak the system prompt on their own.
+    # Rolling trailing-window buffer fed to `has_prompt_leakage` for the final
+    # answer text. Reasoning gets its own, much narrower buffer below — just
+    # enough to catch a structural marker split across two streamed chunks.
     text_leak_buffer = ""
     reasoning_leak_buffer = ""
-    # Set once an n-gram (non-structural) match fires on `reasoning_leak_buffer`
-    # — see the branch below for why this suppresses further reasoning output
-    # instead of ending the turn the way a text-channel or structural-marker
-    # match does.
-    reasoning_suppressed = False
 
     def _leak_intercept_events():
         """SSE events substituted for the rest of the answer once a streamed
@@ -579,33 +574,23 @@ async def _stream_agent(
                                 announced_drafts.add(key)
                                 yield _sse({"type": "drafting", "tool": name})
                     reasoning = _reasoning_of(chunk)
-                    if reasoning and not reasoning_suppressed:
+                    if reasoning:
+                        # Reasoning only gets the cheap structural-marker
+                        # check, not the full n-gram guard `text` gets below.
+                        # Chain-of-thought routinely recites the system
+                        # prompt's own instructions near-verbatim while
+                        # planning a turn (confirmed against the real
+                        # FAST/PRO prompts — completely benign, but enough to
+                        # trip `verbatim_run` on essentially every Pro-mode
+                        # turn). A literal `<attached_files>`-style tag or
+                        # Harmony template token has no such benign case, so
+                        # it's still worth catching here.
                         reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
-                        leaking, reason = detect_leakage(reasoning_leak_buffer)
-                        if leaking:
-                            if reason == "structural_marker":
-                                # A literal `<attached_files>`-style tag or
-                                # Harmony template token — see
-                                # prompt_guard.py's `_STRUCTURAL_LEAK_PATTERNS`.
-                                # Zero legitimate reason to ever appear, in
-                                # either channel, so this still ends the turn.
-                                for ev in _leak_intercept_events():
-                                    yield ev
-                                return
-                            # An n-gram match (verbatim_run/dense_overlap) on
-                            # *reasoning*, unlike on the final answer below, is
-                            # far more often the model reciting its own
-                            # instructions back to itself while planning (e.g.
-                            # checking "must I search first?") than an actual
-                            # extraction attempt — chain-of-thought models are
-                            # prone to this on ordinary turns, not just under
-                            # attack. Stop forwarding reasoning to the client
-                            # rather than ending the whole conversation over
-                            # it; the final answer text is still guarded at
-                            # full strength below.
-                            reasoning_suppressed = True
-                        else:
-                            yield _sse({"type": "reasoning", "content": reasoning})
+                        if has_structural_leak(reasoning_leak_buffer):
+                            for ev in _leak_intercept_events():
+                                yield ev
+                            return
+                        yield _sse({"type": "reasoning", "content": reasoning})
                     text = _text_of(chunk.content)
                     if text:
                         produced_text = True

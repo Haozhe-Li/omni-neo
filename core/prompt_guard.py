@@ -260,6 +260,25 @@ def register_sensitive_prompts(prompt_texts: Iterable[str]) -> None:
     )
 
 
+def has_structural_leak(text: str) -> bool:
+    """Cheap, n-gram-free check for a literal structural marker only.
+
+    Just the `_STRUCTURAL_LEAK_PATTERNS` regex scan — no tokenization, no
+    fingerprint lookup, so no dependency on `register_sensitive_prompts`
+    having run. Unlike a `verbatim_run`/`dense_overlap` match (see
+    `detect_leakage`), these patterns are app-owned literal tags or provider
+    template tokens with no legitimate reason to appear in *any* model
+    output channel, so there's no benign-recitation case to worry about
+    here — safe to apply unconditionally, including to reasoning/CoT text.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    sample = text.strip()
+    if not sample:
+        return False
+    return any(p.search(sample) for p in _STRUCTURAL_LEAK_PATTERNS)
+
+
 def detect_leakage(text: str) -> tuple[bool, str]:
     """Like `has_prompt_leakage`, but also returns *why* it fired.
 
