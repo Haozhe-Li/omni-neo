@@ -33,7 +33,10 @@ Wire protocol (one JSON object per `data:` line):
 Reports are NOT a distinct event: the agent writes them inline as a
 `<report>…</report>` block within the normal `text` stream (just like charts are
 written inline as ```echarts fences). The frontend parses the block out of the
-answer and renders it live in the side reader.
+answer and renders it live in the side reader. Rewrite/translation/drafting
+deliverables use the same trick with a `<textblock>…</textblock>` block (see
+`_S_WRITING_FORMAT` in core/agent.py) — also not a distinct event, also parsed
+out of `text` by the frontend.
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from langsmith import tracing_context
 from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
-from core.prompt_guard import is_harmful, has_prompt_leakage
+from core.prompt_guard import is_harmful, has_prompt_leakage, has_structural_leak
 from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
 from core.utils.errors import ErrorCode, error_payload
 from core.database.db_threads_control import lock_thread_state
@@ -516,9 +519,9 @@ async def _stream_agent(
     produced_text = False
     pending_text = ""  # holds back a trailing unclosed "[n" citation marker
 
-    # Rolling trailing-window buffers fed to `has_prompt_leakage` — kept
-    # separate for text vs. reasoning since they're independent streams that
-    # can each leak the system prompt on their own.
+    # Rolling trailing-window buffer fed to `has_prompt_leakage` for the final
+    # answer text. Reasoning gets its own, much narrower buffer below — just
+    # enough to catch a structural marker split across two streamed chunks.
     text_leak_buffer = ""
     reasoning_leak_buffer = ""
 
@@ -575,8 +578,18 @@ async def _stream_agent(
                                 yield _sse({"type": "drafting", "tool": name})
                     reasoning = _reasoning_of(chunk)
                     if reasoning:
+                        # Reasoning only gets the cheap structural-marker
+                        # check, not the full n-gram guard `text` gets below.
+                        # Chain-of-thought routinely recites the system
+                        # prompt's own instructions near-verbatim while
+                        # planning a turn (confirmed against the real
+                        # FAST/PRO prompts — completely benign, but enough to
+                        # trip `verbatim_run` on essentially every Pro-mode
+                        # turn). A literal `<attached_files>`-style tag or
+                        # Harmony template token has no such benign case, so
+                        # it's still worth catching here.
                         reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
-                        if has_prompt_leakage(reasoning_leak_buffer):
+                        if has_structural_leak(reasoning_leak_buffer):
                             for ev in _leak_intercept_events():
                                 yield ev
                             return
