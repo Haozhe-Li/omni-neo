@@ -260,10 +260,25 @@ def register_sensitive_prompts(prompt_texts: Iterable[str]) -> None:
     )
 
 
-def has_prompt_leakage(text: str) -> bool:
+def detect_leakage(text: str) -> tuple[bool, str]:
+    """Like `has_prompt_leakage`, but also returns *why* it fired.
+
+    Callers that need to react differently to a literal structural-tag leak
+    (`structural_marker` — zero false-positive risk, see module docstring)
+    versus an n-gram match (`verbatim_run`/`dense_overlap` — the signal a
+    model's own chain-of-thought can trip legitimately by reciting its
+    instructions back to itself while planning, not just by an extraction
+    attack) should branch on the returned reason rather than treating every
+    hit as equivalent.
+    """
     detected, reason, score = _DEFAULT_LEAK_GUARD.detect(text)
     if detected:
         logger.warning("[prompt_guard] leakage detected: reason=%s score=%.2f", reason, score)
+    return detected, reason
+
+
+def has_prompt_leakage(text: str) -> bool:
+    detected, _reason = detect_leakage(text)
     return detected
 
 
