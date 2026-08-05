@@ -95,7 +95,7 @@ gpt_5_4_mini = init_chat_model("openai:gpt-5.4-mini", use_responses_api=True)
 gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 
 fast_llm = gpt_oss_120b_low
-pro_llm = gemma_4_31b_high
+pro_llm = gpt_5_6_luna
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
 update_memories_llm = gpt_oss_20b
