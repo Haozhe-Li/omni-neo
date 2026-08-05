@@ -5,13 +5,18 @@ just a bare label. `reason` is always a one-sentence, human-readable
 explanation; where it comes from depends on the layer that resolved the
 source, cheapest first:
 
+0. `_HARDCODED_BYPASS_DOMAINS` — an explicit set of domains we own outright,
+   hardcoded to "trusted" in-process. No cache read/write, no LLM, checked
+   before anything else. Distinct from (1)/(2) below: those are general
+   patterns/whitelists resolved through Redis, this is a fixed, source-owned
+   exemption that must never depend on cache state.
 1. Regex on the hostname — unambiguous government/military/educational
    domains resolve to "official" for free, no cache, no LLM, reason is a
    templated sentence.
 2. A Redis-backed domain whitelist (`redis_credibility.py`), bootstrapped by
    a small hardcoded seed list (wikipedia/google/apple/...) -> "trusted"
    with a templated reason. Lookups are batched with one MGET per call.
-3. Whatever's left after (1) and (2) — including user-generated-content
+3. Whatever's left after (0)-(2) — including user-generated-content
    platforms (reddit, x.com, medium, ...), which are deliberately never
    resolved by (1)/(2) since quality varies wildly page-to-page — goes
    through a single batched gpt-oss-20b call (title + url + a short snippet
@@ -59,6 +64,14 @@ _OFFICIAL_SUFFIXES = (
     ".ac.uk", ".ac.jp", ".ac.cn", ".ac.in", ".ac.kr",
     ".edu.cn", ".edu.au", ".edu.hk", ".edu.sg",
 )
+
+# Hardcoded bypass: these domains (and subdomains) always resolve to
+# "trusted" with zero lookups — no Redis read/write, no LLM call. Checked
+# before every other layer, same spirit as `_OFFICIAL_SUFFIXES` but for a
+# domain we own outright rather than a generic government/edu pattern.
+_HARDCODED_BYPASS_DOMAINS = {
+    "omniknows.xyz",
+}
 
 # Seed whitelist -> "trusted", templated reason, no LLM call. Bootstraps the
 # Redis cache on first sight; hand-picked, extend freely.
@@ -117,6 +130,13 @@ def _seed_credibility(domain: str) -> Credibility:
     return {
         "label": "trusted",
         "reason": f"{domain} is on our curated list of well-established, editorially reliable sources.",
+    }
+
+
+def _bypass_credibility(host: str) -> Credibility:
+    return {
+        "label": "trusted",
+        "reason": f"{host} is an owned/first-party domain, exempted from credibility classification.",
     }
 
 
@@ -191,6 +211,10 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
 
         if not host:
             out[i] = {**item, "credibility": _UNKNOWN_NO_URL}
+            continue
+
+        if _matches(host, _HARDCODED_BYPASS_DOMAINS) is not None:
+            out[i] = {**item, "credibility": _bypass_credibility(host)}
             continue
 
         if _is_official(host):
