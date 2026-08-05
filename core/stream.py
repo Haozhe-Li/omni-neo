@@ -33,7 +33,10 @@ Wire protocol (one JSON object per `data:` line):
 Reports are NOT a distinct event: the agent writes them inline as a
 `<report>…</report>` block within the normal `text` stream (just like charts are
 written inline as ```echarts fences). The frontend parses the block out of the
-answer and renders it live in the side reader.
+answer and renders it live in the side reader. Rewrite/translation/drafting
+deliverables use the same trick with a `<textblock>…</textblock>` block (see
+`_S_WRITING_FORMAT` in core/agent.py) — also not a distinct event, also parsed
+out of `text` by the frontend.
 """
 
 from __future__ import annotations

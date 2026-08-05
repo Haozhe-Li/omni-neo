@@ -11,7 +11,11 @@ subset each receives:
 
 Skills are surfaced via progressive disclosure — only their name + description
 sit in the prompt; full instructions are read on demand.  Charts and reports
-stream inline (```echarts fences / `<report>…</report>` blocks).
+stream inline (```echarts fences / `<report>…</report>` blocks). Rewrite/
+translation/drafting deliverables stream inline the same way, in a
+`<textblock>…</textblock>` block — that one isn't a skill, it's taught
+directly in `_S_WRITING_FORMAT` below since both profiles need it on
+essentially every "polish this" or "translate this" turn.
 """
 
 from __future__ import annotations
@@ -60,7 +64,8 @@ RETRIEVAL_TOOLS = [
 
 # Charts AND reports are produced inline in the answer stream (```echarts fences
 # and `<report>…</report>` blocks), taught by the charting / report-writing
-# skills — so neither needs a tool.
+# skills — so neither needs a tool. Same for `<textblock>…</textblock>`
+# rewrite/translation/draft deliverables, taught by `_S_WRITING_FORMAT` below.
 
 
 # ── Skills (deepagents progressive disclosure) ──────────────────────────────
@@ -357,19 +362,37 @@ source instead.
 _S_WRITING_FORMAT = """
 ## Writing and Rewrites
 
-When the user asks you to write, rewrite, or translate a piece of content
-(essay, email, story, post, letter), separate the deliverable from your own
-remarks: one short line of commentary, a blank line, `---`, the content, `---`,
-then the follow-up question below. Always leave an empty line before each rule.
-If the content is under two paragraphs, skip the rules and indent it with `>`
-instead. Inside the content itself use headers for structure, never horizontal
-rules.
+When the user asks you to write, rewrite, polish, proofread, or translate a
+piece of content (essay, email, story, post, letter, contract clause), the
+finished deliverable — and nothing else — goes inside a
+`<textblock>…</textblock>` block: one short line of commentary, a blank line,
+the block, then the follow-up question below on its own line. Never also
+paste the same content again in plain chat text outside the block.
+
+Inside the block: plain finished text only — no markdown decoration
+(`**bold**`, `#` headers), no citation markers, no commentary about what you
+changed. Keep whatever structure the source already had (numbered clauses,
+line breaks); don't add your own.
+
+Drafting an email specifically also gets `type="email"` and the subject line
+in `subject="…"` on the opening tag, e.g.
+`<textblock type="email" subject="Re: Q3 Budget Proposal">`. `type` is a
+closed set — `"email"` is the only defined value right now; omit it entirely
+for everything else, never invent a new value. Never put a double quote
+inside `subject` — it breaks the tag; use single quotes or 「」 instead.
+
+Write exactly one `<textblock>` per deliverable. Only emit more than one in a
+single turn when the user explicitly asked for multiple parallel versions
+(e.g. three tone variants) — one block per version.
 """
 
 _S_WRITING_FORMAT_PRO_EXTRA = """
 This applies to content written inline in chat. When the report-writing skill
-is active, its `<report>` convention wins — a report is never wrapped in `---`
-rules.
+is active for a long, multi-section document, its `<report>` convention wins
+instead — never nest a `<textblock>` inside a `<report>` or vice versa; a
+report is never wrapped in `<textblock>` either. Use `<textblock>` for a
+single finished piece of text, `<report>` for a structured multi-section
+document.
 """
 
 _S_FOLLOWUP = """
