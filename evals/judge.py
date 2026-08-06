@@ -350,7 +350,14 @@ async def judge_citation_grounding(
         score=round(ratio * 2, 2),
         max_score=2.0,
         weight=3.0,
-        passed=ratio >= 0.8,
+        # 0.8 required near-perfect per-claim grounding on every sampled line,
+        # but a claim is one whole bulleted/prose *line* (see
+        # _extract_citation_claims), which often bundles 2-3 sub-facts behind
+        # one citation — one unsupported sub-fact fails the entire line even
+        # when most of it is grounded. 0.6 keeps this a real bar (still fails
+        # answers where most citations are fabricated) without punishing
+        # compound sentences for the check's own claim granularity.
+        passed=ratio >= 0.6,
         evidence=next((v.reason for v in verdicts if not v.supported), "all sampled citations supported"),
         reason=f"{supported}/{len(verdicts)} sampled citations supported by their source",
         detail={"supported": supported, "sampled": len(verdicts)},

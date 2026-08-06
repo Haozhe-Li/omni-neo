@@ -89,8 +89,22 @@ def _family_of(model_id: str) -> str:
     return model_id.split("/")[-1]
 
 
+# Display-only relabeling, keyed by var_name — does NOT touch `family`
+# (still derived from the real model_id, so pricing.yaml lookups and the
+# gpt-oss-120b provider grid are untouched) or the variable itself in
+# core/llm.py (still named `gemini_flash_lite_latest` there; nothing wired to
+# a production role gets renamed by this).
+#
+# `gemini-flash-lite-latest` is a rolling alias but currently resolves to an
+# old snapshot rather than Google's actual latest Flash-Lite — labeling it
+# "-latest" in the dashboard/leaderboard overstates its recency.
+_LABEL_OVERRIDES: dict[str, str] = {
+    "gemini_flash_lite_latest": "gemini-flash-lite-3-5",
+}
+
+
 def _label_of(var_name: str) -> str:
-    return var_name.replace("_", "-")
+    return _LABEL_OVERRIDES.get(var_name, var_name.replace("_", "-"))
 
 
 def discover_models() -> list[ModelSpec]:
