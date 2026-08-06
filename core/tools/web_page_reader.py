@@ -1,9 +1,13 @@
 from langchain_community.document_loaders import SpiderLoader
 import asyncio
 import concurrent.futures
+import json
 import os
+import re
+from urllib.parse import urlsplit
 
 from core.utils.citations import register_citation
+from core.utils.redis_cache import r as _redis
 from core.utils.source_credibility import classify_sources
 
 # from core.utils.redis_cache import l1cache
@@ -14,6 +18,73 @@ _TIMEOUT_RESULT = {
     "content": "Failed to load the web page: request timed out. Do not try the same URL again.",
     "title": "Timeout",
 }
+
+# Cloudflare sits in front of omniknows.xyz and blocks Spider outright — a
+# direct fetch from here would fare no better, since it gates the inbound
+# request itself, not which client makes it. So first-party content is never
+# fetched over the network at all: the frontend pushes it straight into the
+# same Upstash Redis database this backend already talks to (same
+# UPSTASH_REDIS_REST_URL/TOKEN on both sides — see core/utils/redis_cache.py),
+# and we just read it back out here.
+_FIRST_PARTY_HOST = "omniknows.xyz"
+# Written by the frontend's lib/llms-txt.ts, refreshed on demand (the
+# benchmark page's "Ask Omni" link and its Refresh button) rather than on a
+# schedule — see that file for why. Fixed key, not derived from the request
+# URL: there is exactly one production llms.txt.
+_LLMS_TXT_REDIS_KEY = "agent_page:https://omniknows.xyz/benchmark/llms.txt"
+# Omni Pages are already Redis-native — `publish:{id}` is written directly by
+# the frontend's /api/publish route (see app/api/publish/route.ts there), with
+# `answer` holding the page's markdown body. No separate mirror needed.
+_PAGE_ID_RE = re.compile(r"^/pages/([0-9a-f]{12})$")
+
+
+def _first_party_redis_shortcut(url: str) -> dict | None:
+    """Read known first-party omniknows.xyz content straight out of Redis
+    instead of fetching it. Returns None for anything not covered — the
+    caller falls back to the normal Spider path unchanged."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    if host != _FIRST_PARTY_HOST and not host.endswith("." + _FIRST_PARTY_HOST):
+        return None
+    path = parsed.path.rstrip("/") or "/"
+
+    if path == "/benchmark/llms.txt":
+        raw = _redis.get(_LLMS_TXT_REDIS_KEY)
+        data = _decode_redis_json(raw)
+        if data is None:
+            return None
+        return {
+            "url": url,
+            "title": data.get("title") or "Omni Benchmarks",
+            "content": data.get("content") or "",
+        }
+
+    match = _PAGE_ID_RE.match(path)
+    if match:
+        raw = _redis.get(f"publish:{match.group(1)}")
+        data = _decode_redis_json(raw)
+        if data is None:
+            return None
+        return {
+            "url": url,
+            "title": data.get("title") or "AI Research Report",
+            "content": data.get("answer") or "",
+        }
+
+    return None
+
+
+def _decode_redis_json(raw) -> dict | None:
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _load_spider(url: str):
@@ -38,6 +109,10 @@ def load_web_page_spider(url: str) -> dict:
     Returns:
         dict: The loaded web page content as a dictionary with URL and content keys.
     """
+    shortcut = _first_party_redis_shortcut(url)
+    if shortcut is not None:
+        return shortcut
+
     # A worker-thread-safe timeout. `signal.SIGALRM` only works on the main
     # thread, and this function is itself blocking (see load_web_page below,
     # which must call it via asyncio.to_thread rather than inline — it can't
