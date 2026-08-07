@@ -91,19 +91,19 @@ ENABLE_ERROR_TEST_COMMANDS = os.getenv("ENABLE_ERROR_TEST_COMMANDS", "false").st
     "1", "true", "yes", "on"
 }
 
-# Kill switch for the input-side harmful/prompt-injection gate (`is_harmful`,
-# core/prompt_guard.py) that locks a thread via SAFETY_TERMINATED below. On by
-# default — unlike the flags above, this one guards a real safety check, so
-# the default preserves current behavior rather than opting in. `is_harmful`
-# runs Prompt Guard 2 86M, a small classifier trained mostly on English data;
-# it can false-positive on short/ambiguous non-English text (see
-# core/prompt_guard.py's tokenizer notes on CJK). Set
-# ENABLE_HARMFUL_QUERY_GUARD=false to bypass just this gate — e.g. during a
-# false-positive spike — without touching the separate output-side leak guard
-# (has_prompt_leakage / sanitize_output_text / has_structural_leak below),
-# which stays active regardless since it targets verbatim system-prompt
-# reproduction, not query intent, and has a much lower false-positive surface.
-ENABLE_HARMFUL_QUERY_GUARD = os.getenv("ENABLE_HARMFUL_QUERY_GUARD", "true").strip().lower() in {
+# Kill switch for the mid-stream output-side leak guard (`has_prompt_leakage`
+# / `has_structural_leak`, core/prompt_guard.py) that locks a thread via
+# SAFETY_TERMINATED in `_leak_intercept_events` below. On by default — the
+# default preserves current behavior rather than opting in. This is the
+# n-gram fingerprint matcher over the registered system prompts (see
+# core/prompt_guard.py's module docstring); a boilerplate self-introduction
+# reply ("who are you?") can legitimately echo the system prompt's own
+# self-description closely enough to trip `verbatim_run`/`dense_overlap` even
+# though nothing was actually extracted by the user. Set
+# ENABLE_PROMPT_LEAK_GUARD=false to bypass just this gate — e.g. during a
+# false-positive spike — without touching the separate input-side harmful-
+# query gate (`is_harmful` below), which stays active regardless.
+ENABLE_PROMPT_LEAK_GUARD = os.getenv("ENABLE_PROMPT_LEAK_GUARD", "true").strip().lower() in {
     "1", "true", "yes", "on"
 }
 
@@ -605,7 +605,7 @@ async def _stream_agent(
                         # Harmony template token has no such benign case, so
                         # it's still worth catching here.
                         reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
-                        if has_structural_leak(reasoning_leak_buffer):
+                        if ENABLE_PROMPT_LEAK_GUARD and has_structural_leak(reasoning_leak_buffer):
                             for ev in _leak_intercept_events():
                                 yield ev
                             return
@@ -622,7 +622,7 @@ async def _stream_agent(
                         )
                         if safe:
                             text_leak_buffer = (text_leak_buffer + safe)[-_LEAK_CHECK_WINDOW:]
-                            if has_prompt_leakage(text_leak_buffer):
+                            if ENABLE_PROMPT_LEAK_GUARD and has_prompt_leakage(text_leak_buffer):
                                 for ev in _leak_intercept_events():
                                     yield ev
                                 return
@@ -702,7 +702,7 @@ async def _stream_agent(
 
         if pending_text:
             text_leak_buffer = (text_leak_buffer + pending_text)[-_LEAK_CHECK_WINDOW:]
-            if has_prompt_leakage(text_leak_buffer):
+            if ENABLE_PROMPT_LEAK_GUARD and has_prompt_leakage(text_leak_buffer):
                 for ev in _leak_intercept_events():
                     yield ev
                 return
@@ -742,7 +742,7 @@ async def run_agent_stream(
         yield _sse(error_payload(test_code, detail=f"test_command:{query.strip()}"))
         return
 
-    if ENABLE_HARMFUL_QUERY_GUARD and await is_harmful(query):
+    if await is_harmful(query):
         _lock_thread_fire_and_forget(thread_id)
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
