@@ -91,6 +91,22 @@ ENABLE_ERROR_TEST_COMMANDS = os.getenv("ENABLE_ERROR_TEST_COMMANDS", "false").st
     "1", "true", "yes", "on"
 }
 
+# Kill switch for the input-side harmful/prompt-injection gate (`is_harmful`,
+# core/prompt_guard.py) that locks a thread via SAFETY_TERMINATED below. On by
+# default — unlike the flags above, this one guards a real safety check, so
+# the default preserves current behavior rather than opting in. `is_harmful`
+# runs Prompt Guard 2 86M, a small classifier trained mostly on English data;
+# it can false-positive on short/ambiguous non-English text (see
+# core/prompt_guard.py's tokenizer notes on CJK). Set
+# ENABLE_HARMFUL_QUERY_GUARD=false to bypass just this gate — e.g. during a
+# false-positive spike — without touching the separate output-side leak guard
+# (has_prompt_leakage / sanitize_output_text / has_structural_leak below),
+# which stays active regardless since it targets verbatim system-prompt
+# reproduction, not query intent, and has a much lower false-positive surface.
+ENABLE_HARMFUL_QUERY_GUARD = os.getenv("ENABLE_HARMFUL_QUERY_GUARD", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
 _TEST_COMMAND_RE = re.compile(r"^@test:\s*(.+?)\s*$", re.IGNORECASE)
 
 # Aliases map onto the closed `ErrorCode` vocabulary (core/utils/errors.py) —
@@ -726,7 +742,7 @@ async def run_agent_stream(
         yield _sse(error_payload(test_code, detail=f"test_command:{query.strip()}"))
         return
 
-    if await is_harmful(query):
+    if ENABLE_HARMFUL_QUERY_GUARD and await is_harmful(query):
         _lock_thread_fire_and_forget(thread_id)
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
