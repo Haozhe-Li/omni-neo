@@ -91,6 +91,25 @@ ENABLE_ERROR_TEST_COMMANDS = os.getenv("ENABLE_ERROR_TEST_COMMANDS", "false").st
     "1", "true", "yes", "on"
 }
 
+# Kill switch for the mid-stream output-side leak guard (`has_prompt_leakage`
+# / `has_structural_leak`, core/prompt_guard.py) that locks a thread via
+# SAFETY_TERMINATED in `_leak_intercept_events` below. Off by default — this
+# is the n-gram fingerprint matcher over the registered system prompts (see
+# core/prompt_guard.py's module docstring); a boilerplate self-introduction
+# reply ("who are you?") can legitimately echo the system prompt's own
+# self-description closely enough to trip `verbatim_run`/`dense_overlap` even
+# though nothing was actually extracted by the user, and that false-positive
+# has been confirmed live (LangSmith-verified: is_harmful scored ~0.0005 on
+# the same turns, so this guard was the actual cause). Set
+# ENABLE_PROMPT_LEAK_GUARD=true once the false-positive is addressed at the
+# root (e.g. excluding self-introduction boilerplate from the fingerprint, or
+# raising the thresholds further) to turn it back on. The separate input-side
+# harmful-query gate (`is_harmful` below) is unaffected by this flag and
+# stays active regardless.
+ENABLE_PROMPT_LEAK_GUARD = os.getenv("ENABLE_PROMPT_LEAK_GUARD", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+
 _TEST_COMMAND_RE = re.compile(r"^@test:\s*(.+?)\s*$", re.IGNORECASE)
 
 # Aliases map onto the closed `ErrorCode` vocabulary (core/utils/errors.py) —
@@ -589,7 +608,7 @@ async def _stream_agent(
                         # Harmony template token has no such benign case, so
                         # it's still worth catching here.
                         reasoning_leak_buffer = (reasoning_leak_buffer + reasoning)[-_LEAK_CHECK_WINDOW:]
-                        if has_structural_leak(reasoning_leak_buffer):
+                        if ENABLE_PROMPT_LEAK_GUARD and has_structural_leak(reasoning_leak_buffer):
                             for ev in _leak_intercept_events():
                                 yield ev
                             return
@@ -606,7 +625,7 @@ async def _stream_agent(
                         )
                         if safe:
                             text_leak_buffer = (text_leak_buffer + safe)[-_LEAK_CHECK_WINDOW:]
-                            if has_prompt_leakage(text_leak_buffer):
+                            if ENABLE_PROMPT_LEAK_GUARD and has_prompt_leakage(text_leak_buffer):
                                 for ev in _leak_intercept_events():
                                     yield ev
                                 return
@@ -686,7 +705,7 @@ async def _stream_agent(
 
         if pending_text:
             text_leak_buffer = (text_leak_buffer + pending_text)[-_LEAK_CHECK_WINDOW:]
-            if has_prompt_leakage(text_leak_buffer):
+            if ENABLE_PROMPT_LEAK_GUARD and has_prompt_leakage(text_leak_buffer):
                 for ev in _leak_intercept_events():
                     yield ev
                 return
