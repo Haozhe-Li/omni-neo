@@ -42,6 +42,7 @@ out of `text` by the frontend.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import re
@@ -53,11 +54,17 @@ from deepagents.backends.utils import create_file_data
 
 from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
 from core.prompt_guard import is_harmful, has_prompt_leakage, has_structural_leak
-from core.utils.citations import all_citations, reset_citation_registry_async, register_document_citation
+from core.utils.citations import (
+    all_citations,
+    reset_citation_registry_async,
+    register_citation,
+    register_document_citation,
+)
 from core.utils.errors import ErrorCode, error_payload
 from core.database.db_threads_control import lock_thread_state
 from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
+from core.tools.web_page_reader import first_party_redis_shortcut, load_web_page_spider
 from core.widget_predictor import predict_widgets
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
@@ -335,6 +342,109 @@ def _tagged_block(tag: str, body: str) -> str:
     return f"<{tag}>\n{body}\n</{tag}>"
 
 
+# Mirrors QueryRequest.source_url's max_length (core/utils/data_model.py) —
+# enforced again here so a caller that bypasses the Pydantic model can't hand
+# the agent an unbounded fetch list.
+_MAX_SOURCE_URLS = 5
+
+
+def _fetch_source_urls(urls: list[str]) -> tuple[str, dict, list[dict]]:
+    """Resolve user-whitelisted priority URLs into prompt text + mounted files.
+
+    Two pipelines, picked per-URL by `first_party_redis_shortcut`
+    (core/tools/web_page_reader.py):
+
+    - First-party (the benchmark's llms.txt, a Pages report): a single Redis
+      GET, bounded length, effectively can't fail — cheap enough to read
+      inline and paste straight into the prompt text. No round trip through
+      the agent's tool-calling loop needed for something this fast.
+    - Everything else: length is unbounded, so it is NOT inlined (a single
+      large page would blow the context budget on every turn regardless of
+      relevance). Fetched concurrently via Spider instead and mounted into
+      the agent's virtual filesystem — same shape as an uploaded document —
+      so the agent reads only what it needs via `read_file`/`grep`.
+
+    Unlike the `load_web_page` tool, there is no credibility/junk filtering
+    here: these are URLs the user explicitly whitelisted, not something the
+    agent found itself, so there's no "should I trust this" judgment to
+    make. A failed external fetch still produces a note — told to the agent
+    as a plain failure with no citation — so it can honestly tell the user
+    the source didn't load instead of silently answering without it.
+
+    Returns ``(prompt_text, files, doc_sources)`` — `prompt_text` is the
+    ready-to-embed body for a `<priority_sources>` tag (or "" if every URL
+    was empty/duplicate), `files`/`doc_sources` follow the same shape
+    `build_message_content` already returns for attached documents.
+    """
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for u in urls[:_MAX_SOURCE_URLS]:
+        u = (u or "").strip()
+        if u and u not in seen:
+            seen.add(u)
+            deduped.append(u)
+
+    inline_blocks: list[str] = []
+    mount_notes: list[str] = []
+    files: dict[str, dict] = {}
+    doc_sources: list[dict] = []
+
+    first_party: list[tuple[str, dict]] = []
+    external: list[str] = []
+    for u in deduped:
+        hit = first_party_redis_shortcut(u)
+        if hit is not None:
+            first_party.append((u, hit))
+        else:
+            external.append(u)
+
+    for url, page in first_party:
+        content = (page.get("content") or "").strip()
+        title = page.get("title") or url
+        if not content:
+            mount_notes.append(f"{url} (empty — nothing to read)")
+            continue
+        n = register_citation(title, url, content[:1000])
+        doc_sources.append({"n": n, "title": title, "url": url, "content": content[:1000]})
+        inline_blocks.append(f"[{n}] {title} ({url})\n\n{content}")
+
+    if external:
+        # Off the event loop already (build_message_content runs inside
+        # asyncio.to_thread — see _stream_agent), so a plain thread pool is
+        # enough to fetch all of them concurrently rather than one at a time.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(external)) as pool:
+            results = list(pool.map(load_web_page_spider, external))
+        for url, page in zip(external, results):
+            content = page.get("content") or ""
+            title = page.get("title") or url
+            if not content.strip() or content.startswith("Failed to load the web page"):
+                mount_notes.append(f"{url} (fetch failed — tell the user this source couldn't be read)")
+                continue
+            n = register_citation(title, url, content[:1000])
+            doc_sources.append({"n": n, "title": title, "url": url, "content": content[:1000]})
+            path = f"/sources/{n:02d}.md"
+            files[path] = create_file_data(content)
+            mount_notes.append(f"[{n}] {title} -> mounted at {path}, cite as [{n}] when you use it")
+
+    parts: list[str] = []
+    if inline_blocks:
+        parts.append("\n\n---\n\n".join(inline_blocks))
+    if mount_notes:
+        parts.append(
+            "Additional sources mounted in your filesystem — read every one "
+            "via `read_file`/`grep` before answering:\n"
+            + "\n".join(f"- {note}" for note in mount_notes)
+        )
+    prompt_text = ""
+    if parts:
+        prompt_text = (
+            "The user asked you to prioritize these sources when answering "
+            "this turn — read/use all of them before you answer.\n\n"
+            + "\n\n".join(parts)
+        )
+    return prompt_text, files, doc_sources
+
+
 def build_message_content(
     query: str,
     personalization: str,
@@ -344,17 +454,18 @@ def build_message_content(
     user_memory: str = "",
     follow_up_content: str | None = None,
     skill: str | None = None,
+    source_url: list[str] | None = None,
 ) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
 
     Every piece of context is wrapped in its own tag and the real question goes
     last, in the order the prompt's "Input Format" section documents:
     attachments, personalization, memory, requested skill, follow-up selection,
-    then ``<user_query>``. Tags here (rather than the Markdown the system
-    prompt uses) mark the boundary between *data* and *instructions* — most of
-    these blocks are app-supplied context that must never be read as the user
-    making a request, which is exactly what ``<user_memory>`` used to risk when
-    it was appended as loose prose.
+    priority sources, then ``<user_query>``. Tags here (rather than the
+    Markdown the system prompt uses) mark the boundary between *data* and
+    *instructions* — most of these blocks are app-supplied context that must
+    never be read as the user making a request, which is exactly what
+    ``<user_memory>`` used to risk when it was appended as loose prose.
 
     Returns ``(content, files, doc_sources)``. ``files`` holds virtual-path ->
     FileData entries for ready documents, to be merged into the agent's
@@ -364,7 +475,9 @@ def build_message_content(
     frontend treats that as "uploaded document, not a link"). A document is
     never read via a tool call, so it never flows through the ToolMessage
     citation path — the caller must fold `doc_sources` into the `sources` SSE
-    stream itself.
+    stream itself. `source_url` entries add to the same two return values —
+    see `_fetch_source_urls` for how those are split between inline text and
+    mounted files.
 
     Must be called after `reset_citation_registry(thread_id, turn)` —
     `register_document_citation` below needs that context already set up.
@@ -412,6 +525,12 @@ def build_message_content(
             + "\n".join(f"- {note}" for note in document_notes)
         )
 
+    priority_sources = ""
+    if source_url:
+        priority_sources, source_files, source_doc_sources = _fetch_source_urls(source_url)
+        files.update(source_files)
+        doc_sources.extend(source_doc_sources)
+
     # Block order is deliberate for prompt-cache prefix matching (Groq/Gemini
     # both cache on shared prefixes, longest-common-prefix style): most stable
     # across a user's requests first, most unique-to-this-request last, so the
@@ -421,8 +540,9 @@ def build_message_content(
     #                         cached, fully static) system prompt.
     #   personalization    — mostly stable (language/location), only its
     #                         trailing datetime field changes every turn.
-    #   attached_files/requested_skill/follow_up_selection — per-turn, usually
-    #                         absent entirely (dropped by _tagged_block).
+    #   attached_files/requested_skill/follow_up_selection/priority_sources —
+    #                         per-turn, usually absent entirely (dropped by
+    #                         _tagged_block).
     #   user_query         — always unique, must stay last.
     text = "\n\n".join(
         block
@@ -432,6 +552,7 @@ def build_message_content(
             _tagged_block("attached_files", attached_files),
             _tagged_block("requested_skill", skill),
             _tagged_block("follow_up_selection", follow_up_content),
+            _tagged_block("priority_sources", priority_sources),
             _tagged_block("user_query", query),
         )
         if block
@@ -474,6 +595,7 @@ async def _stream_agent(
     turn: int | None = None,
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
+    source_url: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Drive the agent and yield SSE strings (everything except widgets).
@@ -512,6 +634,7 @@ async def _stream_agent(
             user_memory=user_memory,
             follow_up_content=follow_up_content,
             skill=skill,
+            source_url=source_url,
         )
         # Both profiles are deep agents with a StateBackend: hand them the skill
         # files (so SkillsMiddleware can surface/read them) plus any uploaded
@@ -737,6 +860,7 @@ async def run_agent_stream(
     turn: int | None = None,
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
+    source_url: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
@@ -780,6 +904,7 @@ async def run_agent_stream(
                 turn=turn,
                 rewind_config=rewind_config,
                 extra_sources=extra_sources,
+                source_url=source_url,
                 cancellation_event=cancellation_event,
             ):
                 await queue.put(event)

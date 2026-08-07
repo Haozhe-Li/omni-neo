@@ -25,6 +25,12 @@ class QueryRequest(BaseModel):
     # `/check_source` can later confine a claim to sources that existed by
     # its turn — see `core/utils/citations.py`.
     turn: int | None = None
+    # User-whitelisted URLs the agent should prioritize reading for this turn
+    # (see build_message_content in core/stream.py for how these are split
+    # into first-party/inline vs external/mounted). Capped at 5 — the same
+    # limit the frontend's URL picker enforces, kept here too so a client that
+    # bypasses the UI can't hand the agent an unbounded fetch list.
+    source_url: list[str] | None = Field(default=None, max_length=5)
 
 
 class AutoCompleteRequest(BaseModel):

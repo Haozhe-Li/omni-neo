@@ -106,6 +106,7 @@ async def _generate_background(
     user_memory: str = "",
     follow_up_content: str | None = None,
     skill: str | None = None,
+    source_url: list[str] | None = None,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
     # Structured timing for the generation task: how long until the first event
@@ -152,6 +153,7 @@ async def _generate_background(
             user_location=user_location,
             user_local_datetime=user_local_datetime,
             turn=turn,
+            source_url=source_url,
             cancellation_event=cancel_event,
         ):
             if n_events == 0:
@@ -471,6 +473,7 @@ async def chat(
                 turn=request.turn,
                 cancel_event=cancel_event,
                 memory_enabled=memory_enabled,
+                source_url=request.source_url,
             )
         )
         generation_tasks[thread_id] = task
@@ -499,6 +502,7 @@ async def chat(
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=request.turn,
+                source_url=request.source_url,
                 cancellation_event=cancel_event,
             ):
                 yield chunk
