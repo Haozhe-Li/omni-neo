@@ -38,7 +38,7 @@ _LLMS_TXT_REDIS_KEY = "agent_page:https://omniknows.xyz/benchmark/llms.txt"
 _PAGE_ID_RE = re.compile(r"^/pages/([0-9a-f]{12})$")
 
 
-def _first_party_redis_shortcut(url: str) -> dict | None:
+def first_party_redis_shortcut(url: str) -> dict | None:
     """Read known first-party omniknows.xyz content straight out of Redis
     instead of fetching it. Returns None for anything not covered — the
     caller falls back to the normal Spider path unchanged."""
@@ -109,7 +109,7 @@ def load_web_page_spider(url: str) -> dict:
     Returns:
         dict: The loaded web page content as a dictionary with URL and content keys.
     """
-    shortcut = _first_party_redis_shortcut(url)
+    shortcut = first_party_redis_shortcut(url)
     if shortcut is not None:
         return shortcut
 
