@@ -44,8 +44,7 @@ boto3
 upstash-redis
 
 # RAG
-pymupdf
-python-docx
+firecrawl-anydoc
 langchain-text-splitters
 
 # semantic source search (backs /check_source)

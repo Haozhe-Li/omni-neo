@@ -6,9 +6,30 @@ from pydantic import BaseModel
 
 from core.auth import get_current_user
 from core.database.db_user_files import create_pending_file, get_file_record
-from core.RAG.file_parser import get_put_presigned_url, process_uploaded_file, DOCX_MIME_TYPE
+from core.RAG.file_parser import get_put_presigned_url, process_uploaded_file, MARKDOWN_SOURCE_EXTENSIONS
 
 router = APIRouter(prefix="/api/upload", tags=["uploads"])
+
+# Plain-text/code formats accepted alongside the anydoc-converted document
+# formats — mirrors the frontend's own allow-list (search-home.tsx) so a file
+# that clears the browser's picker doesn't get rejected here. Checked by
+# extension OR MIME (like MARKDOWN_SOURCE_EXTENSIONS below): browsers report
+# unreliable/generic MIME types for a lot of these too.
+_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".csv", ".py", ".js", ".jsx", ".ts", ".tsx", ".html",
+    ".json", ".xml", ".yaml", ".yml", ".java", ".c", ".cpp", ".h", ".hpp", ".sh",
+}
+_TEXT_MIME_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/x-python",
+    "application/x-sh",
+    "application/x-httpd-php",
+    "application/yaml",
+    "application/x-yaml",
+}
 
 
 class UploadUrlRequest(BaseModel):
@@ -29,24 +50,14 @@ def api_upload_url(
     file_id = f"user_uploads/{user_id}/{raw_file_id}"
     s3_bucket = os.getenv("S3_BUCKET_NAME", "omni")
 
+    ext = os.path.splitext(request.filename)[1].lower()
     if request.file_type.startswith("image/"):
         category = "image"
     elif (
-        request.file_type == "application/pdf"
-        or request.file_type == DOCX_MIME_TYPE
+        ext in MARKDOWN_SOURCE_EXTENSIONS
+        or ext in _TEXT_EXTENSIONS
         or request.file_type.startswith("text/")
-        or request.file_type
-        in [
-            "application/json",
-            "application/xml",
-            "application/javascript",
-            "application/x-javascript",
-            "application/x-python",
-            "application/x-sh",
-            "application/x-httpd-php",
-            "application/yaml",
-            "application/x-yaml",
-        ]
+        or request.file_type in _TEXT_MIME_TYPES
     ):
         category = "document"
     else:
