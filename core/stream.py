@@ -93,17 +93,20 @@ ENABLE_ERROR_TEST_COMMANDS = os.getenv("ENABLE_ERROR_TEST_COMMANDS", "false").st
 
 # Kill switch for the mid-stream output-side leak guard (`has_prompt_leakage`
 # / `has_structural_leak`, core/prompt_guard.py) that locks a thread via
-# SAFETY_TERMINATED in `_leak_intercept_events` below. On by default — the
-# default preserves current behavior rather than opting in. This is the
-# n-gram fingerprint matcher over the registered system prompts (see
+# SAFETY_TERMINATED in `_leak_intercept_events` below. Off by default — this
+# is the n-gram fingerprint matcher over the registered system prompts (see
 # core/prompt_guard.py's module docstring); a boilerplate self-introduction
 # reply ("who are you?") can legitimately echo the system prompt's own
 # self-description closely enough to trip `verbatim_run`/`dense_overlap` even
-# though nothing was actually extracted by the user. Set
-# ENABLE_PROMPT_LEAK_GUARD=false to bypass just this gate — e.g. during a
-# false-positive spike — without touching the separate input-side harmful-
-# query gate (`is_harmful` below), which stays active regardless.
-ENABLE_PROMPT_LEAK_GUARD = os.getenv("ENABLE_PROMPT_LEAK_GUARD", "true").strip().lower() in {
+# though nothing was actually extracted by the user, and that false-positive
+# has been confirmed live (LangSmith-verified: is_harmful scored ~0.0005 on
+# the same turns, so this guard was the actual cause). Set
+# ENABLE_PROMPT_LEAK_GUARD=true once the false-positive is addressed at the
+# root (e.g. excluding self-introduction boilerplate from the fingerprint, or
+# raising the thresholds further) to turn it back on. The separate input-side
+# harmful-query gate (`is_harmful` below) is unaffected by this flag and
+# stays active regardless.
+ENABLE_PROMPT_LEAK_GUARD = os.getenv("ENABLE_PROMPT_LEAK_GUARD", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
 
