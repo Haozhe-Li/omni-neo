@@ -3,10 +3,7 @@ import boto3
 import base64
 import tempfile
 import logging
-import pymupdf
-from docx import Document as DocxDocument
-from docx.table import Table as DocxTable
-from docx.text.paragraph import Paragraph as DocxParagraph
+import anydoc
 from core.database.db_user_files import (
     update_file_ready,
     get_file_record,
@@ -15,12 +12,23 @@ from core.database.db_user_files import (
 
 logger = logging.getLogger(__name__)
 
-DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-# Formats we parse into text before mounting — `read_file` in the agent's
-# filesystem only understands text, so binary formats must never be handed
-# to it as-is; the raw file is only ever used to produce `extracted_text`.
-MARKDOWN_SOURCE_TYPES = {"application/pdf", DOCX_MIME_TYPE}
+# Extensions anydoc converts to Markdown before mounting — `read_file` in the
+# agent's filesystem only understands text, so binary formats must never be
+# handed to it as-is; the raw file is only ever used to produce
+# `extracted_text`. Extension-driven rather than MIME-driven: browsers report
+# unreliable/generic MIME types (`application/octet-stream` and friends) for
+# legacy Office, OpenDocument, and RTF uploads, while anydoc itself sniffs the
+# real format from file content regardless of what we tell it. CSV is
+# deliberately excluded — it's already LLM-legible as raw text, and anydoc's
+# table-ified Markdown would bloat token count for no benefit.
+MARKDOWN_SOURCE_EXTENSIONS = {
+    ".pdf",
+    ".doc", ".docx", ".docm",
+    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+    ".odt", ".ods", ".odp",
+    ".rtf", ".epub",
+}
 
 # Initialize S3 Client
 s3_client = boto3.client(
@@ -34,60 +42,6 @@ s3_client = boto3.client(
 
 def _download_from_s3(bucket: str, key: str, local_path: str):
     s3_client.download_file(bucket, key, local_path)
-
-
-def _iter_docx_blocks(document: DocxDocument):
-    """Yield paragraphs and tables in document order (python-docx exposes them
-    as separate lists, which would put every table at the end)."""
-    for child in document.element.body.iterchildren():
-        if child.tag.endswith("}p"):
-            yield DocxParagraph(child, document)
-        elif child.tag.endswith("}tbl"):
-            yield DocxTable(child, document)
-
-
-def _docx_paragraph_to_markdown(paragraph: DocxParagraph) -> str:
-    text = paragraph.text.strip()
-    if not text:
-        return ""
-    style = (paragraph.style.name or "").lower()
-    if style.startswith("heading"):
-        try:
-            level = int(style.replace("heading", "").strip())
-        except ValueError:
-            level = 1
-        return f"{'#' * max(1, min(level, 6))} {text}"
-    if style.startswith("list bullet"):
-        return f"- {text}"
-    if style.startswith("list number"):
-        return f"1. {text}"
-    return text
-
-
-def _docx_table_to_markdown(table: DocxTable) -> str:
-    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-    if not rows:
-        return ""
-    lines = [
-        "| " + " | ".join(rows[0]) + " |",
-        "| " + " | ".join("---" for _ in rows[0]) + " |",
-    ]
-    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
-    return "\n".join(lines)
-
-
-def _parse_docx_to_markdown(local_path: str) -> str:
-    document = DocxDocument(local_path)
-    parts = []
-    for block in _iter_docx_blocks(document):
-        md = (
-            _docx_paragraph_to_markdown(block)
-            if isinstance(block, DocxParagraph)
-            else _docx_table_to_markdown(block)
-        )
-        if md:
-            parts.append(md)
-    return "\n\n".join(parts)
 
 
 def process_uploaded_file(file_id: str):
@@ -110,13 +64,10 @@ def process_uploaded_file(file_id: str):
             update_file_failed(file_id)
             return
 
+        ext = os.path.splitext(record["original_filename"])[1].lower()
         try:
-            full_text = ""
-            if record["file_type"] == "application/pdf":
-                with pymupdf.open(local_path) as pdf_doc:
-                    full_text = "\n".join(page.get_text() for page in pdf_doc)
-            elif record["file_type"] == DOCX_MIME_TYPE:
-                full_text = _parse_docx_to_markdown(local_path)
+            if ext in MARKDOWN_SOURCE_EXTENSIONS:
+                full_text = anydoc.to_markdown(local_path)
             else:
                 with open(local_path, "r", encoding="utf-8") as f:
                     full_text = f.read()

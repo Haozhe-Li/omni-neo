@@ -66,7 +66,7 @@ from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.tools.web_page_reader import first_party_redis_shortcut, load_web_page_spider
 from core.widget_predictor import predict_widgets
-from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_TYPES
+from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_EXTENSIONS
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
 
 # Tool names whose calls are represented by artifact events, not tool_call.
@@ -301,7 +301,7 @@ def _reasoning_of(chunk: AIMessageChunk) -> str:
 
 
 def _dedupe_document_name(
-    thread_id: str | None, filename: str, file_id: str, created_at, file_type: str
+    thread_id: str | None, filename: str, file_id: str, created_at
 ) -> str:
     """Finder-style name collision handling: name.ext, name(1).ext, name(2).ext, ...
 
@@ -314,7 +314,7 @@ def _dedupe_document_name(
     actually re-uploaded.
     """
     display_name = filename
-    if file_type in MARKDOWN_SOURCE_TYPES:
+    if os.path.splitext(filename)[1].lower() in MARKDOWN_SOURCE_EXTENSIONS:
         stem, ext = os.path.splitext(filename)
         # Fold the original extension into the stem (report.pdf -> report_pdf.md)
         # so a same-named .pdf and .docx don't collide once both become .md.
@@ -503,7 +503,7 @@ def build_message_content(
                     document_notes.append(f"{filename} (still being processed, not readable yet)")
                     continue
                 mounted_name = _dedupe_document_name(
-                    thread_id, filename, file_id, record["created_at"], record["file_type"]
+                    thread_id, filename, file_id, record["created_at"]
                 )
                 path = f"/uploads/{mounted_name}"
                 full_text = record.get("extracted_text") or ""
