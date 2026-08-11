@@ -196,3 +196,14 @@ cython_debug/
 .claude
 evals/.toolcache
 *.json
+
+data
+.art
+wandb
+finetune/dataset
+# Fine-tuning artifacts that are derived or bulky. The reviewed labels
+# (ground_truth.tsv) and the split (train/test.tsv) ARE committed — an eval you
+# cannot reproduce is not a result. These two are regenerable: sft_train.jsonl
+# from train.tsv via build_dataset.py, labelled.jsonl by re-running label.py.
+finetune/**/dataset
+

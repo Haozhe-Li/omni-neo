@@ -1,5 +1,8 @@
+import os
+
 from langchain_cerebras import ChatCerebras as _BaseChatCerebras
 from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain.chat_models import init_chat_model
 
 
@@ -94,12 +97,36 @@ gpt_5_6_terra = init_chat_model("openai:gpt-5.6-terra", use_responses_api=True)
 gpt_5_4_mini = init_chat_model("openai:gpt-5.4-mini", use_responses_api=True)
 gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 
+# ── Widget predictor (fine-tuned) ───────────────────────────────────────────
+# A LoRA over OpenPipe/Qwen3-14B-Instruct, SFT'd on 486 teacher-labelled
+# queries and hosted by W&B Inference. It replaces gpt-oss-20b on the widget
+# path only: 93/100 vs 79/100 on the held-out set (McNemar p=0.0005, 15 fixed
+# against 1 regression), at the same p50 and a better p95.
+#
+# Trained and served against `core/widget_predictor.py::_PREDICTOR_PROMPT`.
+# Editing that prompt invalidates these weights — the adapter has only ever
+# seen queries under that exact system message, so retrain
+# (finetune/widget_predictor/train.py) rather than assuming it generalises.
+#
+# `os.environ[...]` deliberately, not `os.getenv`: ChatOpenAI silently falls
+# back to OPENAI_API_KEY when handed None, which would send an OpenAI key to
+# W&B and fail with a confusing 401 instead of naming the missing variable.
+omni_widget_predictor_14b = ChatOpenAI(
+    model=(
+        os.environ["WIDGET_PREDICTOR_14B_MODEL"]
+    ),
+    base_url="https://api.inference.wandb.ai/v1",
+    api_key=os.environ["WANDB_API_KEY"],
+    temperature=0,
+    max_tokens=128,
+)
+
 fast_llm = gpt_oss_120b_low
 pro_llm = gemma_4_31b
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
 update_memories_llm = gpt_oss_20b
-widget_predictor_llm = gpt_oss_20b
+widget_predictor_llm = omni_widget_predictor_14b
 credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
 # Structured extraction only (title/instruction/schedule) — low reasoning

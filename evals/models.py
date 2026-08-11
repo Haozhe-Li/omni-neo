@@ -34,6 +34,12 @@ _EXCLUDED: dict[str, str] = {
     # (core/auto_complete.py) — a one-shot structured-output call it handles
     # fine — so it stays in core/llm.py.
     "llama3_1_8b": "below the pro-profile floor; still used for autocomplete",
+    # A LoRA fine-tuned to emit widget-routing JSON and nothing else. Handed a
+    # pro system prompt and a research task it would answer with
+    # {"widgets":[]}, so its score would describe the fine-tune rather than any
+    # chat capability. finetune/widget_predictor/evaluate.py scores it instead,
+    # against its own held-out split.
+    "omni_widget_predictor_14b": "task-specific widget classifier, not a chat model",
 }
 
 _PROVIDER_BY_CLASS = {
