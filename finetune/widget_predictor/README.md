@@ -69,16 +69,29 @@ where the two disagree, which is what made 93-vs-79 a real result rather than a
 plausible one. The false-positive rate on no-widget rows and the printed
 mismatch list matter as much as the total.
 
-## What is and isn't committed
+## `dataset/` is not in git
 
-`ground_truth.tsv` is the source of truth — 586 rows, teacher-labelled with 3
-votes each and reviewed by hand, with the vote count preserved in the trailing
-`#` note. `train.tsv` / `test.tsv` are the split, committed so an eval is
-reproducible.
+The whole directory is gitignored, so a fresh clone has the pipeline but no
+data. What lives there:
 
-`sft_train.jsonl` (2.7MB — the 5KB system prompt repeated 486 times) and
-`labelled.jsonl` are ignored. Both are regenerable: the first from `train.tsv`
-in one command, the second by re-running step 2.
+| File | What it is |
+|---|---|
+| `ground_truth.tsv` | 586 rows, 3 teacher votes each, reviewed by hand. Vote counts survive in the trailing `#` note. |
+| `train.tsv` / `test.tsv` | The split the numbers above were measured on. |
+| `seed_queries.tsv` | The hand-written 100. `build_dataset.py` reads it to know which rows to pin to train. |
+| `sft_train.jsonl` | Built. 2.7MB, mostly the 5KB system prompt repeated 486 times. |
+| `labelled.jsonl` | Raw teacher output including every vote. |
+
+`build_dataset.py` rebuilds the last four deterministically (fixed seed) from
+`ground_truth.tsv` and `seed_queries.tsv`. Those two are the ones that matter,
+and neither is reproducible: `ground_truth.tsv` cost ~1800 teacher calls plus a
+manual pass, and `gen_queries.py` invents different queries on every run, so
+re-running the pipeline produces a *different* test set that cannot be compared
+against the results above.
+
+Keep a copy outside the repo — a W&B artifact next to the adapter is the
+natural home. Without one, losing this working copy means the eval can no
+longer be re-run and the next fine-tune starts from nothing.
 
 ## Known issues
 
