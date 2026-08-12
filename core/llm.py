@@ -115,12 +115,34 @@ gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 qwen3_30b_a3b = ChatWandb(
     model="Qwen/Qwen3-30B-A3B-Instruct-2507", temperature=0.2, max_tokens=8192
 )
-omni_pro_104_v1 = ChatWandb(
+rix_30b_a3b_v1 = ChatWandb(
     model=(
         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
         "/omni-pro-agent/omni-pro-104-0812-0016:v1"
     ),
     temperature=0.7,
+    max_tokens=8192,
+)
+
+# v3: 122 rows, 6 epochs, 732 steps, final loss 0.413. Serves `rix`.
+#
+# What changed from v1 (104 rows, 1 epoch, loss ~0.9): all 15 deep-research
+# trajectories are back, and the run actually completed. Two earlier attempts at
+# the full set hung forever because W&B Serverless Training has a hard
+# **32,768-token** sequence limit that it does not error on — it just stops
+# producing gradient steps while still reporting RUNNING. v2 died at step 97 of
+# 516 on the first row above it. `filter_context.py` drops anything over 32,000
+# measured through the real Qwen chat template; the longest row here is 31,840.
+#
+# temperature 0.2, not the 0.7 above: v1's published 0.866 was measured at 0.2,
+# so this keeps the v1-vs-v3 comparison clean. Note that means re-running v1
+# today would NOT reproduce 0.866 — its temperature was raised afterwards.
+rix_30b_a3b_v3 = ChatWandb(
+    model=(
+        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+        "/omni-pro-agent/omni-pro-v3-0812-1157:v1"
+    ),
+    temperature=0.2,
     max_tokens=8192,
 )
 

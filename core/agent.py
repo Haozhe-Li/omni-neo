@@ -7,7 +7,7 @@ see `core/chat_models.py` for the five entries and what each costs — and every
 one of them is assembled here identically: same `SYSTEM_PROMPT`, same 15 tools,
 same 9 skills, same 30-call budget. Only the weights differ.
 
-The uniformity is load-bearing, not tidiness. `omni_pro_104_v1` is a LoRA
+The uniformity is load-bearing, not tidiness. `rix_30b_a3b_v1` is a LoRA
 distilled from teacher rollouts of *this* agent, and a LoRA only ever sees one
 system prompt and one tool schema. A per-model prompt would mean serving the
 adapter an input it has never seen — silently, with no error.
@@ -112,7 +112,7 @@ SKILL_FILES = _load_skill_files()
 # `SYSTEM_PROMPT` at the bottom of this block is assembled from the Markdown
 # sections below, in the order they are listed there.
 #
-# The section *text* is frozen, not just the section list. `omni_pro_104_v1` was
+# The section *text* is frozen, not just the section list. `rix_30b_a3b_v1` was
 # distilled under this exact string, so an edit here — even a reordering, even a
 # reworded heading — serves the adapter an input it has never seen, silently and
 # without an error. This is why a few sections still say "in this (pro) profile"
