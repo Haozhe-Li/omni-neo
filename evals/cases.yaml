@@ -100,7 +100,14 @@ defaults:
     - {key: tool_discipline,   weight: 2, turn: all}
     - {key: no_hyperlinks,     weight: 2, turn: all}
     - {key: no_ascii_art,      weight: 2, turn: all}
+    # Three complementary citation checks, and they must stay separate.
+    # `citation_exists` catches fabricated numbers, `citation_format` catches
+    # malformed markers — both pass vacuously on an answer with no citations at
+    # all, which is why `citation_required` exists: it is the only one that
+    # fires when the model retrieved sources and then stayed silent. It goes
+    # inert on its own when nothing citable was retrieved.
     - {key: citation_exists,   weight: 3, turn: all}
+    - {key: citation_required, weight: 3, turn: all}
     - {key: citation_format,   weight: 2, turn: all}
     - {key: citation_coverage, args: {min_ratio: 0.6}, turn: all}
     - {key: no_leading_header, weight: 1, turn: all}

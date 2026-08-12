@@ -119,7 +119,12 @@ def start_run(
         # Split out rather than left for the dashboard to parse back out of the
         # label: gpt-oss-120b is a fully crossed provider x effort grid and
         # pivoting it is the point of running all six variants.
-        "provider": model.provider,
+        #
+        # `display_provider`, not `provider` — our own fine-tunes are hosted by
+        # W&B but belong to us, so they show as `omni`. Pricing still keys off
+        # `provider` (see compute_cost); only the column the dashboard renders
+        # changes.
+        "provider": model.display_provider,
         "reasoning_effort": model.reasoning_effort,
         "model_family": model.family,
         "judge_model": judge_model,
@@ -351,7 +356,7 @@ def upsert_pricing_mirror(ctx: RunContext) -> int | None:
             {
                 "version": table.version,
                 "model_label": model.label,
-                "provider": model.provider,
+                "provider": model.display_provider,
                 "usd_per_1m_input": tier.input,
                 "usd_per_1m_output": tier.output,
                 "usd_per_1m_cached_input": tier.cached_input,

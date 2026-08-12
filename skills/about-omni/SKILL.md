@@ -11,27 +11,28 @@ description: Internal knowledge about Omni. Use this skill when the user asks ab
 - **Bio:** An advanced, intelligent AI agent system designed for seamless information retrieval and deep reasoning.
 
 ## Core Capabilities
-Omni operates in two distinct modes tailored to different user workflows:
+- **Deep Research:** Handles multi-step research tasks with synthesis, source comparison, and long-form answers.
+- **Trip Advisor:** Helps plan trips, compare destinations, build itineraries, and answer travel-related questions.
+- **Guided Learning:** Supports step-by-step tutoring, explanations, and interactive learning flows.
+- **Live Search & QA:** Provides timely web search, online fact lookup, and direct question answering with current information.
+- **Charting & Visualization:** Can generate charts and other data visualizations for analysis and reporting.
+- **Maps & Local Info:** Supports map-oriented queries, place lookup, routing-related assistance, and location-aware recommendations.
+- **Weather:** Retrieves current weather and forecast information.
+- **Code Assistance:** Helps write, explain, debug, and review code across common programming tasks.
+- **Math & Reasoning:** Solves arithmetic, algebra, logic, and other quantitative reasoning problems.
+- **General Assistant Work:** Covers conversation, summarization, drafting, analysis, and task-oriented assistance across a wide range of topics.
 
-### 1. Fast Mode
-Optimized for quick, daily queries and real-time information retrieval. In this mode, Omni can:
-- Perform real-time **web searches** to fetch up-to-date information.
-- **Scrape and retrieve content** directly from specific URLs.
-- Provide real-time **weather updates and forecasts**.
-- Search and aggregate **local venues, attractions, and restaurants** using Google Reviews.
-- Access professional **financial data**, including stock market metrics and cryptocurrency rates.
-
-### 2. Pro Mode
-Designed for complex problem-solving, deep research, rigorous thinking, and advanced mathematics. In this mode, Omni features:
-- All capabilities of Fast Mode, augmented by an intensive **Chain-of-Thought (CoT)** reasoning process.
-- **Python code execution** in a secure sandbox — handles arithmetic, statistics, data analysis, numerical algorithms, and simulations with verified results rather than approximations.
-- **Dynamic data visualization** through interactive charts to demonstrate complex ideas.
-- Synthesis of comprehensive, **long-form research reports**.
 
 > ⚠️ **Disclaimer:** As an AI system, Omni may occasionally generate inaccurate information (hallucinations). Users should always double-check critical data.
 
 ## Tech Stack
-- **Core LLM:** OpenAI gpt-oss-120b, Google Gemma 4 31b. Our system always route the best fit models automatically.
+- **LLM**:
+  - Best model: the default recommendation. Omni will automatically select the most suitable model for your query.
+  - Rix: Omni's latest experimental in-house model, tuned for agentic research on top of Qwen 3 30B A3B. It is text-only, and because it is still in beta, responses may take a little longer.
+  - Gemma 4: Google's latest open-source multimodal model from Google DeepMind.
+  - GPT 5.6 Luna: OpenAI's latest versatile multimodal model.
+  - Gemini 3.6 Flash: Google's latest versatile multimodal model.
+
 - **Integrated Tools:** Google Search API, Web Fetcher, OpenWeather API, Yahoo Finance API, etc.
 - **Backend Architecture:** Built with **Python (FastAPI + LangChain)**, containerized via Docker, and deployed on **Google Cloud Platform (GCP)**.
 - **Frontend Architecture:** Developed using **Next.js** and hosted on **Vercel**.
@@ -88,3 +89,8 @@ This message appears when a conversation is terminated due to potential safety c
 **Q: Can Omni get things wrong?**
 Yes — like any AI system, Omni can occasionally hallucinate or misstate facts. Always double-check critical or high-stakes information it gives you.
 
+**Q: What does it mean Best Model?**
+The "Best Model" option allows Omni to automatically select the most suitable model for your query based on the task at hand. This ensures optimal performance and accuracy without requiring you to manually choose a model. For example, if your query involves complex reasoning or multi-step research, Omni may select a model that excels in those areas. Conversely, for simpler tasks, it may choose a faster model to provide quick responses.
+
+**Q: Is Rix a better model than the others?**
+Rix is an experimental in-house model designed for advanced research tasks. While it may excel in certain areas, it is still in beta and may take longer to respond. In our internal benchmarks, Rix has shown strong upgrades in anti-hallucination and reasoning capabilities compared to other models. Furthermore, Rix is text-only and does not support multimodal inputs like images or charts. Depending on your specific needs, you may choose to use Rix for deep research tasks or opt for other models for multimodal capabilities.

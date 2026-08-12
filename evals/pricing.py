@@ -2,10 +2,12 @@
 
 This file is the pricing oracle for `eval_results.cost_usd` — the YAML gets
 read directly at compute time, so updating a price is a one-line YAML edit
-followed by a re-run, never a code change. See the YAML's header for the two
-assumptions (a hardcoded cache-hit ratio, an assumed OpenAI long-context
-threshold) that make a single number possible from data that is genuinely
-uneven across providers.
+followed by a re-run, never a code change.
+
+Prompt caching is not modelled — every input token bills at list `input` rate.
+See `compute_cost` for why the previous blended-cache-ratio formula was
+removed. The one assumption left is the OpenAI long-context threshold, flagged
+in the YAML header.
 """
 from __future__ import annotations
 
@@ -132,10 +134,18 @@ def compute_cost(
     file — never 0.0, so an unpriced model reads as "unknown" in the
     dashboard rather than winning every cost comparison it appears in.
 
-    Billed on TOTAL input tokens at a blended rate
-    (`cache_hit_ratio * cached_input + (1 - cache_hit_ratio) * input`), not on
-    `input_tokens` net of a measured cache count — see the YAML header for why
-    a fixed ratio is used uniformly instead of per-request telemetry.
+    Every input token is billed at the plain `input` rate. Prompt caching is
+    deliberately NOT modelled: the previous formula blended a flat, assumed
+    75% cache-hit ratio into an effective input price, which made every cost
+    figure a function of a number nobody measured. Providers do not report cache
+    hits comparably (Cerebras and Gemini expose `cache_read`, Groq exposes
+    nothing), so the assumption could never be validated — and it moved costs by
+    up to 10x on models with a steep cached discount. Charging list price for
+    everything is wrong in a known direction and by a knowable amount, which is
+    more useful than being wrong by an unknown one.
+
+    `cached_input` stays in `pricing.yaml` as recorded reference data; nothing
+    reads it for billing.
     """
     table = table or load_pricing()
     price = table.get(provider, family)
@@ -143,21 +153,16 @@ def compute_cost(
         return None
     tier = _select_tier(price, table, peak_context_tokens)
 
-    cached_rate = tier.cached_input if tier.cached_input is not None else tier.input
-    ratio = table.cache_hit_ratio
-    effective_input = ratio * cached_rate + (1 - ratio) * tier.input
-
-    cost = (input_tokens / 1_000_000) * effective_input + (output_tokens / 1_000_000) * tier.output
+    cost = (input_tokens / 1_000_000) * tier.input + (output_tokens / 1_000_000) * tier.output
     return round(cost, 6)
 
 
 if __name__ == "__main__":  # `python -m evals.pricing` to eyeball the table
     t = load_pricing()
-    print(f"pricing.yaml version={t.version}  cache_hit_ratio={t.cache_hit_ratio}  "
-          f"long_context_threshold={t.long_context_threshold}\n")
+    print(f"pricing.yaml version={t.version}  "
+          f"long_context_threshold={t.long_context_threshold}  (cache not modelled)\n")
     for (provider, family), price in sorted(t.models.items()):
         for tier_name, tier in price.tiers.items():
-            eff = t.cache_hit_ratio * (tier.cached_input or tier.input) + (1 - t.cache_hit_ratio) * tier.input
             print(f"  {provider:<10} {family:<18} {tier_name:<14} "
-                  f"in=${tier.input:<7} cached=${str(tier.cached_input):<7} out=${tier.output:<7}  "
-                  f"effective_in=${eff:.4f}")
+                  f"in=${tier.input:<7} out=${tier.output:<7}   "
+                  f"(cached=${str(tier.cached_input)} — recorded, not billed)")

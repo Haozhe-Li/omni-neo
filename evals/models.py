@@ -71,6 +71,23 @@ class ModelSpec:
     def __str__(self) -> str:
         return self.label
 
+    @property
+    def display_provider(self) -> str:
+        """Who the model is *from*, for the leaderboard's provider column.
+
+        Diverges from `provider` in exactly one case: our own fine-tunes are
+        hosted by W&B but are not W&B's models, so they read as `omni`. The
+        bare `Qwen/Qwen3-30B-A3B-Instruct-2507` keeps `wandb` — it is somebody
+        else's model that we merely rent inference for.
+
+        Kept separate from `provider` rather than renaming it, because
+        `provider` is half of the `(provider, family)` key into pricing.yaml.
+        Renaming it there would make every W&B model silently unpriced.
+        """
+        if self.model_id.startswith("wandb-artifact:///"):
+            return "omni"
+        return self.provider
+
 
 def _provider_of(llm: BaseChatModel) -> str:
     cls = type(llm).__name__
@@ -98,8 +115,23 @@ def _family_of(model_id: str) -> str:
     Groq serves gpt-oss as `openai/gpt-oss-120b` and Cerebras as plain
     `gpt-oss-120b`; without this they'd land in different families and the 2x3
     provider-vs-effort grid would never line up.
+
+    A W&B LoRA artifact collapses onto its base model. The raw id is a
+    per-training-run path (`.../omni-pro-v3-0812-1157:v1`), so keying pricing on
+    it would mean a new `pricing.yaml` entry for every retrain — and a silently
+    unpriced model until someone remembered. Every artifact in this project is a
+    rank-1 adapter over Qwen3-30B-A3B and is served at the base model's rate.
     """
+    if model_id.startswith("wandb-artifact:///"):
+        return _WANDB_ARTIFACT_BASE
     return model_id.split("/")[-1]
+
+
+# The base model every LoRA in `omni-pro-agent` is trained on, and the family
+# their cost is looked up under. Change this if a future adapter uses a
+# different base — an artifact priced against the wrong base is silently wrong,
+# not an error.
+_WANDB_ARTIFACT_BASE = "Qwen3-30B-A3B-Instruct-2507"
 
 
 # Display-only relabeling, keyed by var_name — does NOT touch `family`

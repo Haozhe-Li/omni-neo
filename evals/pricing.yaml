@@ -42,11 +42,17 @@
 # ("insert a new row with a higher version") applies here: `version` is
 # recorded on every `eval_runs` row as `pricing_version`, so a historical
 # run's cost stays reproducible even after this file changes.
-version: 1
-updated: "2026-08-03"
+version: 2
+updated: "2026-08-12"
 
 assumptions:
-  cache_hit_ratio: 0.75
+  # cache_hit_ratio is GONE as of version 2. It was a flat assumed 0.75 blended
+  # into an effective input price, so every cost figure depended on a number
+  # nobody measured and no provider reports comparably. All input tokens now
+  # bill at the plain `input` rate; `cached_input` below is kept as reference
+  # data only. Costs therefore read HIGHER than version 1 across the board, and
+  # v1 and v2 figures are not comparable — `pricing_version` on each
+  # `eval_runs` row records which applied.
   openai_long_context_threshold_tokens: 200000
   # "Cache writes" (OpenAI's table has a 4th column, priced above the plain
   # input rate) has no corresponding token count in the usage_metadata this
@@ -113,6 +119,11 @@ providers:
     # on the assumption the suffix is a checkpoint label and not a separate
     # SKU. If a bill ever disagrees, this is the line that is wrong.
     models:
+      # Covers the bare base model AND every LoRA served off it: a
+      # `wandb-artifact:///...` id resolves to this family (see
+      # `evals.models._family_of`), so rix v1 / v3 and any future adapter are
+      # priced here without a per-artifact entry that would go stale on the
+      # next retrain.
       Qwen3-30B-A3B-Instruct-2507:
         input: 0.10
         cached_input: 0.10

@@ -488,6 +488,46 @@ def _citation_exists(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     return CheckResult.ok(f"all {len(cited)} citations resolve", cited=sorted(cited))
 
 
+@check("citation_required")
+def _citation_required(trace: RunTrace, spec: CheckSpec) -> CheckResult:
+    """Fail when the tools handed the model citable sources and it cited none.
+
+    This exists because `citation_exists` and `citation_format` both pass
+    *vacuously*: an answer with zero `[n]` markers has no fabricated citation
+    and no malformed one, so both return ok. A model that simply never cites
+    therefore scored full marks on two of the three citation checks, and the
+    only one that required citations at all (`citation_count`) is configured on
+    four cases. Measured on the sft-v1 run, 31 of its 42 `citation_exists`
+    passes were this vacuum — the aggregate read 95% while the model was
+    actually silent three quarters of the time.
+
+    Self-configuring, so it can sit in `common_checks` without a per-case
+    argument: the trigger is the citation registry, which the retrieval tools
+    populate themselves. An empty registry means nothing citable was retrieved
+    (a `run_python` answer, a pure rewrite, a clarifying question, a
+    `get_stock_data` lookup — that tool registers no sources), and the check
+    goes inert rather than punishing correct restraint.
+
+    Deliberately a separate key rather than a stricter `citation_exists`:
+    "cited something that does not exist" and "cited nothing at all" are
+    different failures with different fixes, and collapsing them into one
+    number would hide whichever one is currently dominant.
+    """
+    registered = trace.citation_numbers()
+    if not registered:
+        return CheckResult.ok("no citable sources registered — nothing to cite")
+    cited = parsers.find_citations(_text(trace, spec)).distinct
+    if not cited:
+        return CheckResult.fail(
+            f"{len(registered)} source(s) were available and the answer cites none",
+            registered=sorted(registered),
+        )
+    return CheckResult.ok(
+        f"cites {len(cited)} of {len(registered)} available source(s)",
+        cited=sorted(cited),
+    )
+
+
 @check("citation_format")
 def _citation_format(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     cites = parsers.find_citations(_text(trace, spec))
