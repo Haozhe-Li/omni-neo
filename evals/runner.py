@@ -35,7 +35,6 @@ async def run_case(
     model: ModelSpec,
     *,
     cache: ToolCache,
-    profile: str = "pro",
 ) -> RunTrace:
     """Run every turn of `case` in one thread, returning the full trace."""
     trace = RunTrace(case_id=case.id, model_label=model.label)
@@ -51,7 +50,7 @@ async def run_case(
 
     from core.agent import RETRIEVAL_TOOLS
 
-    agent = build_eval_agent(model.llm, profile=profile, tools=wrap_tools(RETRIEVAL_TOOLS, cache))
+    agent = build_eval_agent(model.llm, tools=wrap_tools(RETRIEVAL_TOOLS, cache))
     from evals.agent_factory import skill_files
 
     thread_id = f"eval-{uuid.uuid4()}"
@@ -66,7 +65,7 @@ async def run_case(
                     query=turn.text,
                     personalization=personalization,
                     thread_id=thread_id,
-                    files=skill_files(profile) if i == 0 else None,
+                    files=skill_files() if i == 0 else None,
                     requested_skill=None,
                 ),
                 timeout=case.timeout_s,

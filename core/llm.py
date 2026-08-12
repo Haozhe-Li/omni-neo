@@ -32,17 +32,63 @@ class ChatCerebras(_BaseChatCerebras):
         return generation_chunk
 
 
+class ChatWandb(ChatOpenAI):
+    """W&B Inference — OpenAI-compatible wire format, but not OpenAI.
+
+    Subclassed so the one place that cares can tell them apart:
+    `evals/models.py` derives both the leaderboard label and the pricing key
+    from the class, and a W&B-hosted Qwen filed under `openai` would be priced
+    at GPT rates (30x off) and grouped into the wrong provider column.
+
+    deepagents still resolves this to the `openai` harness profile —
+    `ls_provider` is hardcoded in ChatOpenAI and inherited here, verified
+    rather than assumed. That matters: an unregistered provider key would
+    restore deepagents' `BASE_AGENT_PROMPT` and quietly change the system
+    prompt for W&B models only, making their scores incomparable with
+    everything else in the matrix.
+
+    `os.environ[...]` deliberately, not `os.getenv`: ChatOpenAI silently falls
+    back to OPENAI_API_KEY when handed None, which would send an OpenAI key to
+    W&B and fail with a confusing 401 instead of naming the missing variable.
+    """
+
+    def __init__(self, model: str, **kwargs):
+        super().__init__(
+            model=model,
+            base_url="https://api.inference.wandb.ai/v1",
+            api_key=os.environ["WANDB_API_KEY"],
+            **kwargs,
+        )
+
+    def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
+        """Drop the per-chunk usage report W&B sends on every single chunk.
+
+        W&B repeats a *cumulative* usage object on all of them (measured: 29 of
+        29 chunks on a 27-token completion), and LangChain's chunk `+` operator
+        sums `usage_metadata` as it assembles the message — so a streamed reply
+        arrives claiming roughly `n_chunks x` its real token count. That is not
+        a rounding error: an eval case with a 7.5k prompt reported 94,391 input
+        tokens, which then flows straight into `eval_results.cost_usd`.
+
+        Exactly one chunk carries empty `choices` — the terminal usage-only one
+        — and its cumulative figure is the true total. Dropping usage from every
+        chunk that still has `choices` leaves that one intact, so the assembled
+        message ends up with the correct number instead of a sum of prefixes.
+
+        Overriding this single hook covers sync and async both: `_stream` and
+        `_astream` funnel every chunk through it (the same reason the
+        ChatCerebras override above sits here rather than in `_astream`).
+        """
+        if chunk.get("choices") and chunk.get("usage") is not None:
+            chunk = {**chunk, "usage": None}
+        return super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+
+
 gpt_oss_120b_low = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="low")
 gpt_oss_120b_high = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="high")
 gpt_oss_120b_medium = ChatCerebras(model="gpt-oss-120b", temperature=0.2, reasoning_effort="medium")
-
-# reasoning_format="parsed": keeps reasoning tokens out of `content` (Groq's
-# default "raw" inlines them as <think>...</think>) and puts them in
-# additional_kwargs.reasoning_content instead, so core/stream.py can stream
-# them as their own `reasoning` SSE event instead of leaking into the answer.
-# Set on every Groq gpt-oss instance, not just the one that happened to need it
-# first: any of these can end up serving a chat turn via the fallback chain
-# below, and a raw <think> block landing in the answer stream is a visible bug.
 gpt_oss_120b_low_groq = ChatGroq(
     model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="low", reasoning_format="parsed"
 )
@@ -52,65 +98,32 @@ gpt_oss_120b_high_groq = ChatGroq(
 gpt_oss_120b_medium_groq = ChatGroq(
     model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium", reasoning_format="parsed"
 )
-
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
 qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
 llama3_1_8b = ChatGroq(model="llama-3.1-8b-instant")
-# Enabled for the eval roster (pricing already on file in
-# evals/pricing.yaml). Not wired to any role — nothing in core/ points at it —
-# so this only exists for evals.models' reflective discovery to pick up.
 glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
 gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="low")
 gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="high")
-# NOT the content-moderation "Llama Guard" family despite the model id's
-# "guard" naming similarity — this is Prompt Guard 2 86M, a small classifier
-# purpose-built to score a span of text for prompt-injection/jailbreak intent,
-# with a real 512-token context window (core/prompt_guard.py's is_harmful
-# truncates to that budget before calling it).
 prompt_guard_2_86m = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
-
-# ── Frontier candidates (evaluation only) ───────────────────────────────────
-# Not wired into any profile — no `fast_llm`/`pro_llm`/helper role points at
-# these. They exist so `evals/models.py`, which reflects over this module,
-# picks them up automatically and benchmarks them against the models that do
-# serve traffic. Promote one by pointing a role at it; nothing else needs to
-# change.
-#
-# Verified against the live APIs: all five stream, and all five report
-# `usage_metadata` (gemini-3.6-flash also reports reasoning tokens), so the
-# eval's token and cost accounting works for them without special-casing.
 gemini_3_6_flash = init_chat_model("google_genai:gemini-3.6-flash")
-
-# `use_responses_api=True` on all four, and it is not optional for the 5.6
-# pair: on /v1/chat/completions they reject function tools outright —
-# "Function tools with reasoning_effort are not supported ... use /v1/responses
-# or set reasoning_effort to 'none'" — so an agent with tools 400s on every
-# turn. The other way out, forcing reasoning off, would benchmark a
-# deliberately hobbled model. The Responses API also reports reasoning tokens
-# for these models where chat completions returns 0, so it is what makes their
-# effort spend measurable at all. Applied to 5.4-mini/nano too, so the four
-# share one request path and differ only in weights.
 gpt_5_6_luna = init_chat_model("openai:gpt-5.6-luna", use_responses_api=True)
 gpt_5_6_terra = init_chat_model("openai:gpt-5.6-terra", use_responses_api=True)
 gpt_5_4_mini = init_chat_model("openai:gpt-5.4-mini", use_responses_api=True)
 gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
+qwen3_30b_a3b = ChatWandb(
+    model="Qwen/Qwen3-30B-A3B-Instruct-2507", temperature=0.2, max_tokens=8192
+)
+omni_pro_104_v1 = ChatWandb(
+    model=(
+        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+        "/omni-pro-agent/omni-pro-104-0812-0016:v1"
+    ),
+    temperature=0.7,
+    max_tokens=8192,
+)
 
-# ── Widget predictor (fine-tuned) ───────────────────────────────────────────
-# A LoRA over OpenPipe/Qwen3-14B-Instruct, SFT'd on 486 teacher-labelled
-# queries and hosted by W&B Inference. It replaces gpt-oss-20b on the widget
-# path only: 93/100 vs 79/100 on the held-out set (McNemar p=0.0005, 15 fixed
-# against 1 regression), at the same p50 and a better p95.
-#
-# Trained and served against `core/widget_predictor.py::_PREDICTOR_PROMPT`.
-# Editing that prompt invalidates these weights — the adapter has only ever
-# seen queries under that exact system message, so retrain
-# (finetune/widget_predictor/train.py) rather than assuming it generalises.
-#
-# `os.environ[...]` deliberately, not `os.getenv`: ChatOpenAI silently falls
-# back to OPENAI_API_KEY when handed None, which would send an OpenAI key to
-# W&B and fail with a confusing 401 instead of naming the missing variable.
 omni_widget_predictor_14b = ChatOpenAI(
     model=(
         os.environ["WIDGET_PREDICTOR_14B_MODEL"]
@@ -121,34 +134,16 @@ omni_widget_predictor_14b = ChatOpenAI(
     max_tokens=128,
 )
 
-fast_llm = gpt_oss_120b_low
-pro_llm = gemma_4_31b
+# For chat
+chat_llm = gpt_oss_120b_low
+vision_llm = gemma_4_31b
+
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
 update_memories_llm = gpt_oss_20b
 widget_predictor_llm = omni_widget_predictor_14b
 credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
-# Structured extraction only (title/instruction/schedule) — low reasoning
-# effort is enough and keeps the interactive create-flow snappy.
 research_schedule_llm = gpt_oss_120b_low
 
-# ── Chat fallbacks ──────────────────────────────────────────────────────────
-# Cerebras hosts both interactive models and has been flaky, so each chat
-# profile carries an ordered fallback chain, tried left to right by
-# ModelFallbackMiddleware when the primary call raises (see core/agent.py).
-# Only the two interactive profiles have one: everything else here is a
-# short, non-interactive call where a failure degrades one feature rather than
-# breaking the answer the user is waiting on.
-#
-# fast: the same gpt-oss-120b at the same reasoning effort, hosted by Groq —
-# identical behaviour, different provider. Gemini Flash-Lite backs it up as a
-# last resort AND as the multimodal escape hatch: the fast profile swaps to a
-# vision model when an image is in the conversation, and if Cerebras is the
-# thing that's down, neither Cerebras Gemma nor text-only gpt-oss can serve
-# that turn. The doomed Groq attempt costs one failed request on the rare
-# image-plus-outage overlap, which beats special-casing the chain per request.
-#
-# pro: Gemini Flash-Lite, the same model the scheduled agent already runs on.
-FAST_LLM_FALLBACKS = [gpt_oss_120b_low_groq, gemini_flash_lite_latest]
-PRO_LLM_FALLBACKS = [gemini_flash_lite_latest]
+CHAT_LLM_FALLBACKS = [gemma_4_31b, gemini_flash_lite_latest]

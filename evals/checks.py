@@ -182,7 +182,7 @@ def _distinct_domains(trace: RunTrace, spec: CheckSpec) -> CheckResult:
 
 @check("search_discipline", args=("max_per_topic",))
 def _search_discipline(trace: RunTrace, spec: CheckSpec) -> CheckResult:
-    """PRO_PROMPT caps searches per sub-topic. Sub-topics aren't labelled in the
+    """SYSTEM_PROMPT caps searches per sub-topic. Sub-topics aren't labelled in the
     trace, so this approximates one by near-identical queries: the same query
     re-run more than the cap is the behaviour the rule exists to stop."""
     cap = int(spec.args.get("max_per_topic", 2))
@@ -366,15 +366,63 @@ def _no_question_block(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     return CheckResult.ok("no question block, as expected")
 
 
-@check("has_delimiters")
-def _has_delimiters(trace: RunTrace, spec: CheckSpec) -> CheckResult:
-    text = _text(trace, spec)
-    rules = parsers.count_horizontal_rules(text)
-    if rules >= 2:
-        return CheckResult.ok(f"{rules} `---` rules delimit the deliverable", rules=rules)
-    if text.lstrip().startswith(">") or "\n>" in text:
-        return CheckResult.ok("short content indented with `>` per the prompt's rule")
-    return CheckResult.fail(f"only {rules} `---` rule(s); deliverable not separated", rules=rules)
+@check(
+    "textblock",
+    args=("min", "max", "require_type", "require_subject", "min_words", "max_words"),
+)
+def _textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
+    """The writing path's output contract, per SYSTEM_PROMPT's "Writing and
+    Rewrites" section: the finished deliverable — and nothing else — goes in a
+    `<textblock>…</textblock>`.
+
+    Replaces `has_delimiters`, which looked for `---` horizontal rules. That
+    convention was retired from the prompt, and `_S_FORMATTING_PRO` now says to
+    use headers *instead of* horizontal rules — so the old check scored a model
+    down for following the current instructions, on a weight-3 item. Nothing
+    caught it because the case it sits on is outside the smoke set.
+
+    `require_type: email` also demands the `subject="…"` attribute, since the
+    prompt pairs them; a drafted email without a subject line is not a usable
+    deliverable.
+    """
+    blocks = parsers.extract_textblocks(_text(trace, spec))
+    args = spec.args
+    if not blocks:
+        return CheckResult.fail("no <textblock> deliverable")
+    if not _in_range(len(blocks), args):
+        return CheckResult.fail(
+            f"{len(blocks)} <textblock>(s), expected {_range_str(args)}", n=len(blocks)
+        )
+
+    problems: list[str] = []
+    want_type = args.get("require_type")
+    if want_type:
+        wrong = [b.type for b in blocks if (b.type or "") != want_type]
+        if wrong:
+            problems.append(f'type={wrong[0]!r}, expected "{want_type}"')
+    if args.get("require_subject") or want_type == "email":
+        if any(not b.subject for b in blocks):
+            problems.append("missing subject=\"…\" on the opening tag")
+    decorated = [d for b in blocks for d in b.decoration]
+    if decorated:
+        problems.append(f"markdown/citations inside the block: {decorated[:2]}")
+
+    words = sum(b.words for b in blocks)
+    lo, hi = args.get("min_words"), args.get("max_words")
+    if (lo is not None and words < lo) or (hi is not None and words > hi):
+        problems.append(f"{words} words in the deliverable, expected [{lo}, {hi}]")
+
+    if problems:
+        return CheckResult.fail("; ".join(problems[:3]), n=len(blocks), words=words)
+    return CheckResult.ok(f"{len(blocks)} well-formed <textblock>", n=len(blocks), words=words)
+
+
+@check("no_textblock")
+def _no_textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
+    blocks = parsers.extract_textblocks(_text(trace, spec))
+    if blocks:
+        return CheckResult.fail(f"{len(blocks)} <textblock> on a non-writing task")
+    return CheckResult.ok("no textblock, as expected")
 
 
 @check("followup_question")
@@ -505,7 +553,7 @@ def _no_ascii_art(trace: RunTrace, spec: CheckSpec) -> CheckResult:
 
 @check("tool_discipline")
 def _tool_discipline(trace: RunTrace, spec: CheckSpec) -> CheckResult:
-    """PRO_PROMPT: a turn is 100% tool calls or 100% final text, never both.
+    """SYSTEM_PROMPT: a turn is 100% tool calls or 100% final text, never both.
 
     Violations are what produce "Let me search for that…" narration leaking
     into the answer stream ahead of the real reply.
@@ -544,7 +592,7 @@ def _response_language(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     Two rules are in play, and which one applies is decided by the
     `<personalization>` block, exactly as in production:
 
-    - When personalization states a response language, PRO_PROMPT says to
+    - When personalization states a response language, SYSTEM_PROMPT says to
       honour it silently — so that language wins even if the query was written
       in another one.
     - When it states none, the answer must follow the language of the query.
@@ -562,10 +610,17 @@ def _response_language(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     expect = spec.args.get("expect")
     if not expect:
         return CheckResult.ok("no expected language declared")
-    text = parsers.prose_only(_text(trace, spec))
-    for report in parsers.extract_reports(_text(trace, spec)):
-        text += "\n\n" + report.body
-    verdict = parsers.detect_language(text)
+    # Everything the user reads, not just the prose: an answer that is entirely
+    # a `<question>` block is still written in a language. See
+    # `parsers.readable_text`.
+    verdict = parsers.detect_language(parsers.readable_text(_text(trace, spec)))
+    # An answer can be too small to have a language at all. "240 的 15% 是多少?"
+    # is correctly answered with "36", which lands at 2 CJK chars and 3 Latin
+    # words and scored "mixed" — the check demanding a commitment the content
+    # cannot make. Terse replies are the *point* on the restraint and
+    # no-X-needed cases, so below this floor there is nothing to grade.
+    if verdict.cjk_chars + verdict.latin_words < 8:
+        return CheckResult.ok("too short to carry a language", **_lang_detail(verdict))
     if verdict.lang == "unknown":
         return CheckResult.fail("answer too short to classify", **_lang_detail(verdict))
     if verdict.lang == expect:

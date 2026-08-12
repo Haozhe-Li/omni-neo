@@ -33,7 +33,7 @@ remains keeping real secrets out of the prompt entirely.
 
 Fingerprinting alone has a second, separate blind spot: it can only match
 text that was registered ahead of time via `register_sensitive_prompts`
-(the static FAST_PROMPT/PRO_PROMPT/_SCHEDULED_PROMPT strings). It has no way
+(the static SYSTEM_PROMPT/_SCHEDULED_PROMPT strings). It has no way
 to catch a model reciting `<personalization>`/`<user_memory>` — per-request
 context built fresh for every turn in `build_message_content`
 (core/stream.py), never a fixed string to fingerprint — or the raw

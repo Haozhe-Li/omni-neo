@@ -52,7 +52,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langsmith import tracing_context
 from deepagents.backends.utils import create_file_data
 
-from core.agent import get_agent, FAST_SKILL_FILES, PRO_SKILL_FILES
+from core.agent import get_agent, SKILL_FILES
+from core.chat_models import DEFAULT_MODEL
 from core.prompt_guard import is_harmful, has_prompt_leakage, has_structural_leak
 from core.utils.citations import (
     all_citations,
@@ -585,7 +586,7 @@ def _normalize_stream_item(item: Any) -> tuple[str | None, Any]:
 async def _stream_agent(
     query: str,
     thread_id: str | None,
-    mode: str,
+    model_id: str,
     personalization: str,
     attached_file_ids: list[dict[str, str]] | None,
     *,
@@ -607,8 +608,10 @@ async def _stream_agent(
     forked checkpoint) — so any document citations it produced are passed in
     via ``extra_sources`` instead of being computed fresh below.
     """
-    profile = "pro" if mode == "pro" else "fast"
-    agent = get_agent(profile)
+    # One agent per selectable model, all sharing this prompt/tool surface —
+    # see core/chat_models.py. The id doubles as the LangSmith project name, so
+    # traces separate by which weights actually served the turn.
+    agent = get_agent(model_id)
 
     # Must run before build_message_content: mounting a document assigns it a
     # citation number via register_document_citation, which needs the
@@ -636,14 +639,13 @@ async def _stream_agent(
             skill=skill,
             source_url=source_url,
         )
-        # Both profiles are deep agents with a StateBackend: hand them the skill
-        # files (so SkillsMiddleware can surface/read them) plus any uploaded
+        # The agent is a deep agent with a StateBackend: hand it the skill files
+        # (so SkillsMiddleware can surface/read them) plus any uploaded
         # documents mounted this turn (so FilesystemMiddleware's read_file/grep
         # can see them). The files channel merges additively across turns, so
         # documents mounted once stay visible for the rest of the thread.
         input_state = {"messages": [{"role": "user", "content": content}]}
-        skill_files = PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
-        files = {**skill_files, **doc_files}
+        files = {**SKILL_FILES, **doc_files}
         if files:
             input_state["files"] = files
 
@@ -693,7 +695,7 @@ async def _stream_agent(
     if new_doc_sources:
         yield _sse({"type": "sources", "sources": new_doc_sources})
 
-    with tracing_context(project_name=profile):
+    with tracing_context(project_name=model_id):
         async for raw in agent.astream(
             input_state,  # None on rewind → replay from checkpoint
             config=config,
@@ -725,8 +727,8 @@ async def _stream_agent(
                         # Chain-of-thought routinely recites the system
                         # prompt's own instructions near-verbatim while
                         # planning a turn (confirmed against the real
-                        # FAST/PRO prompts — completely benign, but enough to
-                        # trip `verbatim_run` on essentially every Pro-mode
+                        # prompt — completely benign, but enough to trip
+                        # `verbatim_run` on essentially every deep-agent
                         # turn). A literal `<attached_files>`-style tag or
                         # Harmony template token has no such benign case, so
                         # it's still worth catching here.
@@ -849,7 +851,7 @@ async def _stream_agent(
 async def run_agent_stream(
     query: str,
     thread_id: str | None,
-    mode: str = "fast",
+    model_id: str = DEFAULT_MODEL,
     personalization: str = "",
     attached_file_ids: list[dict[str, str]] | None = None,
     user_memory: str = "",
@@ -897,7 +899,7 @@ async def run_agent_stream(
     async def agent_producer():
         try:
             async for event in _stream_agent(
-                query, thread_id, mode, personalization, attached_file_ids,
+                query, thread_id, model_id, personalization, attached_file_ids,
                 user_memory=user_memory,
                 follow_up_content=follow_up_content,
                 skill=skill,

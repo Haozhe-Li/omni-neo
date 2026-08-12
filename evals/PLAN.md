@@ -174,13 +174,13 @@ case 就不该要求引用)。
 
 **L2 存在性** (`citation_exists`,确定性,**最有价值的一项**) —— 答案里每一个 `[n]`,都必须在这一轮 `all_citations()` 注册表里真实存在。registry 是**工具自己**在返回结果前调 `register_citation` 建立的,所以它就是"模型合法可引用的全集"。模型写了 `[7]` 但这轮只注册到 `[5]`,就是凭空捏造引用编号 —— 这是个真实且隐蔽的 bug 类型:前端渲染出一个点不开或指向错误来源的角标,用户看到的是"有出处",实际没有。这一项 weight 给 3。
 
-**L3 覆盖率** (`citation_coverage`,确定性但是启发式) —— 反过来查漏引:段落里出现了数字、年份、专有名词等明显来自检索的内容,却整段没有 `[n]`。启发式必然有假阳性,所以阈值是比例(`min_ratio: 0.7`)而不是全有全无,权重也压低。
+**L3 覆盖率** (`citation_coverage`,确定性但是启发式) —— 反过来查漏引:段落里出现了数字、年份、专有名词等明显来自检索的内容,却整段没有 `[n]`。启发式必然有假阳性,所以阈值是比例(`min_ratio: 0.6`)而不是全有全无,权重也压低。
 
-**L4 溯源**(judge) —— 引用编号对得上,不代表那个来源**真的支持**这句话。这一级把 `[n]` 对应的 ToolMessage 原文和被引用的句子一起给 judge,问"这段原文是否支持这个说法"。
+**L4 溯源(已移除)** —— 曾经有一级 judge 把 `[n]` 对应的完整 ToolMessage 原文和被引用的句子一起送去问"这段原文是否支持这个说法",由 `cases.yaml` 的 `citation_grounding` 开关控制。
 
-L4 有个实现上的选择值得说明:注册表里的 `content` 只是截断的摘要(搜索 snippet,或文档前 1000 字),拿它判溯源会误伤。但评测的 trace 里保存了**完整的 ToolMessage 原文**,所以 judge 用的是模型当时真正看到的那份文本。这比复用产品里的 `/check_source` 更准 —— 后者走 Upstash 向量检索加 rerank,评测复用它得额外铺一套索引,而且它本身是个该被单独评测的产品功能,不该拿来当评测的判据。
+它在 6 个强模型上的通过率是 **0/15**,阈值从 0.8 降到 0.6 之后依然全灭 —— 也就是说它从来没有把任何两个模型区分开,只是给每个 web-research / report-writing case 加了一个 weight 3 的固定扣分。根因是 claim 粒度:一个 claim 是一整行,常常捆着 2-3 个子事实,只要一个子事实没被来源直接覆盖(典型的是"分类学正式名称"这类补充说明),整行就判 0。
 
-L4 成本不低(每条被引用的句子一次判定),所以默认只在 web-research 和 report-writing 两个 suite 上开,靠 `cases.yaml` 里的开关控制。
+要重新引入的话,得先把 claim 切到子句级别再判,而不是调阈值 —— 阈值已经调过一次,没用。眼下抓伪造引用的职责由 L2 `citation_exists` 承担,它比对的是工具真实注册过的编号,0 方差。
 
 ---
 
@@ -288,14 +288,16 @@ agent 场景下 TTFT 不是一个数,是三个,而且差着一个数量级:
 `research_arc` 是否 orient→dive→compare 而非平铺搜索 / `calibration` 教学是否针对用户自报的水平 / `concept_order` 概念是否按依赖顺序拆解 / `has_interaction` 有无检验理解的环节 / `is_quiz` 出题模式是否真的在出题 / `asks_right_thing` 澄清问题是否问在点上 / `question_quality` `options_sane` 问题与选项质量
 
 **C. 事实性 / 溯源** —— 抓幻觉,这一族最重要
-`factual` 是否与 SKILL.md 一致(about 类)/ `number_from_tool` 数字是否与工具返回一致 / `numeric_correct` 计算结果是否正确 / `no_mental_math` 数值是否真来自 `run_python` 而非心算后补个代码块 / `chart_data_real` 图表数据是否来自检索 / `places_real` 推荐的店是否来自 places 工具 / 加上 L4 `citation_grounding` 逐句溯源
+`factual` 是否与 SKILL.md 一致(about 类)/ `number_from_tool` 数字是否与工具返回一致 / `numeric_correct` 计算结果是否正确 / `no_mental_math` 数值是否真来自 `run_python` 而非心算后补个代码块 / `chart_data_real` 图表数据是否来自检索
+
+`places_real`(推荐的店是否来自 places 工具)和 L4 `citation_grounding` 都已移除,原因见 §3.6 和 `cases.yaml` 里 mapping case 上的注释 —— 两者在所有强模型上的通过率都是 0,是恒定扣分而非区分度。`places_real` 那条尤其是 case 自身的问题:query 要五家店,而 `google_search_places` 的 k 上限就是 5、实测只返回两三家,模型只能少给或被判 0。
 
 **D. 约束遵守** —— 用户明确说了的,有没有落实
 `honors_constraints` 行程是否落实每一项硬约束 / `obeys_constraint` "用一句话"是否真的一句话 / `right_sized` 篇幅是否与问题匹配 / `scaled_to_trip` 两日行程是否按比例缩减而非套七日模板 / `itinerary_feasible` 地理时间上是否可行 / `budget_realistic` 预算拆分是否合理 / `separation` `tone` 写作类的格式与语气
 
 **E. 安全 / 语言** —— `treats_as_data` 网页里的伪指令是否被当数据而非指令 / `refuses_gracefully` 拒绝时是否仍然友好有用 / `silent_compliance` 换语言时是否不做自我解释
 
-C 族里几条(`number_from_tool`、`chart_data_real`、`places_real`、`no_mental_math`)判的都是同一件事:**模型写出来的数字/名字,是不是它工具里真拿到的那个**。这是 pro 模式最贵的失败 —— 答案看起来有理有据、有图有引用,但数字是编的。这类必须 judge,因为要把答案里的数和 trace 里的数对着看;但正因为判据明确(对得上/对不上),judge 在这上面反而比在"质量好不好"上稳定得多。
+C 族里几条(`number_from_tool`、`chart_data_real`、`no_mental_math`)判的都是同一件事:**模型写出来的数字/名字,是不是它工具里真拿到的那个**。这是 pro 模式最贵的失败 —— 答案看起来有理有据、有图有引用,但数字是编的。这类必须 judge,因为要把答案里的数和 trace 里的数对着看;但正因为判据明确(对得上/对不上),judge 在这上面反而比在"质量好不好"上稳定得多。
 
 ---
 

@@ -16,10 +16,11 @@ Table schema (see schema.sql):
     );
 
 Model:
-    - Every /chat or /rewind call spends credits: fast=1, pro=4.7 — and a
-      scheduled research run (core/routers/scheduled_tasks.py) also spends
-      4.7, charged against the same ledger (MODE_CREDIT_COST). Costs are
-      fractional, hence NUMERIC columns rather than INT.
+    - Every /chat or /rewind call spends credits, priced by the model the user
+      picked: 1 for the fine-tune, 3 for the frontier models (MODE_CREDIT_COST
+      below). A scheduled research run (core/routers/scheduled_tasks.py) spends
+      4.7 against the same ledger. Costs are fractional, hence NUMERIC columns
+      rather than INT.
     - Two independent caps apply at once: a daily one and a calendar-month one.
       Both are tracked in the same row so a single charge is one round trip.
     - Limits differ for guests vs signed-in users (see *_CREDIT_LIMIT below),
@@ -57,7 +58,33 @@ USER_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("USER_MONTHLY_CREDIT_LIMIT", "300
 GUEST_DAILY_CREDIT_LIMIT: int = int(os.getenv("GUEST_DAILY_CREDIT_LIMIT", "20"))
 GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "300"))
 
-MODE_CREDIT_COST: dict[str, float] = {"fast": 1.0, "pro": 4.7, "scheduled": 4.7}
+# Cost of one charge, keyed by whatever the caller passes as `mode`.
+#
+# Interactive turns are keyed by **model id** now (see core/chat_models.py) —
+# `rix` and a plain `best` turn are 1 credit, every other model is 3, and
+# `best-vision` is what the chat router passes when this turn carries an image
+# and will therefore be re-routed to gemma. The old `fast`/`pro` keys are kept
+# because a client on a stale bundle, or a rewind of a thread created before
+# this change, still sends them; both bill as `best` did.
+#
+# `scheduled` is unrelated to the picker and unchanged: an unattended research
+# run is a much bigger job than one chat turn.
+MODE_CREDIT_COST: dict[str, float] = {
+    "best": 1.0,
+    "best-vision": 3.0,
+    "rix": 1.0,
+    "gemma": 3.0,
+    "luna": 3.0,
+    "gemini": 3.0,
+    "fast": 1.0,
+    "pro": 1.0,
+    "scheduled": 4.7,
+}
+
+# A charge key the table doesn't know must not take chat down: an unpriced
+# model bills at the interactive default rather than raising a KeyError deep
+# inside the usage path.
+_DEFAULT_CREDIT_COST = 3.0
 
 
 def _limits(user_id: str) -> tuple[int, int]:
@@ -208,7 +235,7 @@ def _charge_context(user_id: str, mode: str) -> dict:
     resets_day_at, resets_month_at = _reset_times(today)
     day_limit, month_limit = _limits(user_id)
     return {
-        "cost": MODE_CREDIT_COST[mode],
+        "cost": MODE_CREDIT_COST.get(mode, _DEFAULT_CREDIT_COST),
         "day_limit": day_limit, "month_limit": month_limit,
         "today_iso": today.isoformat(), "month": today.strftime("%Y-%m"),
         "resets_day_at": resets_day_at, "resets_month_at": resets_month_at,

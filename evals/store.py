@@ -53,17 +53,17 @@ def git_sha() -> str | None:
 
 
 def prompt_fingerprints() -> tuple[str, str]:
-    """sha256 of the pro prompt and of every SKILL.md, so a score can be
+    """sha256 of the system prompt and of every SKILL.md, so a score can be
     attributed to the exact prompt that produced it. A prompt edit that moves
     the numbers is otherwise indistinguishable from a model regression."""
     import hashlib
 
-    from core.agent import PRO_PROMPT, PRO_SKILL_FILES
+    from core.agent import SKILL_FILES, SYSTEM_PROMPT
 
-    prompt_sha = hashlib.sha256(PRO_PROMPT.encode()).hexdigest()
+    prompt_sha = hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()
     blob = "".join(
         f"{path}:{json.dumps(data, sort_keys=True, default=str)}"
-        for path, data in sorted(PRO_SKILL_FILES.items())
+        for path, data in sorted(SKILL_FILES.items())
     )
     return prompt_sha, hashlib.sha256(blob.encode()).hexdigest()
 

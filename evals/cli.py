@@ -74,7 +74,6 @@ from evals.judge import (  # noqa: E402
     CROSS_CHECK_JUDGE,
     DEFAULT_JUDGE_MODEL,
     judge_case,
-    judge_citation_grounding,
     judge_vendor,
 )
 from evals.models import ModelSpec, resolve_models  # noqa: E402
@@ -113,7 +112,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="cases in flight at once (default 1 — raising this risks provider rate limits)")
     p.add_argument("--case-delay", type=float, default=10.0,
                    help="seconds to pause after each case, to let token-per-minute windows drain (default 10)")
-    p.add_argument("--profile", default="pro", choices=["pro", "fast"])
     p.add_argument("--tool-cache", dest="tool_cache", action="store_true", default=True,
                    help="serve retrieval tools from disk cache (default: on)")
     p.add_argument("--no-tool-cache", dest="tool_cache", action="store_false")
@@ -151,10 +149,6 @@ async def _score(
         judged = await judge_case(
             case, trace, model=args.judge_model, repeats=args.judge_repeats
         )
-        if case.citation_grounding:
-            grounding = await judge_citation_grounding(trace, model=args.judge_model)
-            if grounding:
-                judged.append(grounding)
     return scoring.score_case(case, scoring.collect(case, det, judged))
 
 
@@ -169,7 +163,7 @@ async def run_model(
         tool_cache=args.tool_cache,
         judge_model=args.judge_model if args.judge else None,
         label=args.label,
-        mode=args.profile,
+        mode="pro",
         ctx=ctx,
     )
 
@@ -179,7 +173,7 @@ async def run_model(
 
     async def one(case: Case, repeat: int):
         async with sem:
-            trace = await run_case(case, model, cache=cache, profile=args.profile)
+            trace = await run_case(case, model, cache=cache)
             scored = await _score(case, trace, args)
             cost = store.compute_cost(
                 model, trace.usage, peak_context_tokens=trace.usage.peak_context_tokens

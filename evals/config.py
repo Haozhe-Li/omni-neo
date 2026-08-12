@@ -85,7 +85,6 @@ class Case:
     weight: float = 1.0
     timeout_s: int = 300
     repeats: int = 2
-    citation_grounding: bool = False
     fixture: str | None = None
     personalization: dict[str, str] = field(default_factory=dict)
     expect_lang: str | None = None
@@ -264,7 +263,6 @@ def load_cases(path: str = DEFAULT_CASES_PATH, *, validate: bool = True) -> Suit
                 weight=float(raw_case.get("weight", 1)),
                 timeout_s=int(raw_case.get("timeout_s", defaults.get("timeout_s", 300))),
                 repeats=int(raw_case.get("repeats", defaults.get("repeats", 2))),
-                citation_grounding=bool(raw_case.get("citation_grounding", False)),
                 fixture=raw_case.get("fixture"),
                 personalization=personalization,
                 expect_lang=expect_lang,
@@ -338,7 +336,7 @@ _LANG_CODES = {
 def _implied_lang(personalization_language: str | None, case_lang: str) -> str | None:
     """Which language the answer is expected to be in.
 
-    Personalization wins when it states one — PRO_PROMPT tells the model to
+    Personalization wins when it states one — SYSTEM_PROMPT tells the model to
     honour it silently, so that is the behaviour under test. With nothing
     stated, the expectation falls back to the case's own `lang`, which is the
     language the *query* is written in: no instruction means follow the user.

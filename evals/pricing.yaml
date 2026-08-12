@@ -100,6 +100,24 @@ providers:
         cached_input: 0.30    # 50% of input
         output: 3.00
 
+  wandb:
+    # W&B Inference. Keyed by `family`, which for these is the model id with
+    # the HF org prefix stripped (`Qwen/Qwen3-30B-A3B-Instruct-2507` ->
+    # `Qwen3-30B-A3B-Instruct-2507`), matching `evals.models._family_of`.
+    #
+    # W&B publishes no prompt-cache discount, so cached_input == input and
+    # compute_cost's blend formula self-cancels — same shape as cerebras.
+    #
+    # The published table lists "Qwen3 30B A3B" without the `-Instruct-2507`
+    # suffix; these are that row's rates, applied to the 2507 instruct variant
+    # on the assumption the suffix is a checkpoint label and not a separate
+    # SKU. If a bill ever disagrees, this is the line that is wrong.
+    models:
+      Qwen3-30B-A3B-Instruct-2507:
+        input: 0.10
+        cached_input: 0.10
+        output: 0.30
+
   openai:
     # Two tiers per model (short_context / long_context), each with its own
     # input / cached_input / output — and, where published, cache_writes

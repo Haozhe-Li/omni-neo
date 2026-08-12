@@ -1,27 +1,31 @@
-"""Single all-around Omni agent, in two profiles.
+"""The Omni interactive agent — one prompt, one harness, several models.
 
-Both profiles use deepagents and share most of their prompt sections. The
-difference is in capability (model, turn budget), answer depth, and the skill
-subset each receives:
+There used to be two *profiles*: a cheap `fast` one (gpt-oss-120b, 8-call
+budget, two identity skills) and a `pro` one (gemma-4-31b, 30 calls, every
+skill). That split is gone. What the user picks now is a model, not a mode —
+see `core/chat_models.py` for the five entries and what each costs — and every
+one of them is assembled here identically: same `SYSTEM_PROMPT`, same 15 tools,
+same 9 skills, same 30-call budget. Only the weights differ.
 
-- `build_agent("fast")` — gpt-oss-120b, tight turn budget, identity/info skills
-  only (`about-omni`, `about-haozheli`).
-- `build_agent("pro")` — gemma-4-31b, generous turn budget, all skills
-  (web-research, report-writing, charting, …).
+The uniformity is load-bearing, not tidiness. `omni_pro_104_v1` is a LoRA
+distilled from teacher rollouts of *this* agent, and a LoRA only ever sees one
+system prompt and one tool schema. A per-model prompt would mean serving the
+adapter an input it has never seen — silently, with no error.
+`finetune/pro_agent/fingerprint.py` hashes the assembled prompt plus all 15 tool
+schemas and fails loudly if either drifts; run it after touching this file.
 
 Skills are surfaced via progressive disclosure — only their name + description
-sit in the prompt; full instructions are read on demand.  Charts and reports
+sit in the prompt; full instructions are read on demand. Charts and reports
 stream inline (```echarts fences / `<report>…</report>` blocks). Rewrite/
 translation/drafting deliverables stream inline the same way, in a
-`<textblock>…</textblock>` block — that one isn't a skill, it's taught
-directly in `_S_WRITING_FORMAT` below since both profiles need it on
-essentially every "polish this" or "translate this" turn.
+`<textblock>…</textblock>` block — that one isn't a skill, it's taught directly
+in `_S_WRITING_FORMAT` below, since it applies on essentially every "polish
+this" or "translate this" turn.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Literal
 
 from langchain.agents.middleware import (
     AgentMiddleware,
@@ -46,11 +50,9 @@ from core.tools.weather_tool import get_weather, get_weather_forecast
 from core.tools.stock_data_retriever import get_stock_data
 from core.tools.currency_tool import get_realtime_currency_rate
 from core.tools.coding_sandbox import run_python
+from core.chat_models import CHAT_MODELS, ChatModel, resolve_model
 from core.llm import *
 
-Profile = Literal["fast", "pro"]
-
-# Retrieval tools shared by both profiles.
 RETRIEVAL_TOOLS = [
     google_search,
     load_web_page,
@@ -69,17 +71,17 @@ RETRIEVAL_TOOLS = [
 
 
 # ── Skills (deepagents progressive disclosure) ──────────────────────────────
-# Loaded from disk at startup and handed to each agent's StateBackend at
-# stream time via `files=` (see core/stream.py). Source dir is the virtual
-# "/skills/" path; each skill lives at "/skills/<name>/SKILL.md".
+# Loaded from disk at startup and handed to the agent's StateBackend at stream
+# time via `files=` (see core/stream.py). Source dir is the virtual "/skills/"
+# path; each skill lives at "/skills/<name>/SKILL.md".
 #
-# Fast profile gets a small allow-list of lightweight identity/info skills.
-# Pro profile gets every skill.
+# Every request gets every skill. The old fast profile carried an allow-list of
+# two identity skills, which is also why it could never be the fine-tune target:
+# the skill roster is inlined into deepagents' `## Skills System` section, so a
+# subset is a different system prompt, not a lighter configuration of the same
+# one.
 SKILLS_SOURCE = "/skills/"
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "..", "skills")
-
-# Skills available in the fast profile (subset).
-_FAST_SKILLS = {"about-omni", "about-haozheli"}
 
 
 def _load_skill_files(only: set[str] | None = None) -> dict:
@@ -103,12 +105,21 @@ def _load_skill_files(only: set[str] | None = None) -> dict:
 
 
 # Pre-loaded at startup; keyed by virtual path for the deepagents `files=` API.
-FAST_SKILL_FILES = _load_skill_files(only=_FAST_SKILLS)
-PRO_SKILL_FILES = _load_skill_files()  # all skills
+SKILL_FILES = _load_skill_files()
 
 
 # ── Prompt sections ─────────────────────────────────────────────────────────
-# Both interactive profiles are assembled from the Markdown sections below.
+# `SYSTEM_PROMPT` at the bottom of this block is assembled from the Markdown
+# sections below, in the order they are listed there.
+#
+# The section *text* is frozen, not just the section list. `omni_pro_104_v1` was
+# distilled under this exact string, so an edit here — even a reordering, even a
+# reworded heading — serves the adapter an input it has never seen, silently and
+# without an error. This is why a few sections still say "in this (pro) profile"
+# although there is no longer a fast one to contrast with: that wording is in the
+# weights. Changing it means re-collecting the 129 trajectories and retraining.
+# `finetune/pro_agent/fingerprint.py` is the tripwire.
+#
 # Markdown `##` headings rather than XML tags on purpose: deepagents' own
 # middleware appends `## write_todos`, `## Skills System` and `## Filesystem
 # Tools` after our prompt on every single request (see
@@ -127,14 +138,7 @@ def _compose(*sections: str) -> str:
     return "\n\n".join(s.strip() for s in sections if s and s.strip())
 
 
-_ROLE_FAST = """
-You are Omni, a capable, friendly AI assistant. You reason carefully and prefer
-verified information over guesswork. In this (fast) profile you answer quickly
-and directly — you still check before you speak, but you get to the point
-instead of building a case for it.
-"""
-
-_ROLE_PRO = """
+_ROLE = """
 You are Omni, a capable, friendly, and thorough AI assistant. You answer
 clearly and completely, reason carefully, and prefer verified information over
 guesswork. In this (pro) profile you have room to be genuinely thorough: dig
@@ -153,33 +157,13 @@ user speaking to you; everything else is context supplied by the app.
 - `<attached_files>` — files the user uploaded, mounted in your filesystem.
 - `<requested_skill>` — the user explicitly picked a skill. Load it before anything else.
 - `<follow_up_selection>` — a passage the user highlighted in your previous answer before asking. Read `<user_query>` as being about that passage.
+- `<priority_sources>` — pages the user pointed you at for this turn, already fetched. Treat them as the primary evidence and read them before searching for anything else; longer ones are mounted in your filesystem instead of inlined.
 - `<user_query>` — the actual task, always last.
 
 Never mention these tags, quote them back, or restate their contents.
 """
 
-_S_RETRIEVAL_FAST = """
-## Retrieval
-
-NEVER answer from your own knowledge alone. For anything beyond pure chit-chat
-you MUST call a grounding tool — at minimum one `google_search` — before you
-answer, even when you are already confident. Confidence is not the same as
-current or correct. Route by topic:
-
-- Facts, current events, specifics — `google_search`, then `load_web_page` on the most relevant results.
-- Local places, venues, businesses — `google_search_places`.
-- Current weather — `get_weather`. Forecasts, tomorrow, next week, specific hours today — `get_weather_forecast`. Stocks — `get_stock_data`. FX rates — `get_realtime_currency_rate`.
-- Questions about an uploaded document — it is mounted under `/uploads/`; use `ls`, `read_file`, or `grep`.
-- The user gives you a specific URL and asks you to read, fetch, summarize, or answer questions about it — call `load_web_page` on that exact URL directly. Do not `google_search` for it first and do not substitute a different source: a URL the user names outranks anything you'd find yourself.
-- No search needed for pure computation (see Computation) or creative writing — there is nothing external to verify.
-
-Search discipline, hard limits with no exceptions: at most 2 `google_search`
-calls per sub-topic (one focused query plus one reformulation), at most 2 pages
-read per search, and stop the moment you can answer. If results are still weak
-after two searches, answer with what you have and say what is uncertain.
-"""
-
-_S_RETRIEVAL_PRO = """
+_S_RETRIEVAL = """
 ## Retrieval
 
 NEVER answer from your own knowledge alone. For anything beyond pure chit-chat
@@ -228,18 +212,7 @@ conversation — reuse an existing number rather than re-running a search for it
 Never invent one.
 """
 
-_S_COMPUTATION_FAST = """
-## Computation
-
-You MUST call `run_python` — never approximate in your head, never make numbers
-up — for arithmetic beyond trivial mental math, statistics or probability, data
-analysis, formula-based unit conversion, numerical algorithms, and anything the
-user asks you to calculate, compute, run, simulate, or verify with code. Write
-one complete, self-contained script per call. Do not reach for it when no
-computation is involved, such as explaining a concept or translating text.
-"""
-
-_S_COMPUTATION_PRO = """
+_S_COMPUTATION = """
 ## Computation
 
 You MUST call `run_python` — never approximate in your head, never make numbers
@@ -257,18 +230,7 @@ reach for it when no computation is involved, such as explaining a concept or
 translating text.
 """
 
-_S_GOAL_FAST = """
-## Answer Depth
-
-Give a complete but efficient answer, then stop. Write for someone who wants a
-solid understanding without a deep dive — one example or illustration if it
-genuinely helps, not one by default. Match depth to the question: a factual ask
-gets a tight, complete answer, and a how-to gets the steps plus the one caveat
-that matters. Being brief is not permission to be thin: answer the whole
-question, just without padding, throat-clearing, or restating what was asked.
-"""
-
-_S_GOAL_PRO = """
+_S_GOAL = """
 ## Answer Depth
 
 Be genuinely thorough, never terse or perfunctory. Explain the why, not just
@@ -294,22 +256,7 @@ the audience is and write for them. Even when you cannot do what was asked,
 stay helpful: name the limit and offer the nearest thing you can do.
 """
 
-_S_HEADERS_FAST = """
-## Headers
-
-Always begin your response with content, never with a header. Headers divide a
-response into sections; they do not introduce it.
-
-Use them only when the answer has several distinct parts — a multi-part
-question, three or more separate topics, phases of a procedure, or more than
-three paragraphs. Most answers in this profile need none.
-
-Keep headers under six words, plain text, `###` by default. Never put a header
-inside a bullet or list item: a line like `- **Setup:**` renders as a header and
-is not allowed. Use headers instead of horizontal rules to divide sections.
-"""
-
-_S_HEADERS_PRO = """
+_S_HEADERS = """
 ## Headers
 
 Always begin your response with content, never with a header. Headers divide a
@@ -384,9 +331,7 @@ inside `subject` — it breaks the tag; use single quotes or 「」 instead.
 Write exactly one `<textblock>` per deliverable. Only emit more than one in a
 single turn when the user explicitly asked for multiple parallel versions
 (e.g. three tone variants) — one block per version.
-"""
 
-_S_WRITING_FORMAT_PRO_EXTRA = """
 This applies to content written inline in chat. When the report-writing skill
 is active for a long, multi-section document, its `<report>` convention wins
 instead — never nest a `<textblock>` inside a `<report>` or vice versa; a
@@ -402,9 +347,7 @@ After a rewrite, translation, or writing task, end with one brief question that
 would sharpen the next revision — tone, length, audience, format ("Want this
 more casual, or keep it formal?"). One question, on its own line after a line
 break. Do not add follow-up questions to any other kind of answer.
-"""
 
-_S_FOLLOWUP_PRO_EXTRA = """
 This is plain prose, and it is not the ask-question skill. Use that skill's
 `<question>` block only when you are genuinely blocked and need the user's
 answer before you can proceed; a follow-up question comes after a finished
@@ -424,14 +367,7 @@ Never mention the mechanics of that process in the final answer either — no
 Just answer, citing sources with [n] as normal.
 """
 
-_S_PLANNING_FAST = """
-## Planning
-
-Your tool budget here is tight. Skip `write_todos` unless the task genuinely has
-three or more distinct steps — for everything else, just do the work.
-"""
-
-_S_PLANNING_PRO = """
+_S_PLANNING = """
 ## Planning
 
 For multi-step tasks, use `write_todos` to sketch a plan and track progress — it
@@ -440,30 +376,7 @@ through mechanically. Use your judgment on when it is worth writing or updating
 one, and skip it entirely for anything simple.
 """
 
-_S_FORMATTING_FAST = r"""
-## Formatting
-
-Reply in Markdown. Warm, direct, natural tone. Do not restate the question.
-
-Use LaTeX only for an actual formula or equation — a real mathematical
-expression with structure (a fraction, an integral, an exponent, a system of
-symbols), wrapped \( \) inline or \[ \] display, never dollar signs. Do NOT
-reach for LaTeX in ordinary prose: a plain number, a unit (5 km, 20%, $10), a
-date or timestamp (2026-08-02, 14:30), a lone variable name, or a simple
-arithmetic result should just be typed as normal text, not wrapped in LaTeX.
-Never build math out of Unicode characters either — if it's genuinely a
-formula, it's LaTeX; otherwise it's plain text.
-
-NEVER include a hyperlink of any form unless the user explicitly asks for a link
-or URL: no `[text](url)`, no bare URLs. The [n] citation markers are the sole
-exception, and they are required, not optional.
-
-NEVER draw a chart, plot, graph, or diagram as ASCII or Unicode text art in a
-code block. In this (fast) profile you have no charting ability — do not produce
-any diagram or chart at all. Use a Markdown table, or describe the data in prose.
-"""
-
-_S_FORMATTING_PRO = r"""
+_S_FORMATTING = r"""
 ## Formatting
 
 Reply in Markdown. Warm, direct, natural tone. Do not restate the question.
@@ -488,42 +401,26 @@ distributions; use the charting skill. Never fall back to text art or a plain
 table when a chart would be clearer.
 """
 
-FAST_PROMPT = _compose(
-    _ROLE_FAST,
+# The one interactive system prompt. 2,889 tokens here; ~4,368 once deepagents
+# appends its own sections at request time, which is what the adapter actually
+# sees and what `fingerprint.py` hashes.
+SYSTEM_PROMPT = _compose(
+    _ROLE,
     _S_INPUT_FORMAT,
-    _S_RETRIEVAL_FAST,
+    _S_RETRIEVAL,
     _S_CITATIONS,
-    _S_COMPUTATION_FAST,
-    _S_GOAL_FAST,
+    _S_COMPUTATION,
+    _S_GOAL,
     _S_TONE,
-    _S_HEADERS_FAST,
+    _S_HEADERS,
     _S_LISTS,
     _S_SUMMARIES,
     _S_COPYRIGHT,
     _S_WRITING_FORMAT,
     _S_FOLLOWUP,
     _S_TOOL_DISCIPLINE,
-    _S_PLANNING_FAST,
-    _S_FORMATTING_FAST,
-)
-
-PRO_PROMPT = _compose(
-    _ROLE_PRO,
-    _S_INPUT_FORMAT,
-    _S_RETRIEVAL_PRO,
-    _S_CITATIONS,
-    _S_COMPUTATION_PRO,
-    _S_GOAL_PRO,
-    _S_TONE,
-    _S_HEADERS_PRO,
-    _S_LISTS,
-    _S_SUMMARIES,
-    _S_COPYRIGHT,
-    _compose(_S_WRITING_FORMAT, _S_WRITING_FORMAT_PRO_EXTRA),
-    _compose(_S_FOLLOWUP, _S_FOLLOWUP_PRO_EXTRA),
-    _S_TOOL_DISCIPLINE,
-    _S_PLANNING_PRO,
-    _S_FORMATTING_PRO,
+    _S_PLANNING,
+    _S_FORMATTING,
 )
 
 # ── Scheduled profile ────────────────────────────────────────────────────────
@@ -533,7 +430,7 @@ PRO_PROMPT = _compose(
 # interactive-only policies (artifact/chart-in-chat framing), so it gets its
 # own prompt written for exactly what it does.
 #
-# Skills: everything the pro profile gets, minus three:
+# Skills: everything the interactive agent gets, minus three:
 # - ask-question: no user present to answer a clarifying question in an
 #   unattended cron run, so the agent must assume and proceed instead of
 #   stalling the turn on it.
@@ -548,7 +445,7 @@ PRO_PROMPT = _compose(
 #   <research_process> below instead of left optional, so every run gets the
 #   full workflow (see build_scheduled_agent's docstring).
 SCHEDULED_SKILL_FILES = {
-    path: data for path, data in PRO_SKILL_FILES.items()
+    path: data for path, data in SKILL_FILES.items()
     if not path.startswith("/skills/ask-question/")
     and not path.startswith("/skills/report-writing/")
     and not path.startswith("/skills/web-research/")
@@ -720,7 +617,7 @@ def get_scheduled_agent():
 
 
 # Registered with the prompt-leakage guard.
-SYSTEM_PROMPTS = [FAST_PROMPT, PRO_PROMPT, _SCHEDULED_PROMPT]
+SYSTEM_PROMPTS = [SYSTEM_PROMPT, _SCHEDULED_PROMPT]
 
 
 # ── deepagents harness profiles ─────────────────────────────────────────────
@@ -730,7 +627,7 @@ SYSTEM_PROMPTS = [FAST_PROMPT, PRO_PROMPT, _SCHEDULED_PROMPT]
 # above, so we turn them off through a `HarnessProfile`:
 #
 # - `BASE_AGENT_PROMPT` is written for a coding agent. It tells the model to
-#   "be concise and direct, don't over-explain" (contradicting the pro Answer
+#   "be concise and direct, don't over-explain" (contradicting the Answer
 #   Depth section) and to "provide brief progress updates at reasonable
 #   intervals" (contradicting Tool Call Discipline, which is exactly what stops
 #   the model narrating between tool calls). Everything in it we still want, we
@@ -749,27 +646,30 @@ SYSTEM_PROMPTS = [FAST_PROMPT, PRO_PROMPT, _SCHEDULED_PROMPT]
 #
 # Registration is keyed by provider, not by `provider:model`. Profile lookup
 # falls back from `cerebras:gpt-oss-120b` to `cerebras`, so a provider key keeps
-# working when a model is swapped — and every profile-level setting here is
-# identical across fast/pro anyway (the fast/pro difference lives entirely in
-# the prompts).
+# working when a model is swapped.
 #
-# All three providers we can run a chat turn on are registered, even though the
+# `openai` is no longer an eval-only key: `ChatWandb` subclasses `ChatOpenAI`
+# and inherits its hardcoded `ls_provider`, so the fine-tuned adapter now
+# serving every interactive request resolves *here*. Delete this key and
+# production silently gets deepagents' `BASE_AGENT_PROMPT` appended — a system
+# prompt the adapter has never seen.
+#
+# Every provider we can run a chat turn on is registered, even though the
 # profile is resolved once at build time from the *primary* model and never
 # re-resolved: `ModelFallbackMiddleware` swaps the model long after the system
 # prompt is assembled, so a fallback can never change which profile applies.
-# Registering `groq` anyway means promoting a fallback to primary stays a
-# one-line change in core/llm.py instead of silently restoring deepagents'
+# Registering the fallback providers anyway means promoting one to primary stays
+# a one-line change in core/llm.py instead of silently restoring deepagents'
 # `BASE_AGENT_PROMPT` and the `task` subagent.
 #
-# `openai` and `anthropic` are registered even though no role in core/llm.py
-# points at them today. The frontier candidates at the bottom of that module
-# exist to be benchmarked, and without a profile here deepagents falls back to
-# its defaults for them — re-adding `BASE_AGENT_PROMPT` (which tells the model
-# to be concise and to narrate progress, contradicting the pro profile's Answer
-# Depth and Tool Call Discipline sections) and re-enabling the general-purpose
-# subagent. That would make an eval of an OpenAI model a measurement of a
-# different prompt than every other model in the matrix, which is worse than
-# not measuring it at all.
+# `anthropic` is registered although no role in core/llm.py points at it. The
+# frontier candidates at the bottom of that module exist to be benchmarked, and
+# without a profile here deepagents falls back to its defaults for them —
+# re-adding `BASE_AGENT_PROMPT` (which tells the model to be concise and to
+# narrate progress, contradicting the Answer Depth and Tool Call Discipline
+# sections) and re-enabling the general-purpose subagent. That would make an
+# eval of one model a measurement of a different prompt than every other model
+# in the matrix, which is worse than not measuring it at all.
 _HARNESS_PROVIDER_KEYS = ("cerebras", "groq", "google_genai", "openai", "anthropic")
 
 _harness_profiles_registered = False
@@ -826,11 +726,22 @@ def _messages_have_image(messages) -> bool:
     return False
 
 
-class FastVisionModelMiddleware(AgentMiddleware):
-    """Fast profile only: swap to a vision-capable model whenever an image
-    appears anywhere in the conversation, not just the latest turn — the
-    default fast model (gpt-oss-120b) is text-only and would error on
-    multimodal content if a later turn re-references an earlier image."""
+class VisionModelMiddleware(AgentMiddleware):
+    """Swap to a vision-capable model whenever an image appears anywhere in the
+    conversation, not just the latest turn — a later turn re-referencing an
+    earlier image is still a multimodal request.
+
+    This used to be a fast-profile detail (gpt-oss-120b is text-only). It is now
+    load-bearing for every request: the primary model is a LoRA over
+    Qwen3-30B-A3B-Instruct served by W&B Inference, which is text-only, so
+    without this middleware every image turn in the product 400s.
+
+    Note what this does *not* do — it swaps the model, not the prompt. Gemma
+    receives the same system prompt the adapter was trained on, which is correct
+    (it is a general instruction-following model and reads it fine) but does
+    mean image turns are served by a model that has never been tuned on this
+    harness. Expect image answers to behave like the gemma baseline, not like
+    the fine-tune."""
 
     def __init__(self, vision_model):
         super().__init__()
@@ -847,66 +758,64 @@ class FastVisionModelMiddleware(AgentMiddleware):
         return await handler(request)
 
 
-def build_agent(profile: Profile):
-    """Construct an Omni agent for the given profile."""
+def build_agent(model: ChatModel):
+    """Construct the Omni interactive agent bound to one selectable model.
+
+    Every model gets the *same* prompt, tools, skills and turn budget — they
+    differ only in weights and in whether an image reroutes the turn. That
+    uniformity is a requirement, not a convenience: `system_prompt` plus the
+    skill roster is the LoRA's compatibility key, so `rix` and `best` have
+    to be assembled identically or the adapter is being served an input it was
+    never trained on. See the Prompt sections block above and
+    `finetune/pro_agent/fingerprint.py`.
+    """
     _register_harness_profiles()
-    if profile == "fast":
-        return create_deep_agent(
-            name="Omni Fast",
-            model=fast_llm,
-            tools=RETRIEVAL_TOOLS,
-            system_prompt=FAST_PROMPT,
-            skills=[SKILLS_SOURCE] if FAST_SKILL_FILES else None,
-            checkpointer=_db.checkpointer,
-            middleware=[
-                ToolRetryMiddleware(max_retries=1),
-                ToolCallLimitMiddleware(run_limit=8),
-                # Order matters, and only between these two: `wrap_model_call`
-                # middleware compose first-in-list-outermost, so the vision
-                # swap has to sit OUTSIDE the fallback. Reversed, the fallback
-                # would hand each retry back to the vision middleware, which
-                # unconditionally re-overrides the model on any image turn and
-                # would put the failing Cerebras model straight back — a
-                # fallback chain that silently retries the same dead endpoint.
-                FastVisionModelMiddleware(gemma_4_31b),
-                ModelFallbackMiddleware(*FAST_LLM_FALLBACKS),
-            ],
-        )
+    middleware = [
+        ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+        ToolCallLimitMiddleware(run_limit=30),
+    ]
+    if model.vision_fallback is not None:
+        # Order matters, and only between these two: `wrap_model_call`
+        # middleware compose first-in-list-outermost, so the vision swap has to
+        # sit OUTSIDE the fallback. Reversed, the fallback would hand each retry
+        # back to the vision middleware, which unconditionally re-overrides the
+        # model on any image turn and would put the failing endpoint straight
+        # back — a fallback chain that silently retries the same dead host.
+        middleware.append(VisionModelMiddleware(model.vision_fallback))
+    middleware.append(ModelFallbackMiddleware(*CHAT_LLM_FALLBACKS))
 
-    if profile == "pro":
-        return create_deep_agent(
-            name="Omni Pro",
-            model=pro_llm,
-            tools=RETRIEVAL_TOOLS,
-            system_prompt=PRO_PROMPT,
-            skills=[SKILLS_SOURCE] if PRO_SKILL_FILES else None,
-            checkpointer=_db.checkpointer,
-            middleware=[
-                ToolRetryMiddleware(
-                    max_retries=2,
-                    backoff_factor=2.0,
-                    initial_delay=1.0,
-                ),
-                ToolCallLimitMiddleware(run_limit=30),
-                ModelFallbackMiddleware(*PRO_LLM_FALLBACKS),
-            ],
-        )
-
-    raise ValueError(f"Unknown agent profile: {profile!r}")
+    return create_deep_agent(
+        # Slug, not a display name: LangGraph stamps the agent name onto the
+        # messages it emits and OpenAI validates `messages[].name` against
+        # `^[^\s<|\\/>]+$`, so a space here 400s every luna request.
+        name=f"omni-{model.id}",
+        model=model.llm,
+        tools=RETRIEVAL_TOOLS,
+        system_prompt=SYSTEM_PROMPT,
+        skills=[SKILLS_SOURCE] if SKILL_FILES else None,
+        checkpointer=_db.checkpointer,
+        middleware=middleware,
+    )
 
 
-fast_agent = None
-pro_agent = None
+# model id -> agent, built once at startup by `initialize_agents`.
+_agents: dict[str, object] = {}
 
 
 def initialize_agents():
-    global fast_agent, pro_agent, scheduled_agent
-    fast_agent = build_agent("fast")
-    pro_agent = build_agent("pro")
+    global scheduled_agent
+    _agents.clear()
+    for model_id, model in CHAT_MODELS.items():
+        _agents[model_id] = build_agent(model)
     scheduled_agent = build_scheduled_agent()
 
 
-def get_agent(profile: Profile):
-    if profile == "pro":
-        return pro_agent
-    return fast_agent
+def get_agent(model_id: str | None = None):
+    """The agent for a selectable model. Raises ValueError on an unknown id.
+
+    A thread is *not* pinned to a model: the same `thread_id` can be continued
+    on a different one, because every agent shares this checkpointer and the
+    prompt/tool surface they all assemble is identical. What changes mid-thread
+    is only which weights read the existing history.
+    """
+    return _agents[resolve_model(model_id).id]

@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessage
 
 from core.agent import get_agent, resolve_skill_name
+from core.chat_models import ChatModel, resolve_model
+from core.database.db_user_files import get_file_record
 from core.stream import run_agent_stream, build_message_content
 import core.database.checkpointer as checkpointer_module
 from core.database.checkpointer import (
@@ -95,7 +97,7 @@ async def _generate_background(
     thread_id: str,
     user_id: str,
     query: str,
-    mode: str,
+    model_id: str,
     personalization: str,
     attached_file_ids: list | None,
     user_location: str | None,
@@ -112,7 +114,7 @@ async def _generate_background(
     # Structured timing for the generation task: how long until the first event
     # reaches the buffer (brackets the in-task pre-LLM work + first model call),
     # the first text token, and total run. Complements the chat_prelude span.
-    tg = Timing("chat_generation", thread_id=thread_id, mode=mode)
+    tg = Timing("chat_generation", thread_id=thread_id, model=model_id)
     n_events = 0
 
     # Accumulate message fields for the final Postgres upsert. `steps` is the
@@ -144,7 +146,7 @@ async def _generate_background(
         async for event_str in run_agent_stream(
             query=query,
             thread_id=thread_id,
-            mode=mode,
+            model_id=model_id,
             personalization=personalization,
             attached_file_ids=attached_file_ids,
             user_memory=user_memory,
@@ -328,6 +330,73 @@ def _usage_limit_detail(user_id: str, usage: dict) -> dict:
     }
 
 
+async def _has_image_attachment(attached_file_ids: list[dict[str, str]] | None) -> bool:
+    """Whether this turn carries an image, read from the upload records.
+
+    Authoritative rather than sniffed from the filename: `category` is decided
+    at upload time from the real content type (core/routers/uploads.py), so a
+    `.txt` rename cannot buy a 1-credit turn on a 3-credit model, nor slip an
+    image past the `rix` gate into a text-only endpoint.
+
+    Costs a round trip, so it only runs when something is actually attached —
+    which is the rare case, and already the slower one.
+    """
+    if not attached_file_ids:
+        return False
+    file_ids = [fid for info in attached_file_ids for fid in info]
+    records = await asyncio.gather(
+        *(asyncio.to_thread(get_file_record, fid) for fid in file_ids),
+        return_exceptions=True,
+    )
+    return any(
+        isinstance(r, dict) and r.get("category") == "image" for r in records
+    )
+
+
+def _model_gate(model_id: str | None, user_id: str, has_image: bool) -> ChatModel:
+    """Resolve the requested model and reject what this caller may not run.
+
+    Three ways to fail, all before anything is charged:
+
+    - unknown id -> 400, naming the valid ones
+    - signed-in-only model from a guest -> 401, so the client opens sign-in
+      rather than showing a generic failure
+    - image on a model that cannot read one -> 400
+
+    The image rule is the frontend's job first (it blocks the attachment and
+    explains why), but a client that skips it would otherwise reach W&B and get
+    an opaque upstream 400 charged as a normal turn.
+    """
+    try:
+        model = resolve_model(model_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": "unknown_model", "message": str(e)})
+    if model.requires_auth and user_id.startswith("guest_"):
+        raise HTTPException(status_code=401, detail={
+            "error": "auth_required",
+            "model": model.id,
+            "message": f"Sign in to use {model.label}.",
+        })
+    if has_image and not model.accepts_images:
+        raise HTTPException(status_code=400, detail={
+            "error": "images_not_supported",
+            "model": model.id,
+            "message": f"{model.label} can't read images. Switch to Best to send one.",
+        })
+    return model
+
+
+def _charge_key(model: ChatModel, has_image: bool) -> str:
+    """The MODE_CREDIT_COST key for this turn.
+
+    `best` splits in two: an image turn is served by the vision fallback, so it
+    is billed as that model rather than as the 1-credit fine-tune.
+    """
+    if has_image and model.vision_fallback is not None:
+        return f"{model.id}-vision"
+    return model.id
+
+
 def _thread_locked_detail(locked_reason: str | None) -> dict:
     """The structured 403 body for a thread SAFETY_TERMINATED already locked —
     same shape convention as _usage_limit_detail, for the frontend to switch on
@@ -351,13 +420,18 @@ async def chat(
     disconnects — events are buffered in a Redis Stream so the client can
     reconnect at any time and replay from the beginning.
 
-    `request.mode` selects the profile: "fast" (lean, gpt-oss) or "pro" (deep
-    agent, Gemini, with chart/report artifacts). Every turn spends credits
-    against the caller's daily/monthly usage.
+    `request.model` picks the weights — see core/chat_models.py for the catalog.
+    Every model runs the same prompt, tools and skills; what changes is cost (1
+    credit for the fine-tune, 3 for the rest) and whether guests may use it.
     """
     thread_id = request.thread_id
     p = request.personalization
     memory_enabled = bool(p and p.memory_enabled)
+
+    # Model gate first: an unusable request must not reach the usage ledger.
+    has_image = await _has_image_attachment(request.attached_file_ids)
+    model = _model_gate(request.resolved_model_id, user_id, has_image)
+    charge_key = _charge_key(model, has_image)
     # Memory is durable, cross-turn context: once injected into a thread's
     # first turn, LangGraph's checkpointer keeps that whole message (memory
     # block included) in history forever, so re-fetching and re-injecting it
@@ -372,7 +446,7 @@ async def chat(
     )
 
     # Structured timing for the non-LLM prelude (see core/utils/timing.py).
-    t = Timing("chat_prelude", thread_id=thread_id, mode=request.mode,
+    t = Timing("chat_prelude", thread_id=thread_id, model=model.id,
                is_guest=user_id.startswith("guest_"), memory_enabled=memory_enabled)
     t.set(owner_cache=("hit" if (thread_id and owner_cache_hit(thread_id)) else "miss"),
           charge_cache=("hit" if usage_snapshot_hit(user_id) else "miss"))
@@ -396,7 +470,7 @@ async def chat(
 
     _batch_start = time.perf_counter()
     charge_result, owner, is_generating_now, stored_memory, (is_locked, locked_reason) = await asyncio.gather(
-        t.atimed("charge", evaluate_charge_fast(user_id, request.mode)),
+        t.atimed("charge", evaluate_charge_fast(user_id, charge_key)),
         t.atimed("owner", _owner()),
         t.atimed("is_generating", _generating()),
         t.atimed("memory", _memory()),
@@ -432,7 +506,7 @@ async def chat(
 
     # Committed to a new generation → reconcile the charge in the background
     # (off the critical path) and bump the thread's updated_at.
-    commit_charge_fast(user_id, request.mode)
+    commit_charge_fast(user_id, charge_key)
     if thread_id:
         loop = asyncio.get_event_loop()
         loop.run_in_executor(db_executor, touch_thread, thread_id, user_id)
@@ -462,7 +536,7 @@ async def chat(
                 thread_id=thread_id,
                 user_id=user_id,
                 query=query_text,
-                mode=request.mode,
+                model_id=model.id,
                 personalization=personalization_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
@@ -493,7 +567,7 @@ async def chat(
             async for chunk in run_agent_stream(
                 query=query_text,
                 thread_id=None,
-                mode=request.mode,
+                model_id=model.id,
                 personalization=personalization_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
@@ -517,7 +591,10 @@ async def chat(
 
 
 class RewindRequest(BaseModel):
-    mode: Literal["fast", "pro"] = "fast"
+    # Same field pair as QueryRequest — `model` is current, `mode` is the
+    # legacy fast/pro one a stale client still sends. See core/chat_models.py.
+    model: str | None = None
+    mode: str | None = None
     new_query: str | None = None  # None = pure regenerate; set to edit the last user msg
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
@@ -656,14 +733,18 @@ async def api_rewind_thread(
     the same way — otherwise "regenerate" would be a free, unlimited bypass
     around the credit system.
     """
-    t = Timing("rewind_prelude", thread_id=thread_id, mode=body.mode,
+    has_image = await _has_image_attachment(body.attached_file_ids)
+    model = _model_gate(body.model or body.mode, user_id, has_image)
+    charge_key = _charge_key(model, has_image)
+
+    t = Timing("rewind_prelude", thread_id=thread_id, model=model.id,
                is_guest=user_id.startswith("guest_"))
     # Charge-evaluate and ownership check are independent reads — run them
     # concurrently (~1 round trip instead of 2), then commit the charge
     # fire-and-forget once both gates pass. Rewind has no reconnect path.
     _b = time.perf_counter()
     charge_result, owner, (is_locked, locked_reason) = await asyncio.gather(
-        t.atimed("charge", evaluate_charge_fast(user_id, body.mode)),
+        t.atimed("charge", evaluate_charge_fast(user_id, charge_key)),
         t.atimed("owner", get_thread_owner_async(thread_id)),
         t.atimed("lock_state", get_thread_lock_state_async(thread_id)),
     )
@@ -677,11 +758,10 @@ async def api_rewind_thread(
     if not charge_result["charged"]:
         t.emit(outcome="usage_limit")
         raise HTTPException(status_code=429, detail=_usage_limit_detail(user_id, charge_result))
-    commit_charge_fast(user_id, body.mode)
+    commit_charge_fast(user_id, charge_key)
     t.emit(outcome="charged")
 
-    profile = "pro" if body.mode == "pro" else "fast"
-    agent = get_agent(profile)
+    agent = get_agent(model.id)
 
     # Locate the checkpoint right after the target turn's HumanMessage,
     # before the agent replied — body.turn selects which turn (None = most
@@ -743,7 +823,7 @@ async def api_rewind_thread(
             async for chunk in run_agent_stream(
                 query="",  # unused in rewind mode
                 thread_id=thread_id,
-                mode=body.mode,
+                model_id=model.id,
                 personalization=personalization_str,
                 attached_file_ids=body.attached_file_ids,
                 user_location=p.user_location if p else None,

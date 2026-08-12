@@ -1,7 +1,23 @@
 # For building agents
-# Pinned to a minor line: core/agent.py registers a HarnessProfile, and
-# `deepagents.profiles` is a documented beta API that may change shape.
-deepagents>=0.6.12,<0.7
+# Pinned EXACTLY, not to a minor line. Two reasons, and the second is the
+# binding one:
+#
+# 1. core/agent.py registers a HarnessProfile, and `deepagents.profiles` is a
+#    documented beta API that may change shape.
+# 2. deepagents appends ~1,525 tokens of its own sections (`## write_todos`,
+#    `## Skills System`, `## Filesystem Tools`, `## Large Tool Results`) to
+#    every system prompt at request time. A fine-tuned adapter is trained on
+#    that assembled text, so a patch-level deepagents bump silently changes the
+#    prompt the model is served and quietly degrades it. See
+#    finetune/pro_agent/fingerprint.py, which hashes the assembled result.
+#
+# NOTE: this line previously read `>=0.6.12,<0.7` while the environment had
+# 0.6.10 installed — the declared floor was never actually satisfied here, and
+# every eval baseline on file was measured on 0.6.10. Pinned to what was
+# measured rather than upgraded; whatever motivated the 0.6.12 floor is worth
+# re-checking before moving off this version, and moving off it means
+# re-blessing the fingerprint and re-collecting any training data.
+deepagents==0.6.10
 langchain
 langchain_community
 langgraph

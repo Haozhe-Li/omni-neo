@@ -97,7 +97,14 @@ class ToolCache:
             return None  # a corrupt entry is a miss, never a crash
 
     def _store(self, key: str, entry: dict) -> None:
-        tmp = self._path(key) + ".tmp"
+        # PID in the temp name, not just the key: `os.replace` below is atomic,
+        # but two *processes* writing the same key would otherwise open the one
+        # shared `<key>.json.tmp` and interleave their bytes before either
+        # renamed. Running two models concurrently against one cache dir (to
+        # halve baseline wall time) makes that reachable; a corrupt entry only
+        # costs a cache miss, but a miss means the two models no longer see
+        # byte-identical evidence, which is the whole point of the cache.
+        tmp = f"{self._path(key)}.{os.getpid()}.tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(entry, f, ensure_ascii=False, default=str)

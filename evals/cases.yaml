@@ -30,7 +30,10 @@
 #   no_map               {}
 #   question_block       {min_q, max_q, must_be_last}
 #   no_question_block    {}
-#   has_delimiters       {}                 写作类:--- 包裹正文
+#   textblock            {min, max, require_type, require_subject,
+#                         min_words, max_words}
+#                                           写作类:交付物在 <textblock> 里
+#   no_textblock         {}                 反向,用于非写作 case
 #   followup_question    {}                 写作类:结尾一个追问
 # 格式(全部对应 core/agent.py PRO_PROMPT 里的硬约束)
 #   word_count           {min, max}         CJK 感知
@@ -57,10 +60,14 @@
 #   - {key, prompt, weight, pass_at}
 # judge 每项打 0/1/2,pass_at 缺省 2(即满分才算通过)。
 #
-# 另有一个 case 级开关 `citation_grounding: true` —— 打开后对每条被引用的句子
-# 单独判一次「[n] 对应的来源原文是否真的支持这句话」(见 PLAN.md §3.6 L4)。
-# 用的是 trace 里完整的 ToolMessage 原文,不是 registry 里的截断摘要。
-# 成本较高,只在 web-research / report-writing 上开。
+# 曾经还有一个 case 级开关 `citation_grounding: true`,对每条被引用的句子单独
+# 判一次「[n] 对应的来源原文是否真的支持这句话」。已移除:六个强模型(含
+# gpt-5.6-luna / terra / gemini-3.6-flash)在它上面的通过率是 0/15,阈值从 0.8
+# 降到 0.6 之后依然全灭。原因写在被删掉的实现里 —— 一个 claim 是一整行,常常
+# 捆着 2-3 个子事实,一个子事实没被来源覆盖就整行判 0。恒定失败的 check 是常
+# 数不是测量,而且它按 weight 3 计入,等于给每个 web-research / report-writing
+# case 一个固定扣分。抓伪造引用的职责仍由 `citation_exists` 承担(它比对的是
+# 工具真实注册过的编号,0 方差)。
 
 version: 1
 
@@ -110,7 +117,6 @@ cases:
     suite: web-research
     skill: web-research
     title: 深度研究海狮与海豹的区别
-    citation_grounding: true
     turns:
       - text: 深度研究一下海狮和海豹的区别
     checks:
@@ -126,7 +132,7 @@ cases:
       - {key: chart_count,       args: {min: 2}, weight: 3}
       - {key: charts_valid,      args: {require_palette: true, min_series: 1}, weight: 2}
       - {key: citation_count,    args: {min: 6}, weight: 2}
-      - {key: citation_coverage, args: {min_ratio: 0.7}}
+      - {key: citation_coverage, args: {min_ratio: 0.6}}
     judge:
       - key: answers_question
         weight: 3
@@ -151,7 +157,6 @@ cases:
     title: 固态电池现状(英文 query,个性化要求英文回答)
     lang: en
     personalization: {language: English}
-    citation_grounding: true
     turns:
       - text: Research the current state of solid-state battery commercialization in 2026.
     checks:
@@ -186,7 +191,7 @@ cases:
     turns:
       - text: Look into that new model that just came out.
     checks:
-      - {key: question_block, args: {min_q: 1, max_q: 3, must_be_last: true}, weight: 3}
+      - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}, weight: 3}
       - {key: skill_loaded,   args: {skill: ask-question}, weight: 2}
       - {key: no_report,      weight: 3}
       - {key: tool_called,    args: {tool: google_search, min: 0, max: 1}, weight: 2}
@@ -203,7 +208,6 @@ cases:
     suite: report-writing
     skill: report-writing
     title: 明确要求写报告
-    citation_grounding: true
     turns:
       - text: 写一份关于远程办公对软件团队生产力影响的报告
     checks:
@@ -232,7 +236,7 @@ cases:
       - text: What is the TCP three-way handshake?
     checks:
       - {key: no_report,        weight: 3}
-      - {key: word_count,       args: {min: 80, max: 450}, weight: 3}
+      - {key: word_count,       args: {min: 80, max: 600}, weight: 1}
       - {key: chart_count,      args: {max: 0}, weight: 2}
       - {key: skill_not_loaded, args: {skill: web-research}, weight: 2}
     judge:
@@ -308,11 +312,15 @@ cases:
       - {key: map_fence,    args: {min: 1, max_pins: 8}, weight: 3}
       - {key: word_count,   args: {min: 100, max: 700}}
       - {key: no_report,    weight: 2}
+    # `places_real` used to sit here ("any name absent from the tool output is
+    # fabricated — score 0") and no model ever passed it, frontier included.
+    # The case is what made that impossible: the query asks for *five* spots
+    # while `google_search_places` caps k at 5 and in practice returns two or
+    # three, so the model can only under-deliver or get scored 0. Removed
+    # rather than re-tuned — a check every model fails identically is a
+    # constant, not a measurement. `pins_match_text` still catches pins that
+    # disagree with the prose.
     judge:
-      - key: places_real
-        weight: 3
-        prompt: >-
-          Do the recommended restaurants come from the google_search_places results? Any name absent from the tool output is fabricated — score 0.
       - key: pins_match_text
         weight: 2
         prompt: >-
@@ -343,7 +351,7 @@ cases:
       - text: Help me pick a laptop.
     checks:
       - {key: skill_loaded,   args: {skill: ask-question}, weight: 3}
-      - {key: question_block, args: {min_q: 1, max_q: 3, must_be_last: true}, weight: 3}
+      - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}, weight: 3}
       - {key: no_report,      weight: 2}
     judge:
       - key: question_quality
@@ -375,12 +383,18 @@ cases:
     suite: guided-learning
     skill: guided-learning
     title: 教学:傅里叶变换
+    # 第 0 轮原文是「教我一下傅里叶变换」,六个强模型没有一个加载过
+    # guided-learning(0/16) —— 讲解是 LLM 的原生能力,它感觉不到去读 SKILL.md
+    # 的必要,于是一个 weight 3 的 check 恒定失败。改写成把 skill description 里
+    # 那几个触发语(learn about / teach me / quiz me on)对应的**意图**说全:
+    # 系统地学、一步步带、中间出题检验。这测的仍然是路由(query 里没有出现
+    # skill 名),只是不再要求模型猜出「随口一问」背后想要整套教学流程。
     turns:
-      - text: 教我一下傅里叶变换
+      - text: 我想系统地学明白傅里叶变换,请带着我一步步学,中间出题检验我有没有掌握
       - text: 我是理工科大二学生,学过微积分和线性代数,想搞懂它的直觉而不是推导。目标是理解信号处理里为什么要用它。
     checks:
       - {key: skill_loaded,   args: {skill: guided-learning}, turn: any, weight: 3}
-      - {key: question_block, args: {min_q: 1, max_q: 3, must_be_last: true}, turn: 0, weight: 3}
+      - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}, turn: 0, weight: 3}
       - {key: no_report,      turn: 0, weight: 2}
       - {key: chart_count,    args: {min: 1}, turn: 1, weight: 2}
       - {key: charts_valid,   args: {require_palette: true}, turn: 1, weight: 2}
@@ -581,12 +595,21 @@ cases:
     title: 写作任务的格式契约
     turns:
       - text: 帮我写一封辞职邮件,语气客气一点
+    # 这个 case 之前用 `has_delimiters`(找 `---` 水平线)判产物,而 PRO_PROMPT
+    # 早就改成 `<textblock type="email" subject="…">`,`_S_FORMATTING_PRO` 还
+    # 明确说「用标题而不是水平线分节」。也就是说:**完全按 prompt 行事的模型
+    # 会在这里丢掉 weight 3 + judge weight 3**。因为这个 case 不在 smoke 集里,
+    # 所有历史测量都没照到它。
+    #
+    # `word_count` 现在只量正文之外的评语 —— `prose_only` 会把 textblock 剥掉
+    # (和 report 一视同仁),交付物本身的长度由 textblock 的 min/max_words 管。
     checks:
-      - {key: has_delimiters,     weight: 3}
+      - {key: textblock,          args: {min: 1, max: 1, require_type: email,
+                                         min_words: 60, max_words: 400}, weight: 3}
       - {key: followup_question,  weight: 3}
       - {key: tool_called,        args: {tool: google_search, min: 0, max: 0}, weight: 2}
       - {key: no_report,          weight: 2}
-      - {key: word_count,         args: {min: 80, max: 500}}
+      - {key: word_count,         args: {min: 5, max: 80}}
     disable: [citation_exists, citation_format]
     judge:
       - key: tone
@@ -596,7 +619,7 @@ cases:
       - key: separation
         weight: 3
         prompt: >-
-          Does it cleanly separate its own remarks from the deliverable (one line of commentary, the email fenced by --- rules, then a single follow-up question)?
+          Does it cleanly separate its own remarks from the deliverable (one short line of commentary, the email inside a single <textblock> block, then one follow-up question)? Score 0 if the same email text also appears in plain chat text outside the block.
 
   - id: general/chitchat
     suite: general

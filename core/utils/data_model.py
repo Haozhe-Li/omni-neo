@@ -17,7 +17,15 @@ class QueryRequest(BaseModel):
     follow_up_content: str | None = None
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
-    mode: Literal["fast", "pro"] = "fast"
+    # Which model serves this turn — see core/chat_models.py for the catalog,
+    # what each costs, and which ones need a signed-in user. Free-form rather
+    # than a Literal so the registry stays the single source of truth (and so an
+    # unknown id produces our 400 with the valid list, not pydantic's).
+    #
+    # `mode` is the old fast/pro field. Clients on a stale bundle still send it,
+    # so it is accepted and folded into `model` by `resolved_model_id`.
+    model: str | None = None
+    mode: str | None = None
     skill: str | None = None
     # 1-indexed turn number for this exchange, assigned by the frontend
     # (the backend has no other source of truth for turn ordering). Every
@@ -31,6 +39,11 @@ class QueryRequest(BaseModel):
     # limit the frontend's URL picker enforces, kept here too so a client that
     # bypasses the UI can't hand the agent an unbounded fetch list.
     source_url: list[str] | None = Field(default=None, max_length=5)
+
+    @property
+    def resolved_model_id(self) -> str | None:
+        """`model`, falling back to the legacy `mode` field. None means default."""
+        return self.model or self.mode
 
 
 class AutoCompleteRequest(BaseModel):

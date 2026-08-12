@@ -46,6 +46,13 @@ _PROVIDER_BY_CLASS = {
     "ChatCerebras": "cerebras",
     "ChatGroq": "groq",
     "ChatGoogleGenerativeAI": "google_genai",
+    # Must precede the ChatOpenAI entry in spirit as well as in the MRO walk
+    # below: core/llm.py's ChatWandb subclasses ChatOpenAI for the wire format
+    # but is W&B Inference, whose per-token prices are two orders of magnitude
+    # apart from OpenAI's. Without this the exact-class hit in `_provider_of`
+    # would still resolve first, but naming it here is what keeps the pricing
+    # key and the leaderboard's provider column honest.
+    "ChatWandb": "wandb",
     "ChatOpenAI": "openai",
     "ChatAnthropic": "anthropic",
 }
@@ -117,7 +124,7 @@ def discover_models() -> list[ModelSpec]:
     """Every chat model defined in `core/llm.py`, in definition order.
 
     Deduplicated by object identity: `core/llm.py` binds role aliases
-    (`fast_llm`, `pro_llm`, `update_memories_llm`, ...) to the same instances,
+    (`chat_llm`, `vision_llm`, `update_memories_llm`, ...) to the same instances,
     and evaluating `gpt-oss-120b-low` a second time under the name `fast-llm`
     would just double the bill and split its results across two labels. The
     canonical (first-defined) name wins.

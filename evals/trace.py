@@ -121,7 +121,7 @@ class TurnTrace:
     error: str | None = None
 
     # Assistant messages that carried BOTH prose and tool calls, which
-    # PRO_PROMPT forbids ("a turn is 100% tool calls or 100% final text"). This
+    # SYSTEM_PROMPT forbids ("a turn is 100% tool calls or 100% final text"). This
     # is what produces "Let me look that up…" narration leaking into the stream
     # ahead of the real answer, so the offending text is kept for evidence.
     mixed_messages: list[str] = field(default_factory=list)

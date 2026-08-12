@@ -1,7 +1,7 @@
 """Build the agent under test.
 
 Mirrors `core/stream.py::_stream_agent`'s construction so the eval measures the
-real thing — same `PRO_PROMPT`, same tools, same skill files, same turn budget
+real thing — same `SYSTEM_PROMPT`, same tools, same skill files, same turn budget
 — with exactly three deliberate departures, each documented at its call site
 below.
 """
@@ -15,26 +15,27 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
 from core.agent import (
-    FAST_PROMPT,
-    FAST_SKILL_FILES,
-    PRO_PROMPT,
-    PRO_SKILL_FILES,
+    SKILL_FILES,
+    SYSTEM_PROMPT,
     RETRIEVAL_TOOLS,
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
 
-PRO_RUN_LIMIT = 30
-FAST_RUN_LIMIT = 8
+RUN_LIMIT = 30
 
 
 def build_eval_agent(
     llm: BaseChatModel,
     *,
-    profile: str = "pro",
     tools: list | None = None,
 ):
     """Construct an Omni agent bound to `llm`.
+
+    There is one profile. The eval used to build a `fast` variant too (shorter
+    prompt, 8-call budget, one retry); it went away with the profile split in
+    core/agent.py and nothing ever ran it — `--profile` defaulted to pro on
+    every recorded run.
 
     Three departures from production:
 
@@ -51,36 +52,33 @@ def build_eval_agent(
        the chain is dropped and a provider outage surfaces as `status='error'`.
 
     3. **`model` is a parameter.** `core.agent.build_agent` hardcodes
-       `pro_llm`; the whole point here is the model matrix.
+       `chat_llm`; the whole point here is the model matrix.
 
     Everything else — prompt, tools, skills, retry policy, run limit — is
     production's.
     """
     _register_harness_profiles()
-    is_pro = profile == "pro"
     return create_deep_agent(
         # Slug, not a display name. LangGraph stamps the agent name onto the
         # messages it emits, and OpenAI validates `messages[].name` against
         # `^[^\s<|\\/>]+$` — so "Omni Eval (pro)" makes every OpenAI request
         # fail with a 400 the moment a second message exists, which reads as
         # the model being broken rather than the name being illegal.
-        name=f"omni-eval-{profile}",
+        name="omni-eval",
         model=llm,
         tools=tools if tools is not None else RETRIEVAL_TOOLS,
-        system_prompt=PRO_PROMPT if is_pro else FAST_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE],
         checkpointer=InMemorySaver(),
         middleware=[
-            ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0)
-            if is_pro
-            else ToolRetryMiddleware(max_retries=1),
-            ToolCallLimitMiddleware(run_limit=PRO_RUN_LIMIT if is_pro else FAST_RUN_LIMIT),
+            ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
+            ToolCallLimitMiddleware(run_limit=RUN_LIMIT),
         ],
     )
 
 
-def skill_files(profile: str = "pro") -> dict:
-    return PRO_SKILL_FILES if profile == "pro" else FAST_SKILL_FILES
+def skill_files() -> dict:
+    return SKILL_FILES
 
 
 def build_personalization(cfg: dict[str, str]) -> str:

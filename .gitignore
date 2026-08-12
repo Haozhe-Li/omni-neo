@@ -206,4 +206,6 @@ wandb
 # gen_queries.py invents different queries on every run — so a copy has to live
 # outside git if the eval numbers are ever to be re-checked.
 finetune/**/dataset
+artifacts
 
+finetune/**/docs

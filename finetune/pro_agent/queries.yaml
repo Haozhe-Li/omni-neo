@@ -1,0 +1,455 @@
+# SFT 数据的查询集 —— 教师采集的唯一事实来源
+#
+# 130 条 query。跑 best-of-3 luna rollout,按门槛 + 类别 check 筛选,目标产出
+# ~100 条轨迹。
+#
+# ── 为什么是「类别模板」而不是逐条写 check ──────────────────────────────────
+# 逐条手写 = 130 x 3-5 = 400 多条规则,等于把 evals/cases.yaml 重写一遍,而且
+# 必然出现拼错、漏项、前后不一致。这里 query 只带一个 `cat` 标签,该类别的
+# must-pass 集合写在 categories 下面,改一处全类生效。
+#
+# ── 两层筛选 ────────────────────────────────────────────────────────────────
+# 1. gate(下面 gate: 那一组)—— 与 query 无关的普适格式规则,**任何一条不过就
+#    丢弃整条轨迹**。实测 luna 在 56 条基线轨迹上的存活率是 48/56 = 86%,
+#    best-of-3 之后单 query 至少一条可用的概率是 99.7%。
+# 2. 类别 check —— 该类 query 特有的行为要求。
+#
+# `citation_coverage` **故意不在 gate 里**:它是个启发式,连 frontier 模型都有
+# 约 40% 判不过,拿它当门槛等于按一条谁都满足不了的规则扔掉好数据,而且会反向
+# 选择出「少写带数字的段落」这种莫名其妙的偏好。它在 benchmark 里仍然是个低权
+# 重计分项,只是不参与数据筛选。
+#
+# ── 容忍度 ──────────────────────────────────────────────────────────────────
+# 该搜没搜 -> 不可容忍(类别 check 直接判死)
+# 该加载 skill 没加载 -> 不可容忍
+# 该直答却多调了一两次工具 -> 可容忍(不写成 max 上限,交给 gate 里的
+#   search_discipline 兜底)
+# 但**同一 query 的多条候选里,保留工具调用次数最少的那条** —— student 的病
+#   一半是「刹不住」,所以要主动选择最克制的示范。
+#
+# ── 零重叠 ──────────────────────────────────────────────────────────────────
+# 这 130 条与 evals/cases.yaml 的 28 条测试 query 不得有任何重复。由
+# spec.py 在加载时强制校验,不靠人眼。
+
+version: 1
+
+# ── 硬门槛:任何一条不过 -> 丢弃整条轨迹 ────────────────────────────────────
+gate:
+  - tool_discipline
+  - no_hyperlinks
+  - no_ascii_art
+  - citation_exists
+  - citation_format
+  - no_leading_header
+  - latex_sanity
+  - search_discipline
+  - no_prompt_leak
+  - response_language
+
+# ── personalization 取值池 ──────────────────────────────────────────────────
+# 字段**格式**固定(要进权重),字段**取值**必须变化(不能进权重)。全部 130 条
+# 都钉同一个 2026-08-02,模型会把这个日期学进去,然后在生产里张口就说「今天是
+# 8 月 2 日」。采集时按 query 序号轮询这个池子。
+personalization_pool:
+  - {language: 简体中文,  location: "Champaign, Illinois, US",  datetime: "2026-03-14T09:20:00-05:00"}
+  - {language: 简体中文,  location: "Shanghai, China",           datetime: "2026-05-02T21:05:00+08:00"}
+  - {language: English,   location: "Seattle, Washington, US",   datetime: "2026-01-27T07:45:00-08:00"}
+  - {language: English,   location: "London, United Kingdom",    datetime: "2026-09-19T14:30:00+01:00"}
+  - {language: 简体中文,  location: "Taipei, Taiwan",            datetime: "2026-11-08T16:10:00+08:00"}
+  - {language: English,   location: "Toronto, Canada",           datetime: "2026-06-23T11:55:00-04:00"}
+
+# ── 类别 ────────────────────────────────────────────────────────────────────
+# 每个类别的 checks 是**该类必过**的项(gate 之外额外要求的)。
+# `run_limit` 缺省 30,只有 budget-exhausted 覆盖它。
+categories:
+
+  deep-research:
+    n: 15
+    why: >-
+      最重的路径,也是 base model 掉得最狠的地方(web-research suite 0.650 vs
+      0.938)。一条轨迹同时演示:加载三个 skill、按依赖顺序加载、多轮检索、
+      出报告、出图、成簇引用。
+    checks:
+      - {key: skill_loaded,     args: {skill: web-research}}
+      - {key: skill_loaded,     args: {skill: report-writing}}
+      - {key: has_report,       args: {min_words: 600, require_title: true}}
+      - {key: chart_count,      args: {min: 1}}
+      - {key: citation_count,   args: {min: 4}}
+      - {key: distinct_queries, args: {tool: google_search, min: 3}}
+
+  budget-exhausted:
+    n: 20
+    run_limit: 8
+    why: >-
+      **这一类是人造的,教师自然产不出来。** base model 最严重的失败是撞上
+      run_limit 之后无限重试(charting 32 轮、trip-advisor 62 次调用),而 luna
+      正常只用 9-17 轮,永远碰不到那面墙。把 run_limit 压到 8 逼它撞墙,录下
+      「预算用尽 -> 就地用手上材料写完」的行为。
+      探针实测:luna 在 run_limit=6 下被拦 8 次后仍写出 6162 字的完整报告,
+      配方成立。构建 JSONL 时**只保留 1 次被拦的调用**,其余成对删除 ——
+      否则教出来的是「重试 8 次再收尾」。
+    checks:
+      # `has_report`,不是 `word_count`:这 20 条都是研究型 query,教师撞墙后
+      # 交付的是一个 <report>,而 word_count 跑在 prose_only 上、会先把 report
+      # 剥掉 —— 实测 be-01 产出了完整报告却只数到 67 个词,差点被判死。
+      - {key: has_report,     args: {min_words: 300}}
+      - {key: citation_count, args: {min: 2}}
+
+  search-fact:
+    n: 15
+    why: >-
+      必须检索的事实性问题。base model 在 report-writing/no-report-needed 上
+      0 次工具调用直接张嘴答,这一类就是纠正那个。
+    checks:
+      - {key: tool_called,    args: {tool: google_search, min: 1}}
+      - {key: citation_count, args: {min: 1}}
+
+  single-tool:
+    n: 12
+    why: >-
+      天气/股票/汇率各 4 条。`tool_called:get_weather` 在基线上是 0/2 ——
+      连最该调工具的场景它都不调。
+    checks:
+      - {key: citation_exists}
+
+  chart:
+    n: 10
+    why: >-
+      charting suite 0.754,`charts_valid` 0/7。echarts fence 的格式契约写在
+      SKILL.md 里,不读就写不出来。
+    checks:
+      - {key: skill_loaded,  args: {skill: charting}}
+      - {key: chart_count,   args: {min: 1}}
+      - {key: charts_valid,  args: {require_palette: true}}
+
+  teach:
+    n: 10
+    why: >-
+      guided-learning skill 在 56 次基线运行里 0 次加载。
+    checks:
+      - {key: skill_loaded,   args: {skill: guided-learning}}
+      - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}}
+
+  write-rewrite:
+    n: 10
+    why: >-
+      `<textblock>` 输出契约。这条不是 skill,写在 PRO_PROMPT 的
+      _S_WRITING_FORMAT 里,语法细节多(type="email"、subject="…"、subject 内
+      不能有双引号),低频且易错 —— 所以第一轮**不要**把那一段从 prompt 里
+      压掉。
+    checks:
+      # min_words 只用来挡住空块/退化块,不是长度要求:这一类同时包含起草
+      # (邮件、求职信)和**压缩**(「改简洁一点」)。wr-04 的正确答案就是 10 个
+      # 词,之前定 60 会把完全正确的轨迹判死。
+      - {key: textblock,          args: {min: 1, max: 1, min_words: 8}}
+      - {key: followup_question}
+      - {key: no_tool_calls}
+
+  restraint:
+    n: 10
+    why: >-
+      克制负例。base model 的病一半是「做太多」(32 轮/62 次调用),这一类专门
+      演示「什么都不做才是对的」。注意基线上它的负例分数反而最高
+      (no-chart-needed 0.912、no-map-needed 0.897)—— 所以这一类不是为了修
+      它,而是防止 SFT 把它推向「什么都要做」的另一个极端。
+    checks:
+      - {key: no_report}
+      - {key: no_question_block}
+
+  places:
+    n: 8
+    why: >-
+      `map_fence` 0/5、`skill_loaded:mapping` 0/2。
+      注意 google_search_places 的 k 上限是 5,实测常只返回 2-3 家 ——
+      query 不要写死「推荐五家」,否则模型只能编。
+    checks:
+      - {key: tool_called,  args: {tool: google_search_places, min: 1}}
+      - {key: skill_loaded, args: {skill: mapping}}
+      - {key: map_fence,    args: {min: 1, max_pins: 8}}
+
+  compute:
+    n: 8
+    why: >-
+      run_python 路径。PRO_PROMPT 要求「never approximate in your head」。
+    checks:
+      - {key: tool_called, args: {tool: run_python, min: 1}}
+      - {key: no_report}
+
+  ask-question:
+    n: 8
+    why: >-
+      `question_block` 0/9。需求不明时应先反问,而不是猜着答。
+      注意 query 必须是**没有额外信息就真的答不了**的那种。原来的
+      「给我推荐一个数据库」「帮我选个云服务商」这类技术选型,教师会判定可以
+      给通用对比然后直接答 —— 5 条里 3 条 0/3 全灭。benchmark 里能触发反问的
+      是 `Help me pick a laptop` 这种**个人消费决策**:答案空间大、且完全取决于
+      预算和用途。教师不问,就蒸馏不出问。
+    checks:
+      - {key: skill_loaded,   args: {skill: ask-question}}
+      # max_q 跟 cases.yaml 的 trip-advisor 对齐(8)。开放式规划类问题教师会问
+      # 6-7 个,那是合理的,不是违规。
+      - {key: question_block, args: {min_q: 1, max_q: 8, must_be_last: true}}
+      - {key: no_report}
+
+  about:
+    n: 4
+    why: >-
+      `judge:factual` 0/4 —— 它在关于 Omni 自己的问题上全靠编,因为
+      `skill_loaded:about-omni` 也是 0/2。
+    checks:
+      - {key: no_report}
+
+# ── 可选块覆盖 ──────────────────────────────────────────────────────────────
+# 生产的 build_message_content 能发 7 种块,eval 的 build_user_message 只发 3
+# 种。也就是说模型至今从没在训练里见过其中 4 种。这是**正交轴**:挂在已有类别
+# 上,不新增类别。
+#
+#   user_memory        12   生产里很常见(开了记忆的用户每个新 thread 首轮都带)
+#   attached_files      8   挂一份合成文档到 /uploads/
+#   priority_sources    6   2026-08-11 之前连 _S_INPUT_FORMAT 都没文档化过
+#   follow_up_selection 6
+#   requested_skill     6
+#
+# 每条 query 的 `block:` 字段指定它携带哪个块。
+
+queries:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # deep-research (15) —— 加载 skill 链 + 多轮检索 + 报告 + 图表
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: dr-01, cat: deep-research, lang: zh, text: "深度研究一下国内预制菜行业这两年的监管变化和市场反应"}
+  - {id: dr-02, cat: deep-research, lang: en, text: "Do a deep dive on how small modular reactors are actually doing commercially."}
+  - {id: dr-03, cat: deep-research, lang: zh, text: "帮我系统梳理一下量子纠错这几年的进展和还没解决的问题", block: user_memory}
+  - {id: dr-04, cat: deep-research, lang: en, text: "Research the state of lab-grown meat: cost curves, regulatory approvals, and who is actually shipping.", block: attached_files}
+  - {id: dr-05, cat: deep-research, lang: zh, text: "深入研究一下欧洲碳边境调节机制对中国出口企业的实际影响"}
+  - {id: dr-06, cat: deep-research, lang: en, text: "Give me a thorough look at the current state of RISC-V adoption outside of China."}
+  - id: dr-07
+    cat: deep-research
+    lang: zh
+    text: "研究一下这几年城市轨道交通的建设放缓,原因和后果都讲清楚"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Rapid_transit']
+  - {id: dr-08, cat: deep-research, lang: en, text: "Deep research on desalination: which technologies won, what they cost, and where they are deployed."}
+  - {id: dr-09, cat: deep-research, lang: zh, text: "系统研究一下抗生素耐药性目前的全球态势和新药管线", block: requested_skill}
+  - {id: dr-10, cat: deep-research, lang: en, text: "Investigate how remote sensing is changing crop yield forecasting, with the numbers.", block: requested_skill}
+  - id: dr-11
+    cat: deep-research
+    lang: zh
+    text: "深度研究一下日本便利店行业的饱和与转型"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Convenience_store']
+  - {id: dr-12, cat: deep-research, lang: en, text: "Research the economics of vertical farming — why so many operators went bankrupt."}
+  - {id: dr-13, cat: deep-research, lang: zh, text: "帮我研究一下新能源车电池回收产业链现在到底跑通了没有", block: user_memory}
+  - {id: dr-14, cat: deep-research, lang: en, text: "Do thorough research on the state of green hydrogen projects announced versus actually built."}
+  - {id: dr-15, cat: deep-research, lang: zh, text: "研究一下全球咖啡豆价格这两年大涨的成因和产业影响"}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # budget-exhausted (20) —— run_limit=8,逼教师撞墙后体面收尾
+  # 全部用研究型 query:只有它们会真的把预算耗完。
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: be-01, cat: budget-exhausted, lang: zh, text: "全面分析一下全球锂矿供应格局的变化,包括产地、企业、价格和政策"}
+  - {id: be-02, cat: budget-exhausted, lang: en, text: "Comprehensively analyze the global semiconductor equipment market: players, chokepoints, export controls, and outlook."}
+  - {id: be-03, cat: budget-exhausted, lang: zh, text: "把印度制造业崛起这件事讲透,产业、政策、基础设施、劳动力都要覆盖"}
+  - id: be-04
+    cat: budget-exhausted
+    lang: zh
+    text: "全面梳理一下红海航运受阻之后全球海运业的格局变化"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Red_Sea']
+  - {id: be-05, cat: budget-exhausted, lang: zh, text: "全面研究一下老龄化对东亚各国养老金体系的冲击", block: user_memory}
+  - {id: be-06, cat: budget-exhausted, lang: en, text: "Thoroughly analyze the rare earth supply chain: mining, refining, substitution, and geopolitics.", block: attached_files}
+  - {id: be-07, cat: budget-exhausted, lang: zh, text: "详细分析一下全球粮食贸易格局这几年的重构"}
+  - {id: be-08, cat: budget-exhausted, lang: en, text: "Map out the entire commercial space launch industry — providers, cadence, pricing, and who is losing money."}
+  - {id: be-09, cat: budget-exhausted, lang: zh, text: "全面梳理一下光伏产业从上游硅料到组件的产能过剩情况"}
+  - {id: be-10, cat: budget-exhausted, lang: zh, text: "完整分析一下流媒体时代唱片公司、音乐人和平台之间的分账经济学变化"}
+  - {id: be-11, cat: budget-exhausted, lang: zh, text: "把全球水资源短缺问题分区域讲清楚,成因、现状、应对都要"}
+  - id: be-12
+    cat: budget-exhausted
+    lang: en
+    text: "Comprehensively cover the state of nuclear waste disposal across every country that has a program."
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Radioactive_waste']
+  - {id: be-13, cat: budget-exhausted, lang: zh, text: "全面分析一下跨境电商这几年的政策变化和平台格局"}
+  - {id: be-14, cat: budget-exhausted, lang: en, text: "Analyze in depth how insurance markets are repricing climate risk across regions and lines of business."}
+  - {id: be-15, cat: budget-exhausted, lang: zh, text: "详尽研究一下全球航空业疫情后的恢复情况和结构性变化"}
+  - {id: be-16, cat: budget-exhausted, lang: zh, text: "全面盘点一下开源数据库公司的许可证变更、营收状况和社区分叉", block: attached_files}
+  - {id: be-17, cat: budget-exhausted, lang: zh, text: "系统分析一下中国县域经济这几年的分化,要有数据支撑"}
+  - {id: be-18, cat: budget-exhausted, lang: en, text: "Thoroughly research the global copper market through 2030 — demand drivers, supply projects, and price scenarios."}
+  - {id: be-19, cat: budget-exhausted, lang: zh, text: "全面研究一下全球高铁网络的建设经济性,各国对比"}
+  - {id: be-20, cat: budget-exhausted, lang: en, text: "Cover the entire landscape of carbon capture projects: technology, cost per tonne, and what actually got built."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # search-fact (15) —— 必须检索 + 必须引用
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: sf-01, cat: search-fact, lang: zh, text: "现在国内新能源车的购置税优惠政策是怎么规定的?"}
+  - id: sf-02
+    cat: search-fact
+    lang: en
+    text: "What did the EU AI Act's latest implementation timeline end up being?"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Artificial_Intelligence_Act']
+  - {id: sf-03, cat: search-fact, lang: zh, text: "今年诺贝尔物理学奖颁给了谁,获奖理由是什么?"}
+  - {id: sf-04, cat: search-fact, lang: en, text: "How many countries currently have a central bank digital currency in full production?", block: user_memory}
+  - {id: sf-05, cat: search-fact, lang: zh, text: "最新一代 HBM 内存的带宽和上一代比提升了多少?"}
+  - {id: sf-06, cat: search-fact, lang: zh, text: "阿尔忒弥斯计划的载人登月现在进展到哪一步了?", block: attached_files}
+  - {id: sf-07, cat: search-fact, lang: zh, text: "上海地铁现在总共多少条线路、运营里程多少?"}
+  - id: sf-08
+    cat: search-fact
+    lang: en
+    text: "Which companies have FDA approval for at-home blood tests right now?"
+    block: follow_up_selection
+    follow_up: "Several at-home diagnostic categories cleared regulatory review in the last two years, but the approvals are narrower than the marketing suggests — most cover a single analyte rather than a general blood panel."
+  - {id: sf-09, cat: search-fact, lang: zh, text: "现在申请日本工作签证的最新条件是什么?"}
+  - {id: sf-10, cat: search-fact, lang: en, text: "What's the latest on the Nord Stream investigation?"}
+  - {id: sf-11, cat: search-fact, lang: zh, text: "国内现在对生成式 AI 服务的备案要求是什么?", block: requested_skill}
+  - {id: sf-12, cat: search-fact, lang: en, text: "How much did global EV sales grow last year, and which markets drove it?", block: user_memory}
+  - {id: sf-13, cat: search-fact, lang: zh, text: "港珠澳大桥现在的通行量和当初预测差多少?"}
+  - {id: sf-14, cat: search-fact, lang: en, text: "What are the current visa-free entry rules for US passport holders visiting Brazil?"}
+  - {id: sf-15, cat: search-fact, lang: zh, text: "最近一次美联储议息会议的决议和市场反应是什么?"}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # single-tool (12) —— 天气 4 / 股票 4 / 汇率 4
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: st-01, cat: single-tool, lang: zh, text: "明天成都的天气怎么样,要不要带伞?"}
+  - {id: st-02, cat: single-tool, lang: en, text: "What's the weather like in Reykjavik right now?"}
+  - {id: st-03, cat: single-tool, lang: zh, text: "这周末西雅图会下雨吗?", block: user_memory}
+  - {id: st-04, cat: single-tool, lang: zh, text: "芝加哥今天下午的逐小时天气预报是什么?"}
+  - {id: st-05, cat: single-tool, lang: zh, text: "台积电现在股价多少?"}
+  - {id: st-06, cat: single-tool, lang: en, text: "How is Palantir stock doing today?"}
+  - {id: st-07, cat: single-tool, lang: zh, text: "比亚迪最近的股价走势怎么样?"}
+  - id: st-08
+    cat: single-tool
+    lang: en
+    text: "What's Apple trading at?"
+    block: follow_up_selection
+    follow_up: "The hardware segment has been the steadier contributor, while services revenue is what analysts have been repricing on."
+  - {id: st-09, cat: single-tool, lang: zh, text: "现在一美元能换多少日元?"}
+  - {id: st-10, cat: single-tool, lang: en, text: "What's the euro to Swiss franc rate right now?"}
+  - {id: st-11, cat: single-tool, lang: zh, text: "一万人民币能换多少港币?"}
+  - {id: st-12, cat: single-tool, lang: zh, text: "按今天的汇率,500 英镑能换多少加元?"}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # chart (10) —— 加载 charting skill + echarts fence
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: ch-01, cat: chart, lang: zh, text: "对比一下过去十年中国、美国、印度的发电量结构变化"}
+  - {id: ch-02, cat: chart, lang: en, text: "Show me how smartphone market share shifted among the top five vendors over the last five years."}
+  - {id: ch-03, cat: chart, lang: zh, text: "把主要经济体这几年的通胀率放一起比较一下", block: user_memory}
+  - {id: ch-04, cat: chart, lang: zh, text: "对比一下前沿大模型训练成本这些年的变化趋势"}
+  - id: ch-05
+    cat: chart
+    lang: zh
+    text: "展示一下这几年全球集装箱运价指数的波动"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Containerization']
+  - {id: ch-06, cat: chart, lang: en, text: "Break down where global CO2 emissions come from by sector."}
+  - {id: ch-07, cat: chart, lang: zh, text: "对比几个主要城市的房价收入比", block: requested_skill}
+  - id: ch-08
+    cat: chart
+    lang: en
+    text: "Visualize how average US mortgage rates moved over the past three years."
+    block: follow_up_selection
+    follow_up: "Rates moved in three distinct regimes over that period, and averaging across all of them hides the part that actually mattered for affordability."
+  - {id: ch-09, cat: chart, lang: zh, text: "把全球前几大港口的吞吐量做个对比"}
+  - {id: ch-10, cat: chart, lang: en, text: "Chart the growth of solar installed capacity by region."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # teach (10) —— 加载 guided-learning + 出题检验
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: tc-01, cat: teach, lang: zh, text: "带我从头学明白贝叶斯定理,边讲边出题考我"}
+  - id: tc-02
+    cat: teach
+    lang: en
+    text: "Teach me how TCP congestion control works, step by step, and quiz me as we go."
+    block: follow_up_selection
+    follow_up: "Congestion control is the part that decides how fast to send, as opposed to flow control, which is about not overwhelming the receiver. People mix the two up constantly."
+  - {id: tc-03, cat: teach, lang: zh, text: "我想系统学一下数据库索引的原理,请一步步带我并检验我掌握没有"}
+  - {id: tc-04, cat: teach, lang: en, text: "Walk me through how public key cryptography works and check my understanding along the way.", block: user_memory}
+  - {id: tc-05, cat: teach, lang: zh, text: "教我理解梯度下降,不要直接给公式,循序渐进并出题", block: attached_files}
+  - {id: tc-06, cat: teach, lang: zh, text: "我想认真学一下编译器的寄存器分配,请系统教我并出题检验"}
+  - {id: tc-07, cat: teach, lang: zh, text: "带我学一下期权定价的直觉,一步一步来,中间考考我"}
+  - {id: tc-08, cat: teach, lang: en, text: "Teach me the basics of epidemiological modeling with checks on whether I follow.", block: requested_skill}
+  - {id: tc-09, cat: teach, lang: zh, text: "我想搞懂分布式共识算法,请系统地教我并检验掌握程度"}
+  - {id: tc-10, cat: teach, lang: en, text: "Help me learn how RAM actually works at the hardware level, quizzing me as we go."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # write-rewrite (10) —— <textblock> 契约,零工具调用
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: wr-01, cat: write-rewrite, lang: zh, text: "帮我写一封邮件向客户解释项目要延期两周,语气诚恳一点"}
+  - {id: wr-02, cat: write-rewrite, lang: en, text: "Write me a short cover letter for a backend engineering role, confident but not arrogant."}
+  - {id: wr-03, cat: write-rewrite, lang: zh, text: "把这段话润色一下:我们公司做的东西挺好的,你们可以考虑一下合作"}
+  - id: wr-04
+    cat: write-rewrite
+    lang: en
+    text: "Rewrite this to be more concise: We are writing to inform you that we have received your application and it is currently under review by our team."
+    block: follow_up_selection
+    follow_up: "We are writing to inform you that we have received your application and it is currently under review by our team. You will be contacted in due course once a determination has been made regarding your candidacy."
+  - {id: wr-05, cat: write-rewrite, lang: zh, text: "帮我写一段产品发布的朋友圈文案,别太营销腔"}
+  - {id: wr-06, cat: write-rewrite, lang: zh, text: "帮我写一封婉拒演讲邀请的邮件,别把关系搞僵"}
+  - {id: wr-07, cat: write-rewrite, lang: zh, text: "把这句英文翻译成中文并润色:The deadline has been moved up, please prioritize accordingly."}
+  - {id: wr-08, cat: write-rewrite, lang: en, text: "Write a two-paragraph bio for a conference program — I'm a data engineer with eight years of experience.", block: user_memory}
+  - {id: wr-09, cat: write-rewrite, lang: zh, text: "帮我改写一下这段自我介绍,让它更适合面试场合:我叫张明,毕业后一直在做后端开发,写过挺多接口,也带过两个实习生。平时喜欢研究新技术,学东西比较快。"}
+  - {id: wr-10, cat: write-rewrite, lang: en, text: "Draft a brief apology email to a customer whose order shipped to the wrong address."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # restraint (10) —— 克制负例:什么都不做才是对的
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: rs-01, cat: restraint, lang: zh, text: "谢谢,今天帮了我大忙"}
+  - {id: rs-02, cat: restraint, lang: en, text: "Haha that's actually pretty funny"}
+  - id: rs-03
+    cat: restraint
+    lang: zh
+    text: "用一句话说说什么是递归"
+    block: follow_up_selection
+    follow_up: "递归的关键不在于「函数调用自己」,而在于每次调用都把问题变得更小,并且存在一个不再需要继续拆的情况。"
+  - {id: rs-04, cat: restraint, lang: en, text: "In one sentence, what does an ORM do?"}
+  - {id: rs-05, cat: restraint, lang: zh, text: "早上好"}
+  - {id: rs-06, cat: restraint, lang: zh, text: "240 的 15% 是多少?"}
+  - {id: rs-07, cat: restraint, lang: zh, text: "「破釜沉舟」是什么意思?"}
+  - {id: rs-08, cat: restraint, lang: en, text: "Is Sydney in the northern or southern hemisphere?"}
+  - {id: rs-09, cat: restraint, lang: zh, text: "帮我想三个宠物猫的名字", block: user_memory}
+  - {id: rs-10, cat: restraint, lang: en, text: "Remind me what the acronym API stands for."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # places (8) —— google_search_places + mapping skill + map fence
+  # 注意:不写「推荐五家」,工具最多返回 5 条且常只有 2-3 条
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: pl-01, cat: places, lang: zh, text: "帮我找几家上海静安区评价不错的日料店"}
+  - {id: pl-02, cat: places, lang: en, text: "Where should I get good coffee near downtown Portland?"}
+  - {id: pl-03, cat: places, lang: zh, text: "北京国贸附近有什么适合谈事情的咖啡馆?", block: user_memory}
+  - {id: pl-04, cat: places, lang: en, text: "Find me some well-reviewed bookstores in central Edinburgh.", block: requested_skill}
+  - {id: pl-05, cat: places, lang: zh, text: "深圳南山区有哪些值得去的书店?"}
+  - {id: pl-06, cat: places, lang: en, text: "Any good vegetarian restaurants near the Mission in San Francisco?", block: attached_files}
+  - {id: pl-07, cat: places, lang: zh, text: "成都春熙路附近有什么本地人常去的火锅店?"}
+  - {id: pl-08, cat: places, lang: en, text: "Recommend a few museums worth visiting in central Berlin."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # compute (8) —— run_python,禁止心算
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: cp-01, cat: compute, lang: zh, text: "一笔 80 万的房贷,利率 4.1%,30 年等额本息,每月还多少、总利息多少?", block: attached_files}
+  - {id: cp-02, cat: compute, lang: en, text: "If I invest $500 a month at 7% annual return for 25 years, what do I end up with?"}
+  - {id: cp-03, cat: compute, lang: zh, text: "一个班 25 个人,随机分成 5 组,某两个人分到同一组的概率是多少?"}
+  - {id: cp-04, cat: compute, lang: en, text: "A/B test: 1200 visitors, 84 conversions vs 1150 visitors, 103 conversions. Is that significant?", block: attached_files}
+  - {id: cp-05, cat: compute, lang: zh, text: "帮我算一下把 12 万公里换算成光年是多少"}
+  - {id: cp-06, cat: compute, lang: en, text: "What's the compound annual growth rate if revenue went from 3.2M to 11.7M over six years?"}
+  - {id: cp-07, cat: compute, lang: zh, text: "模拟一下抛 1000 次硬币,连续出现 6 次正面的概率大概多少"}
+  - {id: cp-08, cat: compute, lang: zh, text: "月流失率 5% 的话,多久会流失掉一半用户?"}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ask-question (8) —— 需求不明应先反问
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: aq-01, cat: ask-question, lang: zh, text: "帮我挑一副耳机"}
+  - {id: aq-02, cat: ask-question, lang: en, text: "Help me plan a trip."}
+  - {id: aq-03, cat: ask-question, lang: zh, text: "帮我挑一双跑鞋"}
+  - {id: aq-04, cat: ask-question, lang: en, text: "I need help picking a monitoring stack.", block: user_memory}
+  - {id: aq-05, cat: ask-question, lang: zh, text: "帮我挑一台相机"}
+  - {id: aq-06, cat: ask-question, lang: zh, text: "帮我挑一个礼物"}
+  - {id: aq-07, cat: ask-question, lang: zh, text: "帮我制定一个健身计划"}
+  - {id: aq-08, cat: ask-question, lang: en, text: "Recommend a good place to live."}
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # about (4) —— 加载 about-* skill,不许编
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: ab-01, cat: about, lang: zh, text: "你背后用的是什么模型?"}
+  - {id: ab-02, cat: about, lang: en, text: "Who is Haozhe Li?"}
+  - {id: ab-03, cat: about, lang: zh, text: "你和其他 AI 助手比有什么不一样?"}
+  - {id: ab-04, cat: about, lang: en, text: "What's Omni built with?"}

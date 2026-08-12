@@ -96,6 +96,14 @@ _REPORT_RE = re.compile(
 )
 _REPORT_TITLE_RE = re.compile(r"""title\s*=\s*["'](?P<title>[^"']*)["']""", re.I)
 _QUESTION_RE = re.compile(r"<question\s*>(?P<body>.*?)</question\s*>", re.S | re.I)
+_TEXTBLOCK_RE = re.compile(
+    r"<textblock(?P<attrs>[^>]*)>(?P<body>.*?)</textblock\s*>", re.S | re.I
+)
+_TB_TYPE_RE = re.compile(r"""type\s*=\s*["'](?P<v>[^"']*)["']""", re.I)
+_TB_SUBJECT_RE = re.compile(r"""subject\s*=\s*["'](?P<v>[^"']*)["']""", re.I)
+# Decoration SYSTEM_PROMPT bans inside the block: the deliverable is "plain
+# finished text only". `**bold**`, `#` headings, and `[n]` citation markers.
+_TB_DECORATION_RE = re.compile(r"\*\*[^*\n]+\*\*|^\s{0,3}#{1,6}\s+\S|\[\d{1,3}\]", re.M)
 
 
 @dataclass
@@ -187,6 +195,50 @@ class QuestionBlock:
     trailing: str
 
 
+@dataclass
+class TextBlock:
+    type: str | None
+    subject: str | None
+    body: str
+    decoration: list[str]
+
+    @property
+    def words(self) -> int:
+        return count_words(self.body)
+
+
+def extract_textblocks(text: str) -> list[TextBlock]:
+    """`<textblock>…</textblock>` deliverables, per SYSTEM_PROMPT's writing rules.
+
+    This is the writing path's output contract — a rewrite, translation, draft
+    or email goes inside the block and nowhere else. It replaces the `---`
+    horizontal rules that `has_delimiters` still looks for; that convention was
+    retired from the prompt (which now says "Use headers instead of horizontal
+    rules"), so the old check scored a model *down* for obeying the current
+    instructions.
+
+    `decoration` collects the markdown the prompt forbids inside the block
+    (`**bold**`, `#` headings, `[n]` markers) — the block is meant to hold
+    finished plain text a user can paste elsewhere, so formatting leaking in
+    is a real defect rather than a style quibble.
+    """
+    out: list[TextBlock] = []
+    for m in _TEXTBLOCK_RE.finditer(text or ""):
+        attrs = m.group("attrs") or ""
+        body = m.group("body").strip()
+        tm = _TB_TYPE_RE.search(attrs)
+        sm = _TB_SUBJECT_RE.search(attrs)
+        out.append(
+            TextBlock(
+                type=tm.group("v").strip() if tm else None,
+                subject=sm.group("v").strip() if sm else None,
+                body=body,
+                decoration=[d.strip() for d in _TB_DECORATION_RE.findall(body)][:3],
+            )
+        )
+    return out
+
+
 def extract_question(text: str) -> QuestionBlock | None:
     """The ask-question skill requires the block to be the last thing in the
     message — the frontend renders it as a form and anything after it is
@@ -207,10 +259,23 @@ def extract_question(text: str) -> QuestionBlock | None:
 _CITE_RE = re.compile(r"\[(\d{1,3})\]")
 # Full-width / dagger-suffixed forms the prompt explicitly bans.
 _BAD_CITE_RE = re.compile(r"[【［]\s*\d+\s*[†‡]?[^】］]*[】］]")
-# A [n] immediately followed by a word character is mid-sentence, not the
+# A [n] still followed by prose *on the same line* is mid-sentence, not the
 # end-of-paragraph cluster the prompt mandates.
+#
+# The lookahead matches horizontal whitespace only. It used to be `\s*`, which
+# also matches newlines, so the correctly-placed cluster in
+#
+#     海狮属于有耳海豹科。[4][6]
+#
+#     日常语言中的"海豹"有时会泛指所有鳍足类。
+#
+# was reported as mid-sentence: `[6]`, then the blank line, then the first
+# character of the *next* paragraph. Every frontier model tripped it on most
+# cases (5 of 9 for gpt-5.6-luna), so the check was measuring its own bug
+# rather than citation placement. A cluster that ends a line is exactly what
+# the prompt asks for; only trailing prose on the same line is a violation.
 _MIDSENTENCE_CITE_RE = re.compile(
-    r"\[\d{1,3}\](?=\s*[A-Za-z0-9一-鿿])"
+    r"\[\d{1,3}\](?=[^\S\n]*[A-Za-z0-9一-鿿])"
 )
 
 
@@ -242,6 +307,10 @@ _MD_LINK_RE = re.compile(r"\[[^\]]+\]\((?:https?://|www\.)[^)]+\)")
 _BARE_URL_RE = re.compile(r"(?<![(\w/])(?:https?://|www\.)[^\s<>()\[\]]+")
 # Box-drawing, block and heavy-ASCII glyphs that only ever appear in text art.
 _ART_CHARS = set("│─┌┐└┘├┤┬┴┼║═╔╗╚╝╠╣╦╩╬▀▄█▌▐░▒▓▲▼◄►↑↓←→")
+# The subset that is damning on its own *outside* a fence. Arrows are excluded:
+# `→` is ordinary prose punctuation ("输入 → 处理 → 输出"), and three bullets in
+# a row each carrying one would otherwise be reported as a drawing.
+_BOX_CHARS = _ART_CHARS - set("▲▼◄►↑↓←→")
 
 
 def find_hyperlinks(text: str) -> list[str]:
@@ -255,13 +324,44 @@ def find_hyperlinks(text: str) -> list[str]:
     return (_MD_LINK_RE.findall(stripped) + _BARE_URL_RE.findall(stripped))[:5]
 
 
-def find_ascii_art(text: str) -> list[str]:
-    """Fenced blocks that are drawings rather than code.
+# Punctuation a hand-drawn diagram is built out of. Deliberately excludes `/`
+# and `\`, which diagrams do use but which also carry LaTeX (`\frac`, `\[ \]`)
+# — a false positive there would fail a legitimately formatted formula.
+_ART_LINE_CHARS = set("|+-_=<>^v*.")
 
-    A block counts as art when box-drawing glyphs appear, or when its lines are
-    overwhelmingly made of `|`, `+`, `-` and spaces — the shape a hand-drawn
-    table or flowchart takes. Language-tagged fences we know to be data
-    (echarts / map) and real code are exempt.
+
+def _is_art_line(line: str) -> bool:
+    """One line that looks drawn rather than written.
+
+    Box-drawing glyphs settle it outright. Otherwise the line has to be *mostly*
+    diagram punctuation: a Markdown table row (`| Client | Server |`) is ~16%
+    and stays prose, while a sequence-diagram arrow (`|------ SYN ----->|`) is
+    ~80% and does not. The 4-character floor keeps `A -> B` in ordinary prose
+    from qualifying.
+    """
+    s = line.strip()
+    if len(s) < 4:
+        return False
+    if any(ch in _BOX_CHARS for ch in s):
+        return True
+    n = sum(1 for ch in s if ch in _ART_LINE_CHARS)
+    return n >= 4 and n / len(s) >= 0.4
+
+
+def find_ascii_art(text: str) -> list[str]:
+    """Drawings rather than code — inside fences and out.
+
+    A fenced block counts as art when box-drawing glyphs appear, or when its
+    lines are overwhelmingly made of `|`, `+`, `-` and spaces — the shape a
+    hand-drawn table or flowchart takes. Language-tagged fences we know to be
+    data (echarts / map) and real code are exempt.
+
+    Unfenced prose is scanned too, because nothing requires a model to fence a
+    drawing: gpt-5.6-luna answered the TCP-handshake case with a bare
+    three-line sequence diagram, which the `right_sized` judge objected to
+    while this check passed it. There the bar is a *run* of three consecutive
+    drawn lines, not a single one — a `---` rule and a Markdown table's
+    `|---|---|` separator are each one line and stay legal.
     """
     out = []
     for raw, lang in _iter_fences(text):
@@ -276,6 +376,17 @@ def find_ascii_art(text: str) -> list[str]:
         arty = sum(1 for ln in lines if re.fullmatch(r"[\s|+\-_=<>^v*.]{4,}", ln))
         if len(lines) >= 3 and arty / len(lines) >= 0.6:
             out.append(raw[:200])
+
+    run: list[str] = []
+    for line in _strip_all_fences(text).splitlines():
+        if _is_art_line(line):
+            run.append(line)
+            continue
+        if len(run) >= 3:
+            out.append("\n".join(run)[:200])
+        run = []
+    if len(run) >= 3:
+        out.append("\n".join(run)[:200])
     return out[:3]
 
 
@@ -285,10 +396,48 @@ _LATEX_DOLLAR_RE = re.compile(r"(?<!\\)\$\$?(?!\s)[^$\n]{1,120}?(?<!\\)\$\$?")
 _LATEX_TRIVIAL_RE = re.compile(r"\\\(\s*[\d.,%\s]{1,12}\s*\\\)")
 
 
+# Inside a `$…$` span, what makes it actually mathematical: a TeX control
+# sequence, a sub/superscript, or a standalone letter used as a variable. The
+# lookbehind also rejects digits and `.` so a unit glued to a number — the `B`
+# of `$16.7B` — reads as currency rather than as a variable named B.
+_MATHY_RE = re.compile(r"\\[A-Za-z]+|[\^_]|(?<![A-Za-z0-9.])[a-zA-Z](?![A-Za-z])")
+
+
+def _is_currency_pair(span: str) -> bool:
+    """`$700–$1,000` and `$16.7B | $26.9B` are two prices, not a math span.
+
+    `_LATEX_DOLLAR_RE` cannot tell the difference — it sees an opening `$`,
+    some non-`$` text, and a closing `$` — so every price range in an English
+    answer was reported as dollar-delimited LaTeX. That is the *opposite* of
+    what SYSTEM_PROMPT asks for: it names `$10` as something that "should just be
+    typed as normal text". The check was failing the behaviour it exists to
+    enforce, on 3 of 9 cases for gpt-5.6-luna.
+
+    A real math span carries a control sequence, a sub/superscript, or a
+    single-letter variable; a price range carries digits, separators and
+    unit suffixes. Requiring one mathy token keeps `$\\frac{a}{b}$` (a genuine
+    violation — it should be `\\( \\)`) failing while letting money through.
+
+    The word test catches the other shape: two prices with a whole clause
+    between them, as in `$193.7 billion in FY2026, while AMD's entire 2025
+    revenue was $`. That one slips past the mathy-token test because `AMD's`
+    contributes a lone `s`. Inline math is short and symbolic; three or more
+    ordinary words means the `$`s bracket prose, not an equation.
+    """
+    inner = span.strip("$")
+    if not inner:
+        return False
+    words = re.findall(r"[A-Za-z]{3,}", re.sub(r"\\[A-Za-z]+", " ", inner))
+    if len(words) >= 3:
+        return True
+    return not _MATHY_RE.search(inner)
+
+
 def find_latex_problems(text: str) -> list[str]:
     stripped = _strip_all_fences(text)
+    dollar = [m for m in _LATEX_DOLLAR_RE.findall(stripped) if not _is_currency_pair(m)]
     return (
-        [f"dollar-delimited: {m}" for m in _LATEX_DOLLAR_RE.findall(stripped)[:3]]
+        [f"dollar-delimited: {m}" for m in dollar[:3]]
         + [f"trivial: {m}" for m in _LATEX_TRIVIAL_RE.findall(stripped)[:3]]
     )
 
@@ -301,13 +450,6 @@ def starts_with_header(text: str) -> bool:
         if line.strip():
             return bool(_HEADER_RE.match(line))
     return False
-
-
-_RULE_RE = re.compile(r"^\s*---\s*$", re.M)
-
-
-def count_horizontal_rules(text: str) -> int:
-    return len(_RULE_RE.findall(_strip_all_fences(text or "")))
 
 
 def ends_with_question(text: str) -> bool:
@@ -327,7 +469,42 @@ def prose_only(text: str) -> str:
     """
     out = _REPORT_RE.sub(" ", text or "")
     out = _QUESTION_RE.sub(" ", out)
+    # Same reasoning as reports: a `<textblock>` holds the deliverable, not the
+    # model's remarks about it, and the prompt asks for exactly one short line
+    # of those. Its length is bounded by the `textblock` check's own
+    # min_words/max_words instead.
+    out = _TEXTBLOCK_RE.sub(" ", out)
     return _strip_all_fences(out)
+
+
+def readable_text(text: str) -> str:
+    """Everything the user actually reads, structured blocks included.
+
+    `prose_only` exists to answer "how much did the model *say*", so it strips
+    reports, questions and textblocks. Language detection needs the opposite:
+    an answer that is entirely a `<question>` block is still written in some
+    language, and the user reads every word of it.
+
+    Without this, `response_language` reported "answer too short to classify"
+    on exactly the turns where asking a clarifying question is the correct
+    behaviour — all four of gpt-5.6-luna's failures on the 28-case set were
+    this, on `ask-question/laptop-choice`, `web-research/ambiguous-scope` and
+    both turns of `trip-advisor/weekend-nyc`. The check was scoring the model
+    down for obeying the ask-question skill.
+    """
+    parts = [prose_only(text)]
+    parts += [r.body for r in extract_reports(text)]
+    parts += [b.body for b in extract_textblocks(text)]
+    block = extract_question(text)
+    if block and block.parsed.ok and isinstance(block.parsed.data, dict):
+        for q in block.parsed.data.get("questions") or []:
+            if not isinstance(q, dict):
+                continue
+            parts.append(str(q.get("prompt") or ""))
+            for opt in q.get("options") or []:
+                if isinstance(opt, dict):
+                    parts.append(str(opt.get("label") or ""))
+    return "\n\n".join(p for p in parts if p and p.strip())
 
 
 def paragraphs(text: str) -> list[str]:
