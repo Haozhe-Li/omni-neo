@@ -65,6 +65,8 @@ from core.agent import (  # noqa: E402
     _register_harness_profiles,
 )
 from core.utils.citations import all_citations, reset_citation_registry  # noqa: E402
+from core.utils.data_model import Personalization  # noqa: E402
+from core.utils.utils import format_personalization  # noqa: E402
 from evals import checks as checks_mod  # noqa: E402
 from evals.config import CheckSpec  # noqa: E402
 from evals.runner import _normalize_stream_item, _text_of  # noqa: E402
@@ -171,14 +173,28 @@ def _patch_file_records(q: Query) -> None:
 
 
 def build_message(spec: Spec, q: Query) -> tuple[Any, dict, list[dict]]:
-    """Production's user message, with this query's optional block attached."""
+    """Production's user message, with this query's optional block attached.
+
+    The `<personalization>` body goes through production's own
+    `format_personalization` rather than being assembled here. It used to be
+    hand-rolled, and the labels had drifted from production's — training and
+    the benchmark both emitted `Response language:` / `User location:` while
+    production emits `Response Language:` / `User Location:`. The adapter was
+    keyed on a string production never sends, and because the benchmark shared
+    the *training* spelling, no eval could see it.
+
+    Trajectories collected before 2026-08-12 carry the old spelling. They are
+    not rewritten: the mix is harmless and arguably useful, since production
+    and the benchmark still disagree until `evals/agent_factory.py` is fixed
+    too, and a model invariant to the label is what serves both.
+    """
     p = spec.personalization_for(q)
-    personalization = "\n".join(
-        filter(None, [
-            f"Response language: {p['language']}" if p.get("language") else "",
-            f"User location: {p.get('location', 'Unknown')}",
-            f"User local date and time: {p['datetime']}",
-        ])
+    personalization = format_personalization(
+        Personalization(
+            response_language=p.get("language") or "",
+            user_location=p.get("location") or "Unknown",
+            user_local_datetime=p["datetime"],
+        )
     )
 
     kwargs: dict[str, Any] = {}

@@ -1,7 +1,7 @@
 # SFT 数据的查询集 —— 教师采集的唯一事实来源
 #
-# 130 条 query。跑 best-of-3 luna rollout,按门槛 + 类别 check 筛选,目标产出
-# ~100 条轨迹。
+# 158 条 query。跑 best-of-3 luna rollout,按门槛 + 类别 check 筛选,目标产出
+# ~120 条轨迹。
 #
 # ── 为什么是「类别模板」而不是逐条写 check ──────────────────────────────────
 # 逐条手写 = 130 x 3-5 = 400 多条规则,等于把 evals/cases.yaml 重写一遍,而且
@@ -131,12 +131,28 @@ categories:
       - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}}
 
   write-rewrite:
-    n: 10
+    n: 26
     why: >-
       `<textblock>` 输出契约。这条不是 skill,写在 PRO_PROMPT 的
       _S_WRITING_FORMAT 里,语法细节多(type="email"、subject="…"、subject 内
       不能有双引号),低频且易错 —— 所以第一轮**不要**把那一段从 prompt 里
       压掉。
+
+      2026-08-12 扩到 26 条,补的是**翻译**。原来 10 条里纯翻译是 0 条
+      (wr-07 是「翻译+润色」,且指令和输出同为中文),`evals/cases.yaml` 的 28
+      个 case 里翻译也是 0 个 —— 既没教过也没测过,rix v3 在翻译任务上不出
+      textblock 就是这么来的。wr-11~wr-18 是跨语种翻译,wr-19~wr-26 补
+      润色和邮件的样本量(type="email"/subject 原来只有 3 条示范)。
+
+      跨语种翻译是唯一一类 **prose 语种 ≠ textblock 语种**的任务,而
+      `response_language` 在下面的 gate 里。它原先把 textblock 正文也算进语种
+      检测,于是翻译轨迹被判 `mixed` 而整条丢弃 —— 无声无息,实测 8 条里死 3
+      条。改成只看 `parsers.conversational_text`(散文 + report + question,
+      不含 textblock)之后才收得上来。
+
+      wr-11~wr-26 和 rs-11/rs-12 的答案是**手写**的,见 `authored.yaml` 和
+      `author.py`:这一类零工具调用、答案近乎唯一,而 luna 对前置短评那条契约
+      的遵守率只有 50%。手写答案仍然要过完全相同的 gate + 类别 check。
     checks:
       # min_words 只用来挡住空块/退化块,不是长度要求:这一类同时包含起草
       # (邮件、求职信)和**压缩**(「改简洁一点」)。wr-04 的正确答案就是 10 个
@@ -146,15 +162,22 @@ categories:
       - {key: no_tool_calls}
 
   restraint:
-    n: 10
+    n: 12
     why: >-
       克制负例。base model 的病一半是「做太多」(32 轮/62 次调用),这一类专门
       演示「什么都不做才是对的」。注意基线上它的负例分数反而最高
       (no-chart-needed 0.912、no-map-needed 0.897)—— 所以这一类不是为了修
       它,而是防止 SFT 把它推向「什么都要做」的另一个极端。
+
+      rs-11/rs-12 是 write-rewrite 的**边界负例**:问一个外语词什么意思是
+      *解释*,不是交付物,不该包 textblock。只喂正例的话模型学到的规律会是
+      「凡是出现外语就包 textblock」,所以这两条和 wr-11~wr-18 必须成对存在。
     checks:
       - {key: no_report}
       - {key: no_question_block}
+      # 克制类按定义就不该产出交付物块 —— 对 rs-01~rs-10 同样成立,
+      # 加上它不改变这十条的判定,只是把原本隐含的要求写出来。
+      - {key: no_textblock}
 
   places:
     n: 8
@@ -190,6 +213,28 @@ categories:
       # 6-7 个,那是合理的,不是违规。
       - {key: question_block, args: {min_q: 1, max_q: 8, must_be_last: true}}
       - {key: no_report}
+
+  lang-mix:
+    n: 10
+    why: >-
+      **语种纪律 —— 混合语种 query。** 2026-08-12 实测的失败形状:一句中文
+      提问里夹了英文名词短语,rix v3 用英文整段作答,8/8 全挂。夹 1-2 个词时
+      正常(8/8 中文),夹一整个英文从句时 0/8 —— 是剂量反应,不是随机。
+
+      前 147 条里这种 query 有 **0 条**:85 条中文 query 里 81 条是纯中文
+      (英文词 ≤1),另外 4 条的英文是「待翻译的素材」而不是提问中的术语。
+      benchmark 里也只有 `language/zh-frame-en-terms` 一条,而 rix v3 在
+      response_language 上的**全部失分就是这一条**。
+
+      这 10 条同时是唯一带 `Follow User's Query Language` 的采集样本 ——
+      那是生产在用户没设语言时发的默认值,而它在前 147 条里出现 0 次
+      (79 条钉死 简体中文、68 条钉死 English)。注意 `spec.py::checks_for`
+      必须把这个值特判成 `expect = q.lang`,否则 `"中文" in ...` 会判成
+      英文,把每条中文 query 全判死。
+
+      类别不加额外 check:这一类要测的东西全在 gate 里(`response_language`),
+      再加行为约束反而会因为无关原因丢掉正确的轨迹。
+    checks: []
 
   about:
     n: 4
@@ -390,6 +435,34 @@ queries:
   - {id: wr-09, cat: write-rewrite, lang: zh, text: "帮我改写一下这段自我介绍,让它更适合面试场合:我叫张明,毕业后一直在做后端开发,写过挺多接口,也带过两个实习生。平时喜欢研究新技术,学东西比较快。"}
   - {id: wr-10, cat: write-rewrite, lang: en, text: "Draft a brief apology email to a customer whose order shipped to the wrong address."}
 
+  # ── 中文指令 · 中翻英 ──────────────────────────────────────────────────────
+  - {id: wr-11, cat: write-rewrite, lang: zh, text: "请帮我把这句话翻译成英文：我们已经收到您的反馈，会在三个工作日内给您答复。"}
+  - {id: wr-12, cat: write-rewrite, lang: zh, text: "帮我把这段翻译成英文，语气正式一点：由于供应商延迟交货，本次产品发布将推迟至下月中旬，给您带来的不便我们深表歉意。"}
+  - {id: wr-13, cat: write-rewrite, lang: zh, text: "「路遥知马力，日久见人心」这句话翻译成英文怎么说？"}
+
+  # ── 中文指令 · 英翻中 ──────────────────────────────────────────────────────
+  - {id: wr-14, cat: write-rewrite, lang: zh, text: "请把这段话翻译成中文：Your subscription will renew automatically on March 1st unless you cancel before then."}
+  - {id: wr-15, cat: write-rewrite, lang: zh, text: "帮我把这封邮件翻译成中文：Thanks for flagging this. I've looped in the platform team and we'll have a fix out by end of week."}
+  - {id: wr-16, cat: write-rewrite, lang: zh, text: "把这段技术说明翻译成中文：The connection pool is exhausted when all available sockets are checked out and the queue timeout elapses."}
+
+  # ── 英文指令 · 翻成别的语言 ────────────────────────────────────────────────
+  # wr-18 的目标语是日语,不是为了凑数:证明它不是只会 zh/en 二选一,而且
+  # `type` 是闭集、该省略时要省略。
+  - {id: wr-17, cat: write-rewrite, lang: en, text: "Please translate this into Chinese: We appreciate your patience while we look into this issue."}
+  - {id: wr-18, cat: write-rewrite, lang: en, text: "Translate this into Japanese for me: Thank you for your continued support — we look forward to working with you again next year."}
+
+  # ── 润色 / 改写 ────────────────────────────────────────────────────────────
+  - {id: wr-19, cat: write-rewrite, lang: en, text: "Polish this so it reads more naturally: I have been working on this project since last year and I think the result is quite good, please take a look."}
+  - {id: wr-20, cat: write-rewrite, lang: en, text: "Proofread and tighten this: Our team have been consistently delivering high quality outputs across multiple different workstreams over the course of the past several quarters."}
+  - {id: wr-21, cat: write-rewrite, lang: zh, text: "帮我把这段话改得更口语化一点：本次会议旨在就下一阶段的工作安排进行充分沟通与讨论。"}
+  - {id: wr-22, cat: write-rewrite, lang: zh, text: "这段话有点啰嗦，帮我精简一下：经过我们团队反复讨论和多轮验证之后，我们最终决定采用第二套方案作为本次项目的实施方案。"}
+
+  # ── 写邮件 —— type="email" + subject="…" ──────────────────────────────────
+  - {id: wr-23, cat: write-rewrite, lang: en, text: "Write an email to my manager asking to move our weekly 1:1 from Thursday to Friday."}
+  - {id: wr-24, cat: write-rewrite, lang: en, text: "Draft an email introducing our new account manager to an existing client."}
+  - {id: wr-25, cat: write-rewrite, lang: zh, text: "帮我写一封邮件催一下供应商的报价，客气一点但要让对方知道有时间压力。"}
+  - {id: wr-26, cat: write-rewrite, lang: zh, text: "帮我写封邮件感谢面试官，面的是数据分析岗，昨天下午面的。"}
+
   # ══════════════════════════════════════════════════════════════════════════
   # restraint (10) —— 克制负例:什么都不做才是对的
   # ══════════════════════════════════════════════════════════════════════════
@@ -408,6 +481,10 @@ queries:
   - {id: rs-08, cat: restraint, lang: en, text: "Is Sydney in the northern or southern hemisphere?"}
   - {id: rs-09, cat: restraint, lang: zh, text: "帮我想三个宠物猫的名字", block: user_memory}
   - {id: rs-10, cat: restraint, lang: en, text: "Remind me what the acronym API stands for."}
+  # 边界负例:问词义是解释,不是交付物 —— 正确答案是行内散文,没有 textblock。
+  # 和 wr-11~wr-18 成对,防止模型把「出现外语」当成包 textblock 的触发条件。
+  - {id: rs-11, cat: restraint, lang: en, text: "What does \"画蛇添足\" mean in English?"}
+  - {id: rs-12, cat: restraint, lang: en, text: "My colleague ended her message with 「辛苦了」 — what does that mean in English?"}
 
   # ══════════════════════════════════════════════════════════════════════════
   # places (8) —— google_search_places + mapping skill + map fence
@@ -449,6 +526,36 @@ queries:
   # ══════════════════════════════════════════════════════════════════════════
   # about (4) —— 加载 about-* skill,不许编
   # ══════════════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════════════════════
+  # lang-mix (10) —— 混合语种 query + 生产默认的 Follow User's Query Language
+  # personalization 逐条写死而不是走 pool:pool 的 6 条全都钉了具体语言,
+  # 而这一类的全部意义就是那个 pool 里没有的取值。location/datetime 仍然轮换,
+  # 否则 10 条同一个日期会被学进权重。
+  # ══════════════════════════════════════════════════════════════════════════
+  - {id: lm-01, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Shanghai, China",            datetime: "2026-04-07T10:15:00+08:00"},
+     text: "帮我对比一下 Kubernetes 的 HPA 和 VPA，我们线上服务经常突发流量"}
+  - {id: lm-02, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Beijing, China",             datetime: "2026-06-18T14:40:00+08:00"},
+     text: "你能告诉我 the current market share of PostgreSQL vs MySQL 吗？"}
+  - {id: lm-03, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Shenzhen, China",            datetime: "2026-02-25T09:30:00+08:00"},
+     text: "我在做 A/B testing，sample size 大概要多少才有 statistical significance？"}
+  - {id: lm-04, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Taipei, Taiwan",             datetime: "2026-10-12T20:05:00+08:00"},
+     text: "最近 Fed 的 quantitative tightening 对新兴市场有什么影响？"}
+  - {id: lm-05, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Hangzhou, China",            datetime: "2026-07-30T16:20:00+08:00"},
+     # 原文是「解释 multi-head attention 怎么工作」,luna 三次全部画了 ASCII 结构图,
+     # 被 `no_ascii_art` 判死 3/3。「讲清楚一个结构」这种 query 天然拉着教师去画图,
+     # 而 prompt 明令禁止 —— 换成同样混合语种但不带结构的咨询型问题。
+     text: "我们团队在纠结要不要引入 feature flag，对一个五人小团队来说 overhead 会不会太大？"}
+  - {id: lm-06, cat: lang-mix, lang: zh, personalization: {language: "Follow User's Query Language", location: "Singapore",                  datetime: "2026-03-05T11:00:00+08:00"},
+     text: "帮我查一下 Nvidia 最新的 earnings call 里关于 data center revenue 说了什么"}
+  - {id: lm-07, cat: lang-mix, lang: en, personalization: {language: "Follow User's Query Language", location: "Seattle, Washington, US",    datetime: "2026-05-14T08:25:00-07:00"},
+     text: "What does 内卷 actually mean in the context of Chinese tech companies?"}
+  - {id: lm-08, cat: lang-mix, lang: en, personalization: {language: "Follow User's Query Language", location: "London, United Kingdom",     datetime: "2026-09-02T13:45:00+01:00"},
+     text: "Can you explain how 拼多多 and 淘宝 differ in their business models?"}
+  - {id: lm-09, cat: lang-mix, lang: en, personalization: {language: "Follow User's Query Language", location: "New York, New York, US",     datetime: "2026-01-21T17:10:00-05:00"},
+     text: "I keep seeing 降本增效 in Chinese earnings reports — what are those companies actually signalling?"}
+  - {id: lm-10, cat: lang-mix, lang: en, personalization: {language: "Follow User's Query Language", location: "Toronto, Canada",            datetime: "2026-08-09T12:35:00-04:00"},
+     text: "How does 微信支付 handle cross-border payments compared to Alipay?"}
+
   - {id: ab-01, cat: about, lang: zh, text: "你背后用的是什么模型?"}
   - {id: ab-02, cat: about, lang: en, text: "Who is Haozhe Li?"}
   - {id: ab-03, cat: about, lang: zh, text: "你和其他 AI 助手比有什么不一样?"}

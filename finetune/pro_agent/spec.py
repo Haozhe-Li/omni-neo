@@ -24,6 +24,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from core.utils.data_model import Personalization  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 QUERIES = HERE / "queries.yaml"
 DOCS = HERE / "docs"
@@ -48,6 +50,15 @@ OPTIONAL_BLOCKS = {
 }
 
 DEFAULT_RUN_LIMIT = 30
+
+# What production puts in `Response Language:` when the user has set no
+# preference — an instruction, not a language name. Read off the model rather
+# than retyped: `core/utils/utils.py::format_personalization` renders whatever
+# this default holds, so a copy here would silently drift the day it changes.
+#
+# It appeared in 0 of the first 147 trajectories (every one pinned 简体中文 or
+# English), while being the string most production turns actually carry.
+FOLLOW_QUERY: str = Personalization.model_fields["response_language"].default
 
 
 @dataclass
@@ -88,11 +99,20 @@ class Spec:
         `response_language` needs its `expect` filled in here. Handed empty
         args it returns "no expected language declared" — an unconditional
         pass, so it would sit in the gate looking like a check while grading
-        nothing. Every entry in `personalization_pool` states a language, and
-        SYSTEM_PROMPT says a stated language wins over the query's own, so the
-        expectation is the personalization's language, not `q.lang`.
+        nothing. A personalization that names a language wins over the query's
+        own, per SYSTEM_PROMPT, so that is normally the expectation.
+
+        `FOLLOW_QUERY` is the exception and must be special-cased: it is not a
+        language, it is an instruction to use the query's. Falling through to
+        the `"中文" in …` test would score it as English and fail every Chinese
+        query in the follow-query group — the exact group added to cover
+        production's default.
         """
-        expect = "zh" if "中文" in (self.personalization_for(q).get("language") or "") else "en"
+        stated = self.personalization_for(q).get("language") or ""
+        if stated.strip() == FOLLOW_QUERY:
+            expect = q.lang
+        else:
+            expect = "zh" if "中文" in stated else "en"
         out = []
         for key in self.gate:
             args = {"expect": expect} if key == "response_language" else {}

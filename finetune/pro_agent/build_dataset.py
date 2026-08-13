@@ -170,6 +170,8 @@ def main() -> int:
     ap.add_argument("--holdout", type=int, default=0,
                     help="rows reserved from training (default 0 — see below)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--cap", type=int, default=30_000,
+                    help="water-fill tool results until each row fits this many tokens")
     args = ap.parse_args()
 
     traces = read_jsonl(DATA / "traces.jsonl")
@@ -220,6 +222,31 @@ def main() -> int:
         print("\ndropped:")
         for b in bad:
             print(f"  {b}")
+
+    # Water-fill tool results down toward the cap. This call went missing at
+    # some point and the loss was silent in exactly the way that matters: the
+    # file still built, and `filter_context.py` then dropped every row that
+    # would have been shrunk — all 15 deep-research trajectories, 6 of 10
+    # charts, 2 budget-exhausted. v3 kept all 15. A rebuild without this
+    # produces a smaller, easier dataset that looks fine in every summary line
+    # except the per-category counts.
+    #
+    # The cap here is deliberately under `filter_context.py --cap 32000`:
+    # `shrink_row` measures the JSON serialisation while the filter measures
+    # the real Qwen chat template, and the two disagree by a few percent in
+    # either direction. Shrinking to the same number would leave rows sitting
+    # on the boundary for the filter to drop anyway.
+    tok = load_tokenizer()
+    shrunk = cut_rows = 0
+    for r in rows:
+        new_r, cut = shrink_row(r, args.cap, tok)
+        if cut:
+            r["messages"] = new_r["messages"]
+            shrunk += 1
+            cut_rows += cut
+    if shrunk:
+        print(f"\nwater-filled {shrunk} row(s) to <= {args.cap:,} tokens "
+              f"({cut_rows} tool results truncated)")
 
     random.Random(args.seed).shuffle(rows)
     holdout = rows[: args.holdout]

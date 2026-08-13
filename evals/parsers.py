@@ -477,24 +477,36 @@ def prose_only(text: str) -> str:
     return _strip_all_fences(out)
 
 
-def readable_text(text: str) -> str:
-    """Everything the user actually reads, structured blocks included.
+def conversational_text(text: str) -> str:
+    """Everything the assistant *said to* the user — not what it produced *for*
+    them.
 
-    `prose_only` exists to answer "how much did the model *say*", so it strips
-    reports, questions and textblocks. Language detection needs the opposite:
-    an answer that is entirely a `<question>` block is still written in some
-    language, and the user reads every word of it.
+    In: prose, `<report>` bodies, and `<question>` blocks. `prose_only` strips
+    all of those, because it answers "how much did the model say"; language
+    detection needs the opposite. Without the question block,
+    `response_language` reported "answer too short to classify" on exactly the
+    turns where asking a clarifying question is the correct behaviour — all
+    four of gpt-5.6-luna's failures on the 28-case set were this, on
+    `ask-question/laptop-choice`, `web-research/ambiguous-scope` and both turns
+    of `trip-advisor/weekend-nyc`. The check was scoring the model down for
+    obeying the ask-question skill.
 
-    Without this, `response_language` reported "answer too short to classify"
-    on exactly the turns where asking a clarifying question is the correct
-    behaviour — all four of gpt-5.6-luna's failures on the 28-case set were
-    this, on `ask-question/laptop-choice`, `web-research/ambiguous-scope` and
-    both turns of `trip-advisor/weekend-nyc`. The check was scoring the model
-    down for obeying the ask-question skill.
+    Out: `<textblock>` bodies. A report is addressed to the user — a Chinese
+    question gets a Chinese report — but a textblock is a deliverable whose
+    language the *task* dictates: "把这段翻译成英文" is correctly answered with
+    Chinese commentary wrapped around an English block. Counting the block
+    scored every cross-language writing task as `mixed`, which mattered more
+    than it sounds — `response_language` is in the *gate* of
+    `finetune/pro_agent/queries.yaml`, so it silently discarded whole
+    trajectories, and translation is the one task where the mismatch is not a
+    defect but the entire point. Measured on the first batch of translation
+    traces it would have thrown away 3 of 8, including both cases where the
+    target language was neither the query's nor Chinese. The 129 collected rows
+    before it never tripped this only because none of their write-rewrite
+    queries crossed languages.
     """
     parts = [prose_only(text)]
     parts += [r.body for r in extract_reports(text)]
-    parts += [b.body for b in extract_textblocks(text)]
     block = extract_question(text)
     if block and block.parsed.ok and isinstance(block.parsed.data, dict):
         for q in block.parsed.data.get("questions") or []:

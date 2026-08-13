@@ -650,10 +650,13 @@ def _response_language(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     expect = spec.args.get("expect")
     if not expect:
         return CheckResult.ok("no expected language declared")
-    # Everything the user reads, not just the prose: an answer that is entirely
-    # a `<question>` block is still written in a language. See
-    # `parsers.readable_text`.
-    verdict = parsers.detect_language(parsers.readable_text(_text(trace, spec)))
+    # Everything the user is *told*, not just the prose: an answer that is
+    # entirely a `<question>` block is still written in a language. But NOT the
+    # `<textblock>` deliverable — "把这段翻译成英文" is correctly answered with
+    # Chinese commentary around an English block, and counting the block made
+    # every cross-language writing task read as `mixed`. See
+    # `parsers.conversational_text`.
+    verdict = parsers.detect_language(parsers.conversational_text(_text(trace, spec)))
     # An answer can be too small to have a language at all. "240 的 15% 是多少?"
     # is correctly answered with "36", which lands at 2 CJK chars and 3 Latin
     # words and scored "mixed" — the check demanding a commitment the content

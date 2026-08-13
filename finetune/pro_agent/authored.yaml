@@ -1,0 +1,208 @@
+# 手写的教师答案 —— 用于 luna 产不出稳定示范的那些 query
+#
+# ## 为什么这些不走 collect.py
+#
+# `write-rewrite` 的翻译子类是零工具调用的确定性交付物:没有检索、没有推理链
+# 需要蒸馏,一条轨迹里唯一有信息量的就是最终那段文本。而 luna 在这一类上对
+# `_S_WRITING_FORMAT` 的遵守率只有 50% —— 实测 8 条里 4 条(wr-14/16/17/18)
+# 直接以 `<textblock>` 开头,漏掉了契约要求的前置短评,且漏的方式有规律
+# (源文本是外语时更容易漏)。类别 check 抓不到这个,因为 `textblock` /
+# `followup_question` / `no_tool_calls` 三条都不管块前面有没有东西。
+#
+# 教一个 50% 合规的示范,模型学到的是「那行可有可无」—— prompt 说要、数据说
+# 随意,这种矛盾信号正是让微调漂移的东西。手写在这里严格优于采集。
+#
+# ## 这不等于免检
+#
+# `author.py` 把这些答案套进**生产的** user message 和**真实装配的** system
+# prompt,再跑一遍与采集完全相同的 gate + 类别 check,任何一条不过就拒绝写入。
+# 手写的是答案,不是判定。
+#
+# ## 什么该写在这里,什么不该
+#
+# 只写零工具调用、且正确答案唯一或近乎唯一的 query。需要检索的一律走 luna ——
+# 手写检索型答案等于凭空捏造工具结果和引用编号,那是在教模型幻觉。
+#
+# 契约(_S_WRITING_FORMAT + _S_FOLLOWUP),下面每条都严格遵守:
+#   一行短评 / 空行 / <textblock>…</textblock> / 空行 / 一句追问
+#   块内只有成品文本 —— 无 markdown、无引用标记、无「我改了什么」的说明
+#   散文用**指令**语种,块内用**目标**语种,追问回到指令语种
+#   邮件额外带 type="email" 和 subject="…",subject 内不得出现双引号
+
+version: 1
+
+answers:
+
+  # ── 中文指令 · 中翻英 ──────────────────────────────────────────────────────
+  wr-11: |
+    英文翻译如下：
+
+    <textblock>We have received your feedback and will get back to you within three business days.</textblock>
+
+    需要我把语气调得更正式一些吗？
+
+  wr-12: |
+    正式语气的英文翻译如下：
+
+    <textblock>Due to a delay in delivery from our supplier, the product launch has been postponed to the middle of next month. We sincerely apologize for any inconvenience this may cause.</textblock>
+
+    需要我再出一版更适合对外公告的措辞吗？
+
+  # 只给一个版本。契约说「一个交付物一个块」,多版本只在用户明确要求平行版本时
+  # 才给 —— 这里没要求,所以备选放进追问里问,而不是塞进同一个块。
+  wr-13: |
+    这句谚语最贴近的英文说法是：
+
+    <textblock>Just as distance tests a horse's strength, time reveals a person's true character.</textblock>
+
+    需要我再给一个更短、更像英文谚语的版本吗？
+
+  # ── 中文指令 · 英翻中 ──────────────────────────────────────────────────────
+  wr-14: |
+    中文翻译如下：
+
+    <textblock>除非您在此之前取消，否则您的订阅将于 3 月 1 日自动续订。</textblock>
+
+    需要我把它改得更口语一些吗？
+
+  wr-15: |
+    中文翻译如下：
+
+    <textblock>感谢你指出这个问题。我已经让平台团队介入，我们会在本周内发布修复。</textblock>
+
+    需要我把语气调得更正式一些吗？
+
+  wr-16: |
+    中文翻译如下：
+
+    <textblock>当所有可用套接字均已被取出，且队列等待超时后，连接池即告耗尽。</textblock>
+
+    需要我把术语换成更贴近你们文档习惯的译法吗？
+
+  # ── 英文指令 · 翻成别的语言 ────────────────────────────────────────────────
+  wr-17: |
+    Here's the Chinese translation:
+
+    <textblock>感谢您在我们排查此问题期间的耐心等待。</textblock>
+
+    Would you like a more formal or a more conversational version?
+
+  wr-18: |
+    Here's the Japanese translation:
+
+    <textblock>平素より格別のご支援を賜り、誠にありがとうございます。来年も引き続きご一緒にお仕事できますことを、心より楽しみにしております。</textblock>
+
+    Would you like a less formal version for a casual email?
+
+  # ── 润色 / 改写 ────────────────────────────────────────────────────────────
+  wr-19: |
+    Here's a more natural version:
+
+    <textblock>I've been working on this project since last year, and I'm pleased with how it turned out. Take a look when you get a chance.</textblock>
+
+    Would you like it warmer, or more matter-of-fact?
+
+  wr-20: |
+    Here's a tighter version:
+
+    <textblock>Our team has consistently delivered high-quality work across several workstreams over the past few quarters.</textblock>
+
+    Want it shorter still, or is this about the right length?
+
+  wr-21: |
+    改得口语一些是这样：
+
+    <textblock>这次开会主要是想把下一阶段的活儿怎么安排聊清楚。</textblock>
+
+    需要再随意一点，还是保留一些书面感？
+
+  wr-22: |
+    精简后是这样：
+
+    <textblock>经过多轮讨论和验证，我们决定采用第二套方案。</textblock>
+
+    还需要再短一些吗？
+
+  # ── 写邮件 —— type="email" + subject="…" ──────────────────────────────────
+  # 收件人姓名一律不编:未知信息留空或用 [Name] 占位。教师轨迹里凭空写出一个
+  # 人名,教出来的就是在草稿里编造事实。
+  wr-23: |
+    Here's a draft:
+
+    <textblock type="email" subject="Moving our weekly 1:1 to Fridays">
+    Hi,
+
+    Would it be possible to move our weekly 1:1 from Thursday to Friday? Thursdays have gotten tight on my end, and Friday would give me a clearer window to come prepared.
+
+    Happy to work around whatever time suits you best that day — just let me know what works.
+
+    Thanks,
+    </textblock>
+
+    Want this more formal, or is this tone about right?
+
+  wr-24: |
+    Here's a draft:
+
+    <textblock type="email" subject="Introducing your new account manager">
+    Hi,
+
+    I wanted to let you know that [Name] will be taking over as your account manager, starting next week.
+
+    [Name] has been with our team for several years and is already familiar with your account, so the handover should be a smooth one. They'll be in touch shortly to introduce themselves and set up an initial call.
+
+    I'll stay available over the next few weeks in case anything needs passing along. Thank you for your continued trust in us.
+
+    Best regards,
+    </textblock>
+
+    Would you like me to add a line explaining the reason for the change?
+
+  wr-25: |
+    草稿如下：
+
+    <textblock type="email" subject="关于报价进度的跟进">
+    您好，
+
+    想跟进一下此前沟通的报价事宜，不知道目前进展如何。
+
+    我们这边的项目排期已经进入下一阶段，需要在本周内确认成本方案，所以想请您帮忙看看报价能否尽快出具。如果时间上确实紧张，也麻烦给一个大致的时间点，我好同步给内部。
+
+    感谢您的配合。
+
+    顺祝商祺
+    </textblock>
+
+    需要把催促的语气再软一些，还是可以更直接？
+
+  wr-26: |
+    草稿如下：
+
+    <textblock type="email" subject="感谢昨日的面试机会（数据分析岗）">
+    您好，
+
+    感谢您昨天下午抽出时间与我交流。
+
+    这次沟通让我对贵司数据分析岗位的具体工作内容和团队的协作方式有了更清晰的了解，也让我更希望能有机会加入。如果后续需要我补充任何材料，请随时告诉我。
+
+    再次感谢，期待您的消息。
+
+    此致
+    </textblock>
+
+    需要我加上一两句呼应面试中聊到的具体话题吗？
+
+  # ── 边界负例 —— 问词义是解释,不是交付物 ────────────────────────────────
+  # 手写版故意**不检索、不带引用**。luna 采集时对这两条各调了一次
+  # google_search,虽然过了 check,但查一个常见成语的意思属于典型的多余工具
+  # 调用 —— 而 restraint 这一类存在的意义正是演示克制。
+  # 也**没有追问**:契约里的追问只跟在改写/翻译/写作交付物之后。
+  rs-11: |
+    "画蛇添足" (huà shé tiān zú) literally means "to draw a snake and add feet to it." It comes from a story about a man who won a drawing contest, then lost it by continuing to embellish a snake that was already finished.
+
+    In English it means to spoil something by adding what wasn't needed. The closest idiomatic equivalents are "to gild the lily" or, more plainly, "to overdo it."
+
+  rs-12: |
+    「辛苦了」(xīnkǔ le) acknowledges that someone has put in real effort — roughly "thanks for your hard work" or "you've worked hard."
+
+    It doesn't translate literally, and English has no exact equivalent. At the end of a work message it reads as warm and routine rather than as formal praise, so "thanks for all your work on this" is usually the closest natural rendering.
