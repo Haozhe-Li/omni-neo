@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from core.llm import (
-    rix_30b_a3b_v3,
+    rix_30b_a3b_v4,
     chat_llm,
     gemini_3_6_flash,
     gemma_4_31b,
@@ -81,7 +81,7 @@ CHAT_MODELS: dict[str, ChatModel] = {
     "rix": ChatModel(
         id="rix",
         label="Rix",
-        llm=rix_30b_a3b_v3,
+        llm=rix_30b_a3b_v4,
         credits=1.0,
         requires_auth=False,
         accepts_images=False,

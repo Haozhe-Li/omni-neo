@@ -124,7 +124,8 @@ rix_30b_a3b_v1 = ChatWandb(
     max_tokens=8192,
 )
 
-# v3: 122 rows, 6 epochs, 732 steps, final loss 0.413. Serves `rix`.
+# v3: 122 rows, 6 epochs, 732 steps, final loss 0.413. Superseded by v4 below;
+# kept so the benchmark can still measure it.
 #
 # What changed from v1 (104 rows, 1 epoch, loss ~0.9): all 15 deep-research
 # trajectories are back, and the run actually completed. Two earlier attempts at
@@ -141,6 +142,41 @@ rix_30b_a3b_v3 = ChatWandb(
     model=(
         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
         "/omni-pro-agent/omni-pro-v3-0812-1157:v1"
+    ),
+    temperature=0.2,
+    max_tokens=8192,
+)
+
+# v4: 157 rows, 6 epochs, 942 steps, final loss 0.422. Serves `rix`.
+#
+# The higher loss than v3's 0.413 is not a regression — the set grew 29% and
+# every added row is a distribution v3 never saw. What v4 adds, all of it
+# absent from the previous 147 rows:
+#
+#   - translation with a `<textblock>` deliverable (0 rows before, and 0 of the
+#     28 benchmark cases, which is why v3 answers translations in plain prose)
+#   - Chinese questions carrying English noun phrases. v3 answers those
+#     entirely in English, 0 of 8 measured; one or two English words is fine at
+#     8 of 8, so it is a dose response, not noise
+#   - `Follow User's Query Language`, the `<personalization>` value production
+#     sends when the user has set no preference. It appeared in 0 of 147 rows
+#     while being what most production turns actually carry
+#
+# The 32,768-token trap that killed v2 is unchanged and still the thing to
+# respect. v4's longest row is 29,128 measured through the real Qwen chat
+# template with tool schemas included; nothing was dropped by the filter, and
+# all 15 deep-research trajectories survive. Note that `build_dataset.py` had
+# silently stopped water-filling tool results — without that fix the filter
+# removes every deep-research row instead.
+#
+# temperature 0.2 to match v3, so the v3-vs-v4 benchmark comparison stays
+# clean. Worth revisiting on its own: low temperature is what degenerate tool
+# loops like best, and repeated identical calls are a live production
+# complaint.
+rix_30b_a3b_v4 = ChatWandb(
+    model=(
+        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+        "/omni-pro-agent/omni-pro-v4-0813-0317:v1"
     ),
     temperature=0.2,
     max_tokens=8192,
