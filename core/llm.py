@@ -115,14 +115,14 @@ gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 qwen3_30b_a3b = ChatWandb(
     model="Qwen/Qwen3-30B-A3B-Instruct-2507", temperature=0.2, max_tokens=8192
 )
-rix_30b_a3b_v1 = ChatWandb(
-    model=(
-        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-104-0812-0016:v1"
-    ),
-    temperature=0.7,
-    max_tokens=8192,
-)
+# rix_30b_a3b_v1 = ChatWandb(
+#     model=(
+#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+#         "/omni-pro-agent/omni-pro-104-0812-0016:v1"
+#     ),
+#     temperature=0.7,
+#     max_tokens=8192,
+# )
 
 # v3: 122 rows, 6 epochs, 732 steps, final loss 0.413. Superseded by v4 below;
 # kept so the benchmark can still measure it.
@@ -138,14 +138,14 @@ rix_30b_a3b_v1 = ChatWandb(
 # temperature 0.2, not the 0.7 above: v1's published 0.866 was measured at 0.2,
 # so this keeps the v1-vs-v3 comparison clean. Note that means re-running v1
 # today would NOT reproduce 0.866 — its temperature was raised afterwards.
-rix_30b_a3b_v3 = ChatWandb(
-    model=(
-        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-v3-0812-1157:v1"
-    ),
-    temperature=0.2,
-    max_tokens=8192,
-)
+# rix_30b_a3b_v3 = ChatWandb(
+#     model=(
+#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+#         "/omni-pro-agent/omni-pro-v3-0812-1157:v1"
+#     ),
+#     temperature=0.2,
+#     max_tokens=8192,
+# )
 
 # v4: 157 rows, 6 epochs, 942 steps, final loss 0.422. Serves `rix`.
 #
@@ -173,14 +173,14 @@ rix_30b_a3b_v3 = ChatWandb(
 # clean. Worth revisiting on its own: low temperature is what degenerate tool
 # loops like best, and repeated identical calls are a live production
 # complaint.
-rix_30b_a3b_v4 = ChatWandb(
-    model=(
-        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-v4-0813-0317:v1"
-    ),
-    temperature=0.2,
-    max_tokens=8192,
-)
+# rix_30b_a3b_v4 = ChatWandb(
+#     model=(
+#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+#         "/omni-pro-agent/omni-pro-v4-0813-0317:v1"
+#     ),
+#     temperature=0.2,
+#     max_tokens=8192,
+# )
 
 # v5: 173 rows, 6 epochs, 1038 steps, final loss 0.431.
 #
