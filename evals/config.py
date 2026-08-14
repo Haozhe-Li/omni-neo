@@ -20,6 +20,13 @@ from typing import Any
 
 import yaml
 
+from core.utils.data_model import Personalization
+
+# Production's "no preference stated" sentinel. Read off the model rather than
+# typed out — `evals/agent_factory.py` reads the same field, and a literal in
+# either place could drift from what the backend sends without anything failing.
+FOLLOW_QUERY: str = Personalization.model_fields["response_language"].default
+
 DEFAULT_CASES_PATH = os.path.join(os.path.dirname(__file__), "cases.yaml")
 
 # `turn` selectors a check may carry.
@@ -324,8 +331,9 @@ def validate_suite(suite: Suite) -> None:
         )
 
 
-# Maps a `<personalization>` "Response language" value onto the code the
-# language check compares against.
+# Maps a `<personalization>` "Response Language" value onto the code the
+# language check compares against. `Follow User's Query Language` is absent on
+# purpose — it names no language, and `_implied_lang` handles it separately.
 _LANG_CODES = {
     "zh": "zh", "简体中文": "zh", "繁體中文": "zh", "中文": "zh",
     "chinese": "zh", "simplified chinese": "zh",
@@ -336,13 +344,22 @@ _LANG_CODES = {
 def _implied_lang(personalization_language: str | None, case_lang: str) -> str | None:
     """Which language the answer is expected to be in.
 
-    Personalization wins when it states one — SYSTEM_PROMPT tells the model to
-    honour it silently, so that is the behaviour under test. With nothing
-    stated, the expectation falls back to the case's own `lang`, which is the
-    language the *query* is written in: no instruction means follow the user.
+    Personalization wins when it names one — SYSTEM_PROMPT tells the model to
+    honour it silently, so that is the behaviour under test. Two values mean
+    "follow the query" instead, and both fall back to the case's own `lang`,
+    which is the language the *query* is written in:
+
+      - nothing stated, i.e. a case wrote `language: null`
+      - production's default sentinel, `Follow User's Query Language`, which
+        `evals/agent_factory.py` substitutes for an unset language because that
+        is what the backend sends when the user has set no preference
+
+    Without the sentinel arm the lookup returns None, `expect_lang` ends up
+    unset, and `response_language` then passes vacuously on every case that
+    relies on it — the check would look green while measuring nothing.
     """
     stated = (personalization_language or "").strip().lower()
-    if stated:
+    if stated and stated != FOLLOW_QUERY.strip().lower():
         return _LANG_CODES.get(stated)
     return _LANG_CODES.get((case_lang or "").strip().lower())
 

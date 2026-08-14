@@ -20,7 +20,11 @@ SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/omni-train-logs}"
 mkdir -p "$SCRATCH"
 DATA=finetune/pro_agent/dataset
 PROBE=$DATA/sft_probe.jsonl
-FULL=$DATA/sft_train_v4.jsonl
+# Overridable so the next version does not need this file edited. Defaults kept
+# at v4 so an old invocation still means what it meant.
+FULL="${FULL:-$DATA/sft_train_v4.jsonl}"
+RUN_PREFIX="${RUN_PREFIX:-omni-pro-v4}"
+EPOCHS="${EPOCHS:-6}"
 ATTEMPTS=${ATTEMPTS:-10}
 PROBE_WAIT=${PROBE_WAIT:-30}      # x30s = 15 min
 FULL_WAIT=${FULL_WAIT:-200}       # x30s = 100 min
@@ -57,11 +61,11 @@ for ((a=1; a<=ATTEMPTS; a++)); do
   if wait_for "$SCRATCH/probe_$ts.log" "$PROBE_WAIT" "$ppid"; then
     echo "[$(date +%H:%M)] probe OK — backend is executing jobs; starting full v4"
     kill $ppid 2>/dev/null
-    $PY -u finetune/pro_agent/train.py --file "$FULL" --epochs 6 \
-        --name "omni-pro-v4-$ts" > "$SCRATCH/train_v4_$ts.log" 2>&1 &
+    $PY -u finetune/pro_agent/train.py --file "$FULL" --epochs "$EPOCHS" \
+        --name "$RUN_PREFIX-$ts" > "$SCRATCH/train_v4_$ts.log" 2>&1 &
     fpid=$!
     if wait_for "$SCRATCH/train_v4_$ts.log" "$FULL_WAIT" "$fpid"; then
-      echo "[$(date +%H:%M)] V4 TRAINED — omni-pro-v4-$ts"
+      echo "[$(date +%H:%M)] TRAINED — $RUN_PREFIX-$ts"
       grep -E "trained in|inference name|Artifact URL" "$SCRATCH/train_v4_$ts.log"
       exit 0
     fi

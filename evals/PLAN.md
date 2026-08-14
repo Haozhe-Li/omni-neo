@@ -199,11 +199,25 @@ case 就不该要求引用)。
 
 **期望语言从哪来**,完全照production的规则:
 
-- `<personalization>` 里写了 `Response language` → 它赢。PRO_PROMPT 明确说「Honour it silently」。
-- 没写 → 跟随 query 的语言。
+- `<personalization>` 里写了具体语言(`Response Language: 简体中文`)→ 它赢。PRO_PROMPT 明确
+  说「Honour it silently」。
+- 用户没设过偏好 → 跟随 query 的语言。
 
-第二条要能测,`build_personalization` 必须在 case 没指定语言时**整行省略**,而不是填个默认值 ——
-填了就等于替模型把题答了,检查永远通过。所以 language suite 的 case 写 `personalization: {language: null}`。
+第二条曾经是靠**整行省略**来测的:`build_personalization` 在 case 写 `{language: null}` 时不输出
+那一行,理由是填个默认值就等于替模型把题答了。理由对,做法错 —— 生产的
+`Personalization.response_language` 有默认值,后端每一轮都会拼上这一行,所以「整行不存在」是真实
+用户造不出来的形态,而生产真正发的那个字符串反倒没有任何 case 测到。
+
+现在 `{language: null}` 渲染成生产的默认值 `Response Language: Follow User's Query Language`。
+这个 sentinel 要求的就是「跟随 query」,语义和省略完全一致,但用的是生产的原话。`_implied_lang`
+认得它,会退回 case 的 `lang`;整个块也改由生产的 `format_personalization` 渲染,字段名不再有第二
+份实现可以漂走。
+
+> 历史注记:在此之前 benchmark 发的是 `Response language:` / `User location:` /
+> `User local date and time:`,而生产发的是 `Response Language:` / `User Location:` /
+> `User Local Date Time:`。之所以长期没被发现,是因为训练侧 (`finetune/pro_agent/collect.py`)
+> 当时也是同一份手写实现、错得一模一样 —— 两份错的互相印证,没有任何 eval 能照出来。
+> **v4 及更早的分数是在旧拼法下测的,与之后的运行不严格可比。**
 
 混语 query 是重点,因为判据是**句子骨架**属于哪种语言,不是里面出现了什么字符:
 

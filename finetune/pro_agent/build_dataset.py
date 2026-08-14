@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -158,6 +159,58 @@ def shrink_row(row: dict, cap: int, tok) -> tuple[dict, int]:
     return best if best else apply(0)
 
 
+_PERSONALIZATION_RE = re.compile(r"<personalization>\n(.*?)\n</personalization>", re.S)
+
+
+def check_personalization_labels(traces: list[dict]) -> None:
+    """Fail if any trace labels its `<personalization>` fields the old way.
+
+    The labels are part of the string the adapter is keyed on, and they drifted
+    once already: `collect.py` hand-rolled the block as `Response language:` /
+    `User location:` while production emits `Response Language:` /
+    `User Location:` / `User Local Date Time:`. Two things made that invisible.
+    The benchmark shares the *training* spelling (`evals/agent_factory.py`), so
+    no eval could see it; and when the fix landed mid-collection it split the
+    corpus 137/20 rather than failing, with the 20 correct rows being precisely
+    the 20 that also carried `Follow User's Query Language` — spelling and
+    behaviour confounded end to end.
+
+    Hence a hard failure rather than a silent rewrite, matching how this file
+    already treats system-prompt and tool-schema drift: a training file that
+    quietly disagrees with production about the prompt is the expensive kind of
+    bug, because the only symptom is a model that is slightly worse for reasons
+    nothing measures.
+
+    Expected labels come from production's own renderer, not a literal here, so
+    this cannot drift out of sync with the thing it is checking.
+    """
+    from core.utils.data_model import Personalization
+    from core.utils.utils import format_personalization
+
+    probe = format_personalization(
+        Personalization(response_language="L", user_location="C", user_local_datetime="T")
+    )
+    expected = [ln.split(":", 1)[0] for ln in probe.strip().split("\n")]
+
+    stale: list[str] = []
+    for t in traces:
+        user = next((m for m in t["messages"] if m["role"] == "user"), None)
+        block = _PERSONALIZATION_RE.search((user or {}).get("content") or "")
+        if not block:
+            continue
+        labels = [ln.split(":", 1)[0] for ln in block.group(1).split("\n")]
+        if labels != expected:
+            stale.append(f"{t['id']}: {labels}")
+    if stale:
+        raise SystemExit(
+            f"{len(stale)} trace(s) label <personalization> differently than production "
+            f"({expected}) — re-collect them, or relabel in place:\n  "
+            + "\n  ".join(stale[:10])
+            + (f"\n  ... and {len(stale) - 10} more" if len(stale) > 10 else "")
+        )
+    print(f"personalization labels match production: {expected}")
+
+
 def dump_row(row: dict) -> str:
     out = json.dumps(row, ensure_ascii=False)
     for ch, esc in _LINE_BREAKERS.items():
@@ -198,6 +251,8 @@ def main() -> int:
             "under — re-collect, or check out the commit they were collected at"
         )
     print(f"system prompt {len(system_prompt)} chars, {len(tools)} tool schemas — matches live harness")
+
+    check_personalization_labels(rows_in)
 
     rows: list[dict] = []
     bad: list[str] = []

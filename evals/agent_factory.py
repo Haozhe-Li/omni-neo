@@ -21,8 +21,15 @@ from core.agent import (
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
+from core.utils.data_model import Personalization
+from core.utils.utils import format_personalization
 
 RUN_LIMIT = 30
+
+# What production puts in the block when the user has stated no preference —
+# read off the model rather than typed out, so it cannot drift from the value
+# the backend actually sends.
+FOLLOW_QUERY: str = Personalization.model_fields["response_language"].default
 
 
 def build_eval_agent(
@@ -82,27 +89,41 @@ def skill_files() -> dict:
 
 
 def build_personalization(cfg: dict[str, str]) -> str:
-    """Render the `<personalization>` block.
+    """Render the `<personalization>` block exactly as production renders it.
+
+    Delegated to `format_personalization` rather than assembled here, which is
+    the fourth departure this module would otherwise have and the only one that
+    was never deliberate. The hand-rolled version emitted `Response language:` /
+    `User location:` / `User local date and time:`; production emits
+    `Response Language:` / `User Location:` / `User Local Date Time:`. Nothing
+    caught it for months because the *training* pipeline had drifted the same
+    way, so every model was scored on a spelling production never sends and the
+    two wrong copies agreed with each other.
 
     The datetime is pinned in `cases.yaml` rather than read from the clock:
     several cases ask about "tomorrow" or "the current state of X", and a
     floating today would make them un-reproducible across runs and
     un-comparable across models evaluated on different days.
 
-    `language` is omitted entirely when the case leaves it unset — not defaulted
-    to English. That omission is the point: with no stated response language the
-    model has to infer one from the query itself, which is what the
-    language-matching cases test. Emitting a default would answer the question
-    for it and the check would always pass.
+    A case that leaves `language` unset gets production's default,
+    `Follow User's Query Language` — it does **not** drop the line. Dropping it
+    was the old behaviour and the intent behind it was right (make the model
+    infer the language from the query instead of being told), but production
+    always sends the field: `Personalization.response_language` has that default
+    and the backend always assembles the block. So the omitted-line form tested
+    a shape no user can ever produce, while the string that a majority of real
+    turns actually carry was tested by nothing. The sentinel asks for the same
+    behaviour the omission was probing, in the words production uses.
     """
-    when = cfg.get("datetime") or datetime.now().isoformat(timespec="seconds")
-    lines = []
-    language = (cfg.get("language") or "").strip()
-    if language:
-        lines.append(f"Response language: {language}")
-    lines.append(f"User location: {cfg.get('location', 'Unknown')}")
-    lines.append(f"User local date and time: {when}")
-    return "\n".join(lines)
+    return format_personalization(
+        Personalization(
+            response_language=(cfg.get("language") or "").strip() or FOLLOW_QUERY,
+            user_location=cfg.get("location") or "Unknown",
+            user_local_datetime=(
+                cfg.get("datetime") or datetime.now().isoformat(timespec="seconds")
+            ),
+        )
+    )
 
 
 def build_user_message(query: str, personalization: str, *, skill: str | None = None) -> str:

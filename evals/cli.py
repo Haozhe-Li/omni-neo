@@ -165,6 +165,9 @@ async def run_model(
         label=args.label,
         mode="pro",
         ctx=ctx,
+        # Set only by `evals.backfill_cases`, which files newly added cases into
+        # the run they belong with. Absent on every normal CLI invocation.
+        attach_run_id=getattr(args, "attach_run_id", None),
     )
 
     cache = ToolCache(args.cache_dir, enabled=args.tool_cache)

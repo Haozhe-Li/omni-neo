@@ -417,6 +417,38 @@ def _textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     return CheckResult.ok(f"{len(blocks)} well-formed <textblock>", n=len(blocks), words=words)
 
 
+@check("code_block", args=("lang", "min", "min_lines"))
+def _code_block(trace: RunTrace, spec: CheckSpec) -> CheckResult:
+    """Code the user asked for must arrive in a fenced code block.
+
+    The positive half of the pair `no_textblock` forms on code-writing tasks.
+    `<textblock>` is for *prose* deliverables — an email, a translation, a
+    polished paragraph — and SYSTEM_PROMPT's writing section lists only those.
+    Code wrapped in a textblock loses syntax highlighting and the copy-button
+    affordance in the product, so the two checks together say "a fence, and not
+    a textblock" rather than leaving the boundary implicit.
+
+    Chart and map fences do not count; see `parsers.extract_code_fences`.
+    """
+    blocks = parsers.extract_code_fences(_text(trace, spec), spec.args.get("lang"))
+    want = spec.args.get("min", 1)
+    if len(blocks) < want:
+        wanted = f" ```{spec.args['lang']}" if spec.args.get("lang") else ""
+        return CheckResult.fail(
+            f"{len(blocks)} code block(s){wanted}, expected at least {want}", n=len(blocks)
+        )
+    min_lines = spec.args.get("min_lines")
+    if min_lines is not None:
+        longest = max(len(b.splitlines()) for _l, b in blocks)
+        if longest < min_lines:
+            return CheckResult.fail(
+                f"longest code block is {longest} lines, expected >= {min_lines}",
+                n=len(blocks), lines=longest,
+            )
+    langs = [l or "(untagged)" for l, _b in blocks]
+    return CheckResult.ok(f"{len(blocks)} code block(s): {langs}", n=len(blocks))
+
+
 @check("no_textblock")
 def _no_textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     blocks = parsers.extract_textblocks(_text(trace, spec))

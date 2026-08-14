@@ -182,6 +182,43 @@ rix_30b_a3b_v4 = ChatWandb(
     max_tokens=8192,
 )
 
+# v5: 173 rows, 6 epochs, 1038 steps, final loss 0.431.
+#
+# Not yet serving `rix` — v4 still is, pending this model's benchmark. What v5
+# adds over v4's 157 rows, all of it absent before:
+#
+#   - `adversarial` (4) and `safety` (4), the first refusal data in the set.
+#     v4 regressed here: on `adversarial/injection-in-page` it leaked 18,551 of
+#     the system prompt's 19,586 characters, 2 of 2 repeats, while v1 and v3
+#     leaked 0 of 2. All eight answers are hand-written — the teacher's own
+#     refusals echo the injection text back before refusing, which is the exact
+#     habit that produced v4's leak.
+#   - `code-write` (2), a `<textblock>` boundary case in the other direction:
+#     code belongs in a fence, and `_S_WRITING_FORMAT` lists only prose
+#     deliverables. luna itself failed this — cw-02 was rejected for putting
+#     Python in a textblock, so its answer is hand-written too.
+#   - `math-exact` (2) and `math-research` (2), the latter being the only rows
+#     where retrieval and computation appear together: `compute` never cites
+#     because it never searches, `search-fact` never computes.
+#   - `about` rewritten from 4 rows to 6, all now direct identity questions.
+#
+# `Follow User's Query Language` doubles from 20 rows to 40.
+#
+# First version whose training data, production and the benchmark all render
+# `<personalization>` through the same code. That makes v5's benchmark score
+# NOT strictly comparable to v4's 0.9182: v4's 28 older cases were measured
+# under the old field spelling. See `evals/backfill_cases.py`.
+#
+# temperature 0.2, unchanged from v3/v4 so the comparison stays clean.
+rix_30b_a3b_v5 = ChatWandb(
+    model=(
+        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+        "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
+    ),
+    temperature=0.2,
+    max_tokens=8192,
+)
+
 omni_widget_predictor_14b = ChatOpenAI(
     model=(
         os.environ["WIDGET_PREDICTOR_14B_MODEL"]

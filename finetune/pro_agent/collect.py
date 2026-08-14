@@ -183,10 +183,20 @@ def build_message(spec: Spec, q: Query) -> tuple[Any, dict, list[dict]]:
     keyed on a string production never sends, and because the benchmark shared
     the *training* spelling, no eval could see it.
 
-    Trajectories collected before 2026-08-12 carry the old spelling. They are
-    not rewritten: the mix is harmless and arguably useful, since production
-    and the benchmark still disagree until `evals/agent_factory.py` is fixed
-    too, and a model invariant to the label is what serves both.
+    Trajectories collected before 2026-08-12 carried the old spelling and have
+    since been relabelled in place. The earlier plan was to leave the mix alone
+    on the theory that a model invariant to the label serves production and the
+    benchmark both — that theory died on the numbers. The 20 rows that happened
+    to carry production's spelling were *exactly* the 20 carrying
+    `Follow User's Query Language`, so spelling and behaviour were perfectly
+    confounded: nothing taught the model that `Response Language: 简体中文` and
+    `Response language: 简体中文` mean the same thing, and it could just as well
+    have read the capital L as the instruction to follow the query.
+
+    `evals/agent_factory.py` still emits the old spelling, so the benchmark now
+    tests a form nothing was trained on. That is the honest direction to be
+    wrong in — production is the ground truth here — but it does mean the
+    benchmark understates `rix` until it is fixed too.
     """
     p = spec.personalization_for(q)
     personalization = format_personalization(

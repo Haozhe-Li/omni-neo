@@ -50,7 +50,26 @@ PyJWT[crypto]
 cryptography
 
 # For coding sandbox
-e2b-code-interpreter
+#
+# Both pinned exactly, and `e2b` is listed even though it is only a transitive
+# dependency of e2b-code-interpreter — because `e2b` is the half that broke.
+#
+# Production hit `Sandbox error: get_transport() got an unexpected keyword
+# argument 'http2'` on gpt-5.6-luna while this same file installed a working
+# combination locally. e2b-code-interpreter >= 2.7.0 calls
+# `e2b.api.client_sync.get_transport(config, http2=False)`; that parameter only
+# exists in e2b >= 2.23.1. Every published pairing declares a floor on the safe
+# side of that boundary, so pip cannot resolve the broken combination from a
+# clean install — which means the environment that produced it was not built
+# cleanly (a cached image layer, --no-deps, or another package holding `e2b`
+# back). Naming `e2b` here makes the resolver state explicit instead of leaving
+# it to whatever the transitive graph happened to settle on at build time.
+#
+# These two versions are the pair verified working together: run_python
+# returned real output on them. Bumping either means re-testing the tool, not
+# just the install.
+e2b==2.28.2
+e2b-code-interpreter==2.8.0
 numpy
 pandas
 matplotlib

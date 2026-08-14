@@ -51,10 +51,16 @@
 #
 # ── 语言期望 ────────────────────────────────────────────────────────────────
 # case 的 `lang` = **query 写的语言**;`expect_lang` = 回答**应该**用的语言。
-# 二者通常相同,不同的情况是 personalization 显式指定了 Response language ——
+# 二者通常相同,不同的情况是 personalization 显式指定了 Response Language ——
 # PRO_PROMPT 要求「Honour it silently」,所以那时 personalization 赢。
-# case 里写 `personalization: {language: null}` 可以把这一行从 XML 块里去掉,
+# case 里写 `personalization: {language: null}` 表示「用户没设过语言偏好」,
 # 于是模型只能从 query 本身推断语言,这正是 language suite 要测的。
+#
+# 注意 null **不再**是把这一行从 XML 块里删掉。生产的
+# `Personalization.response_language` 有默认值,后端每一轮都会拼上这一行,所以
+# 「整行不存在」是个真实用户造不出来的形态;`build_personalization` 现在替换成
+# 生产的默认值 `Follow User's Query Language`,语义不变而字符串变成真的。
+# 整个块也改由生产的 `format_personalization` 渲染,字段名和大小写与生产一致。
 #
 # ── judge 契约 ──────────────────────────────────────────────────────────────
 #   - {key, prompt, weight, pass_at}
@@ -646,9 +652,12 @@ cases:
 # language — 回答语言是否跟得上 query 语言
 #
 # 这几个 case 的 personalization 里把 `language` 置空(见 defaults 上方说明),
-# XML 块里就没有 "Response language" 那一行,模型只能从 query 本身推断。
-# query 都是故意混语的:判定依据是**句子骨架**属于哪种语言,而不是里面出现了
-# 哪种字符 —— 模型最常见的错误就是被关键词的语言带跑。
+# 于是块里是生产的默认值 "Response Language: Follow User's Query Language",
+# 模型只能从 query 本身推断。query 都是故意混语的:判定依据是**句子骨架**属于
+# 哪种语言,而不是里面出现了哪种字符 —— 模型最常见的错误就是被关键词的语言带跑。
+#
+# 这三个 case 的 `expect_lang` 是显式写死的,别删:`_implied_lang` 见到 null 或
+# 那个 sentinel 都会退回 case 的 `lang`,结果一样,但写死了才看得出意图。
 # ═══════════════════════════════════════════════════════════════════════════
   - id: language/zh-frame-en-terms
     suite: language
@@ -731,6 +740,149 @@ cases:
         weight: 2
         prompt: >-
           Does it switch language silently, without commenting on the language choice or apologising for answering in Chinese?
+
+# ── Follow User's Query Language,写死在 case 里 ────────────────────────────
+# 上面四个 case 里,前三个是 `{language: null}`,由 `build_personalization` 替换成
+# 生产的 sentinel;下面三个把 sentinel **显式**写进 case。渲染出来的块完全一样,
+# 走的却是 `_implied_lang` 的另一条分支(显式值 vs 缺省),所以这三个既是内容上的
+# 补充,也是那条分支的回归测试 —— 它一旦回退到 `_LANG_CODES` 查表就会返回 None,
+# `response_language` 会变成空过,而空过是看不出来的。
+#
+# 内容上补的是纯中文:language suite 之前有纯英文、有中英混杂,唯独没有一个纯中文
+# query,而中文恰恰是生产里最容易出问题的方向。
+  - id: language/follow-zh-pure
+    suite: language
+    title: sentinel + 纯中文 query → 应答中文
+    lang: zh
+    expect_lang: zh
+    personalization: {language: "Follow User's Query Language"}
+    turns:
+      - text: 解释一下为什么给数据库表加索引能让查询变快,代价又是什么?
+    checks:
+      - {key: response_language, args: {expect: zh}, weight: 3}
+      - {key: word_count, args: {min: 80, max: 600}}
+      - {key: no_report, weight: 2}
+      - {key: no_textblock, weight: 1}
+    disable: [citation_exists, citation_format]
+    judge:
+      - key: answers_question
+        weight: 3
+        prompt: >-
+          Does it explain the mechanism (an index is a sorted structure that turns a full scan into a lookup) and name the concrete costs — extra storage, slower writes — rather than only saying indexes are faster?
+
+  - id: language/follow-en-pure
+    suite: language
+    title: sentinel + 纯英文 query → 应答英文
+    lang: en
+    expect_lang: en
+    personalization: {language: "Follow User's Query Language"}
+    turns:
+      - text: How does reference counting differ from tracing garbage collection?
+    checks:
+      - {key: response_language, args: {expect: en}, weight: 3}
+      - {key: word_count, args: {min: 80, max: 600}}
+      - {key: no_report, weight: 2}
+      - {key: no_textblock, weight: 1}
+    disable: [citation_exists, citation_format]
+    judge:
+      - key: answers_question
+        weight: 3
+        prompt: >-
+          Does it contrast the two concretely — immediate reclamation and reference cycles versus pause times and reachability from roots — rather than describing garbage collection in general?
+
+  # 剂量更大的一版:上面 zh-frame-en-terms 只夹了一个英文名词短语,这里整句都是
+  # 中文骨架挂英文术语。v3 在这种形状上实测 0/8 全部答英文,而只夹一两个英文词时
+  # 8/8 正常,说明这是剂量反应而不是噪声 —— 所以轻剂量那个 case 照不出的东西,
+  # 需要这个来照。
+  - id: language/follow-zh-heavy-terms
+    suite: language
+    title: sentinel + 中文骨架密集夹英文术语 → 仍应答中文
+    lang: zh
+    expect_lang: zh
+    personalization: {language: "Follow User's Query Language"}
+    turns:
+      - text: 我们的 Kubernetes cluster 最近频繁出现 pod eviction,node 上的 memory pressure 也一直报警,这种情况一般是什么原因导致的,该从哪里开始排查?
+    checks:
+      - {key: response_language, args: {expect: zh}, weight: 3}
+      - {key: word_count, args: {min: 80, max: 600}}
+      - {key: no_report, weight: 2}
+      - {key: no_textblock, weight: 1}
+    judge:
+      - key: answers_question
+        weight: 3
+        prompt: >-
+          Does it name concrete causes (memory requests/limits set too low or absent, node overcommit, the kubelet's eviction thresholds) and concrete next steps (describe the pod, check node conditions and kubelet events) rather than generic troubleshooting advice?
+      - key: terminology_kept
+        weight: 2
+        prompt: >-
+          Does it keep the established English technical terms as English (pod, eviction, memory pressure, node) instead of translating them into unidiomatic Chinese? Keeping these terms in a Chinese answer is correct and is NOT a language violation — score 0 only if the terminology is mangled or invented.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# textblock — 写作/改写/翻译的产出契约
+#
+# `_S_WRITING_FORMAT` 说:写、改写、润色、校对、翻译,成品「而且只有成品」放进
+# `<textblock>`,前面一句短评语,后面一个跟进问题。整个 suite 之前只有
+# general/resignation-email 一个 case 在测这条,而且只测了写邮件这一种形状。
+#
+# 翻译是漏得最狠的一种:v3 在翻译任务上直接用大白话把译文写在正文里,不进 block。
+# 它同时也是 `parsers.conversational_text` 的回归测试 —— 中文指令译成英文时,正文
+# 是中文而 block 是英文,如果语言检测把 block 算进去,整个 case 会被误判成答错语言
+# (这个 bug 真实存在过,在第一批翻译数据上 8 条里错杀 3 条)。
+# ═══════════════════════════════════════════════════════════════════════════
+  - id: textblock/translate-zh-to-en
+    suite: textblock
+    title: 中文指令翻译成英文 → 正文中文,译文进 textblock
+    lang: zh
+    expect_lang: zh
+    turns:
+      - text: |-
+          请帮我把下面这段话翻译成英文:
+          我们团队决定把发布日期推迟两周,以便有足够时间完成安全审计。给客户的通知会在下周一发出,届时会附上新的时间表。
+    checks:
+      - {key: textblock,         args: {min: 1, max: 1, min_words: 20, max_words: 120}, weight: 3}
+      - {key: followup_question, weight: 2}
+      - {key: response_language, args: {expect: zh}, weight: 3}
+      - {key: tool_called,       args: {tool: google_search, min: 0, max: 0}, weight: 2}
+      - {key: no_report,         weight: 2}
+      - {key: word_count,        args: {min: 3, max: 60}}
+    disable: [citation_exists, citation_format]
+    judge:
+      - key: translation_fidelity
+        weight: 3
+        prompt: >-
+          Is the English inside the block a faithful, natural translation that keeps both facts — a two-week delay for a security audit, and a customer notice next Monday carrying the new timeline?
+      - key: separation
+        weight: 3
+        prompt: >-
+          Is the deliverable cleanly separated — one short line of commentary, the translation alone inside a single <textblock>, then a follow-up question? Score 0 if the English also appears in plain chat text outside the block, or if the block contains the Chinese source, commentary, or markdown decoration.
+
+  - id: textblock/polish-en-paragraph
+    suite: textblock
+    title: 英文指令润色段落 → 成品进 textblock
+    lang: en
+    expect_lang: en
+    personalization: {language: English}
+    turns:
+      - text: |-
+          Polish this paragraph for our product launch blog post — keep it warm but professional, and keep it under 120 words:
+          our new dashboard is now live. it lets you see all your metrics in one place. we think it is much faster than before and we hope you like it. let us know if you have feedback.
+    checks:
+      - {key: textblock,         args: {min: 1, max: 1, min_words: 40, max_words: 160}, weight: 3}
+      - {key: followup_question, weight: 2}
+      - {key: response_language, args: {expect: en}, weight: 3}
+      - {key: tool_called,       args: {tool: google_search, min: 0, max: 0}, weight: 2}
+      - {key: no_report,         weight: 2}
+      - {key: word_count,        args: {min: 3, max: 60}}
+    disable: [citation_exists, citation_format]
+    judge:
+      - key: improved
+        weight: 3
+        prompt: >-
+          Is the polished version genuinely better — correct capitalisation, varied sentence structure, a confident tone — while keeping every claim from the original and adding no invented features or metrics?
+      - key: separation
+        weight: 3
+        prompt: >-
+          Is the deliverable cleanly separated — one short line of commentary, the finished paragraph alone inside a single <textblock>, then a follow-up question? Score 0 if the paragraph also appears outside the block, or if the block carries markdown decoration or notes about what changed.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # adversarial

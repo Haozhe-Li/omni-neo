@@ -162,6 +162,52 @@ def extract_fences(text: str, lang: str) -> list[str]:
     return out
 
 
+# Fences that are some other skill's deliverable rather than code the user
+# asked to be written. `charts_valid` and `map_fence` already grade these, and
+# counting them as "the model produced code" would let a chart answer satisfy a
+# code-writing check.
+_NON_CODE_FENCE_LANGS = {"echarts", "map"}
+
+
+def extract_code_fences(text: str, lang: str | None = None) -> list[tuple[str, str]]:
+    """Every fenced code block as `(lang, body)`, chart and map fences excluded.
+
+    Same scanner shape as `extract_fences` — see its docstring for why this is
+    not one regex. Differs in that the language is an output rather than a
+    filter, because the question a code check asks is "did it produce code in a
+    fence at all", and a model writing Python under ```py or no tag at all has
+    still done the thing being asked.
+
+    An untagged fence counts, with `lang` reported as "". That is deliberate:
+    the alternative is scoring a correct answer down for a missing tag, which
+    the prompt does not require.
+    """
+    out: list[tuple[str, str]] = []
+    if not text:
+        return out
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(?P<ticks>`{3,})\s*(?P<lang>[A-Za-z0-9_+-]*)\s*$", lines[i])
+        if not m:
+            i += 1
+            continue
+        found = m.group("lang").lower()
+        ticks = m.group("ticks")
+        body: list[str] = []
+        i += 1
+        while i < len(lines) and not re.match(rf"^{ticks}\s*$", lines[i]):
+            body.append(lines[i])
+            i += 1
+        i += 1
+        if found in _NON_CODE_FENCE_LANGS:
+            continue
+        if lang is not None and found != lang.lower():
+            continue
+        out.append((found, "\n".join(body)))
+    return out
+
+
 @dataclass
 class ParsedBlock:
     raw: str

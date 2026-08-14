@@ -106,9 +106,27 @@ def start_run(
     label: str | None,
     mode: str,
     ctx: RunContext,
+    attach_run_id: str | None = None,
 ) -> None:
+    """Open a run, or attach to one that already exists.
+
+    `attach_run_id` is for `evals.backfill_cases`: when cases are added to the
+    suite, the new ones are measured and filed into the *original* run so its
+    score covers the whole rubric instead of being split across two rows that
+    no view knows how to combine. Attaching skips the insert entirely — none of
+    the columns below are re-derived, so the run keeps the git sha, prompt sha
+    and started_at of the measurement it belongs to rather than silently
+    acquiring today's.
+
+    That also means the attached rows were produced by a *different* checkout
+    than `prompt_sha` claims. It is the caller's job to say so; the backfill
+    script writes it into `eval_runs.notes`.
+    """
     ctx.model = model
     if not ctx.enabled:
+        return
+    if attach_run_id:
+        ctx.run_id = attach_run_id
         return
     prompt_sha, skills_sha = prompt_fingerprints()
     row = {
