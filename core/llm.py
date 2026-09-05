@@ -210,14 +210,18 @@ qwen3_30b_a3b = ChatWandb(
 # under the old field spelling. See `evals/backfill_cases.py`.
 #
 # temperature 0.2, unchanged from v3/v4 so the comparison stays clean.
-rix_30b_a3b_v5 = ChatWandb(
-    model=(
-        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
-    ),
-    temperature=0.2,
-    max_tokens=8192,
-)
+# Offline as of the tool adapter layer: v5 was trained on the pre-adapter tool
+# names (`google_search`, `load_web_page`, `run_python`, …), none of which the
+# agent exposes any more, so it would spend every turn calling tools that no
+# longer exist. Retrain against the current schema before serving it again.
+# rix_30b_a3b_v5 = ChatWandb(
+#     model=(
+#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+#         "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
+#     ),
+#     temperature=0.2,
+#     max_tokens=8192,
+# )
 
 omni_widget_predictor_14b = ChatOpenAI(
     model=(

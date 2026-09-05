@@ -147,16 +147,16 @@ class TurnTrace:
 
     @property
     def n_searches(self) -> int:
-        return len(self.tools_named("google_search"))
+        return len(self.tools_named("web_search"))
 
     @property
     def n_pages_read(self) -> int:
-        return len(self.tools_named("load_web_page"))
+        return len(self.tools_named("fetch_url"))
 
     @property
     def distinct_domains(self) -> set[str]:
         out = set()
-        for call in self.tools_named("load_web_page"):
+        for call in self.tools_named("fetch_url"):
             url = str(call.args.get("url") or "")
             host = urlparse(url).netloc.lower()
             if host:

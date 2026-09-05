@@ -365,7 +365,7 @@ def _fetch_source_urls(urls: list[str]) -> tuple[str, dict, list[dict]]:
       the agent's virtual filesystem — same shape as an uploaded document —
       so the agent reads only what it needs via `read_file`/`grep`.
 
-    Unlike the `load_web_page` tool, there is no credibility/junk filtering
+    Unlike the `fetch_url` tool, there is no credibility/junk filtering
     here: these are URLs the user explicitly whitelisted, not something the
     agent found itself, so there's no "should I trust this" judgment to
     make. A failed external fetch still produces a note — told to the agent
@@ -923,7 +923,7 @@ async def run_agent_stream(
     # Hold the agent's terminal `done` event until BOTH producers have finished.
     # The frontend stops reading the stream the instant it sees `done`, so emitting
     # it while the (slower) widget predictor is still running would drop late
-    # widgets — e.g. the entity card, which makes two Serper calls.
+    # widgets — e.g. the entity card, which makes two SearXNG calls.
     final_done: str | None = None
     try:
         while remaining:

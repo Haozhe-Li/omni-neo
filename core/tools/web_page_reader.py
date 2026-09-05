@@ -1,14 +1,11 @@
 from langchain_community.document_loaders import SpiderLoader
-import asyncio
 import concurrent.futures
 import json
 import os
 import re
 from urllib.parse import urlsplit
 
-from core.utils.citations import register_citation
 from core.utils.redis_cache import r as _redis
-from core.utils.source_credibility import classify_sources
 
 # from core.utils.redis_cache import l1cache
 
@@ -145,49 +142,3 @@ def load_web_page_spider(url: str) -> dict:
         "content": documents[0].page_content,
         "title": documents[0].metadata.get("title", "No title found"),
     }
-
-
-async def load_web_page(
-    url: str,
-):
-    """Get the full text of a web page.
-
-    Args:
-        url (str): The URL of the web page to load.
-
-    Returns:
-        dict: A dictionary with the URL, title, content, and a `n` field —
-        cite it inline as [n] when you use this page's content in your answer.
-    """
-    # load_web_page is itself `async def`, so the agent awaits it directly on
-    # the event loop rather than LangChain dispatching it to a worker thread
-    # the way it does for plain sync tools. load_web_page_spider is fully
-    # synchronous and blocks for up to _TIMEOUT_SECONDS — calling it inline
-    # would freeze that loop, and every other concurrent thread's SSE stream
-    # riding on it, for the fetch's duration.
-    result = await asyncio.to_thread(load_web_page_spider, url)
-    # No query/topic available for a direct page load, so the LLM layer
-    # can't judge "first_party" here — it'll fall back to domain-only signal.
-    classified = await classify_sources([result], None)
-    result = classified[0] if classified else result
-    resolved_url = result.get("url", "") or url
-    credibility = result.get("credibility")  # {"label": ..., "reason": ...} | None
-    # Registered regardless of tier — junk still gets an `n` and a citation
-    # record (so it's not lost to the frontend's source list) — the agent
-    # just never sees the `n` or the actual page content for it below.
-    n = register_citation(
-        result.get("title", ""),
-        resolved_url,
-        result.get("content", ""),
-        credibility=credibility,
-    )
-    if credibility and credibility.get("label") == "junk":
-        return {
-            "url": resolved_url,
-            "title": result.get("title", ""),
-            "content": "This page was flagged as low-quality/unreliable and its content has been withheld. Do not cite it — try a different source.",
-            "credibility": credibility,
-        }
-    if n is not None:
-        result["n"] = n
-    return result

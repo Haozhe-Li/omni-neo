@@ -75,7 +75,7 @@ categories:
       - {key: has_report,       args: {min_words: 600, require_title: true}}
       - {key: chart_count,      args: {min: 1}}
       - {key: citation_count,   args: {min: 4}}
-      - {key: distinct_queries, args: {tool: google_search, min: 3}}
+      - {key: distinct_queries, args: {tool: web_search, min: 3}}
 
   budget-exhausted:
     n: 20
@@ -101,13 +101,13 @@ categories:
       必须检索的事实性问题。base model 在 report-writing/no-report-needed 上
       0 次工具调用直接张嘴答,这一类就是纠正那个。
     checks:
-      - {key: tool_called,    args: {tool: google_search, min: 1}}
+      - {key: tool_called,    args: {tool: web_search, min: 1}}
       - {key: citation_count, args: {min: 1}}
 
   single-tool:
     n: 12
     why: >-
-      天气/股票/汇率各 4 条。`tool_called:get_weather` 在基线上是 0/2 ——
+      天气/股票/汇率各 4 条。`tool_called:weather_current` 在基线上是 0/2 ——
       连最该调工具的场景它都不调。
     checks:
       - {key: citation_exists}
@@ -183,19 +183,19 @@ categories:
     n: 8
     why: >-
       `map_fence` 0/5、`skill_loaded:mapping` 0/2。
-      注意 google_search_places 的 k 上限是 5,实测常只返回 2-3 家 ——
-      query 不要写死「推荐五家」,否则模型只能编。
+      已经没有独立的 places 工具了,店名来自 `web_search` + `fetch_url`。
+      query 可以写死家数,但仍要求家名来自工具输出,不能让模型编。
     checks:
-      - {key: tool_called,  args: {tool: google_search_places, min: 1}}
+      - {key: tool_called,  args: {tool: web_search, min: 1}}
       - {key: skill_loaded, args: {skill: mapping}}
       - {key: map_fence,    args: {min: 1, max_pins: 8}}
 
   compute:
     n: 8
     why: >-
-      run_python 路径。PRO_PROMPT 要求「never approximate in your head」。
+      python_exec 路径。PRO_PROMPT 要求「never approximate in your head」。
     checks:
-      - {key: tool_called, args: {tool: run_python, min: 1}}
+      - {key: tool_called, args: {tool: python_exec, min: 1}}
       - {key: no_report}
 
   ask-question:
@@ -339,24 +339,24 @@ categories:
     why: >-
       PRO_PROMPT:「never approximate in your head, never make up numbers」。
       compute 那 8 条已经在教这个,这两条补的是**大数精确算术** —— 心算「看起来
-      能算」但实际会错的那种位数,逼出 run_python 而不是估算。
+      能算」但实际会错的那种位数,逼出 python_exec 而不是估算。
       同样带 `no_textblock`:算出来的数字是答案,不是交付物。
     checks:
-      - {key: tool_called, args: {tool: run_python, min: 1}}
+      - {key: tool_called, args: {tool: python_exec, min: 1}}
       - {key: no_textblock}
       - {key: no_report}
 
   math-research:
     n: 2
     why: >-
-      最完整的一条链:检索 -> 读页面 -> 用 run_python 算 -> 带引用给出答案。
+      最完整的一条链:检索 -> 读页面 -> 用 python_exec 算 -> 带引用给出答案。
       单独存在的意义是它同时压住两个已知弱点 —— compute 类不检索所以从不需要
-      引用,search-fact 类不算数所以从不调 run_python,而真实的「帮我看看这家
+      引用,search-fact 类不算数所以从不调 python_exec,而真实的「帮我看看这家
       公司营收变好了多少」两样都要。rix 在 `citation_required` 上是十个模型里
       最后一名,这一类把引用要求放在一个**数字必须自己算**的语境里。
     checks:
-      - {key: tool_called,    args: {tool: run_python, min: 1}}
-      - {key: tool_called,    args: {tool: google_search, min: 1}}
+      - {key: tool_called,    args: {tool: python_exec, min: 1}}
+      - {key: tool_called,    args: {tool: web_search, min: 1}}
       - {key: citation_count, args: {min: 2}}
       - {key: no_textblock}
 
@@ -603,7 +603,7 @@ queries:
   - {id: rs-12, cat: restraint, lang: en, text: "My colleague ended her message with 「辛苦了」 — what does that mean in English?"}
 
   # ══════════════════════════════════════════════════════════════════════════
-  # places (8) —— google_search_places + mapping skill + map fence
+  # places (8) —— web_search + mapping skill + map fence
   # 注意:不写「推荐五家」,工具最多返回 5 条且常只有 2-3 条
   # ══════════════════════════════════════════════════════════════════════════
   - {id: pl-01, cat: places, lang: zh, text: "帮我找几家上海静安区评价不错的日料店"}
@@ -616,7 +616,7 @@ queries:
   - {id: pl-08, cat: places, lang: en, text: "Recommend a few museums worth visiting in central Berlin."}
 
   # ══════════════════════════════════════════════════════════════════════════
-  # compute (8) —— run_python,禁止心算
+  # compute (8) —— python_exec,禁止心算
   # ══════════════════════════════════════════════════════════════════════════
   - {id: cp-01, cat: compute, lang: zh, text: "一笔 80 万的房贷,利率 4.1%,30 年等额本息,每月还多少、总利息多少?", block: attached_files}
   - {id: cp-02, cat: compute, lang: en, text: "If I invest $500 a month at 7% annual return for 25 years, what do I end up with?"}

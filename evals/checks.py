@@ -188,7 +188,7 @@ def _search_discipline(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     cap = int(spec.args.get("max_per_topic", 2))
     counts: dict[str, int] = {}
     for t in _turns(trace, spec):
-        for call in t.tools_named("google_search"):
+        for call in t.tools_named("web_search"):
             q = str(call.args.get("query") or "").strip().lower()
             key = " ".join(sorted(q.split()))  # order-insensitive fingerprint
             counts[key] = counts.get(key, 0) + 1
@@ -536,8 +536,8 @@ def _citation_required(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     Self-configuring, so it can sit in `common_checks` without a per-case
     argument: the trigger is the citation registry, which the retrieval tools
     populate themselves. An empty registry means nothing citable was retrieved
-    (a `run_python` answer, a pure rewrite, a clarifying question, a
-    `get_stock_data` lookup — that tool registers no sources), and the check
+    (a `python_exec` answer, a pure rewrite, a clarifying question, a
+    `stock_search` lookup — that tool registers no sources), and the check
     goes inert rather than punishing correct restraint.
 
     Deliberately a separate key rather than a stricter `citation_exists`:

@@ -29,16 +29,14 @@ import os
 import re
 from typing import Any
 
-from langchain_community.utilities import GoogleSerperAPIWrapper
+from core.tools.searxng import fetch_infobox, search_image
 from langsmith import tracing_context
 from pydantic import BaseModel, Field, ValidationError
 
 from langchain_groq import ChatGroq
 
 from core.llm import gpt_oss_20b, widget_predictor_llm
-from core.tools.weather_tool import get_weather_forecast
-from core.tools.stock_data_retriever import get_stock_data
-from core.tools.currency_tool import get_realtime_currency_rate
+from core.tools.adapters import currency_convert, stock_search, weather_forecast
 
 
 # ── Word-count gate ─────────────────────────────────────────────────────────
@@ -485,52 +483,67 @@ async def classify_verbose(
 # ── Entity knowledge-graph fetcher ──────────────────────────────────────────
 
 def _fetch_entity_image(entity_name: str) -> tuple[str, str]:
-    """Return (imageUrl, sourceLink) from the first Serper image result, or ('', '')."""
+    """Return (imageUrl, sourceLink) from the first image hit, or ('', '')."""
     try:
-        img_search = GoogleSerperAPIWrapper(k=1, type="images")
-        raw = img_search.results(entity_name)
-        images = raw.get("images") or []
-        if images:
-            first = images[0]
-            return first.get("imageUrl") or "", first.get("link") or ""
+        hit = search_image(entity_name)
+        if hit:
+            return hit
     except Exception as exc:
         print(f"[widget_predictor] image search failed for {entity_name!r}: {exc}")
     return "", ""
 
 
+def _entity_type(infobox: dict[str, Any]) -> str:
+    """One-line "what is this" for the card's subtitle.
+
+    SearXNG infoboxes have no single type field the way Serper's knowledge
+    graph did, so use the Wikipedia/Wikidata description and trim it to its
+    first sentence — that sentence is almost always the definition.
+    """
+    content = str(infobox.get("content") or "").strip()
+    if not content:
+        return ""
+    first_sentence = content.split(". ")[0].strip().rstrip(".")
+    return first_sentence[:200]
+
+
 def _fetch_entity(entity_name: str) -> dict[str, Any] | None:
-    """Search for an entity and return its Knowledge Graph data + image."""
+    """Search for an entity and return its infobox data + image."""
     import concurrent.futures
 
-    # Run text (KG) and image searches in parallel.
+    # Run infobox and image searches in parallel.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        kg_future = pool.submit(
-            lambda: GoogleSerperAPIWrapper(k=3, type="search").results(entity_name)
-        )
+        infobox_future = pool.submit(fetch_infobox, entity_name)
         img_future = pool.submit(_fetch_entity_image, entity_name)
         try:
-            raw = kg_future.result(timeout=8)
+            infobox = infobox_future.result(timeout=8)
         except Exception as exc:
             print(f"[widget_predictor] entity search failed for {entity_name!r}: {exc}")
             return None
         image_url, source_link = img_future.result(timeout=8)
 
-    kg = raw.get("knowledgeGraph")
-    if not kg:
-        print(f"[widget_predictor] no knowledgeGraph for {entity_name!r} — skipping")
+    if not infobox:
+        print(f"[widget_predictor] no infobox for {entity_name!r} — skipping")
         return None
 
-    # Require both a knowledge graph AND an image to show the card.
-    final_image = kg.get("imageUrl") or image_url
+    # Require both an infobox AND an image to show the card.
+    final_image = str(infobox.get("img_src") or "") or image_url
     if not final_image:
         print(f"[widget_predictor] no image for {entity_name!r} — skipping")
         return None
 
+    # The infobox's own link (Wikipedia/Wikidata) beats the image host as the
+    # card's "source" — it's about the entity, not about where a photo lives.
+    infobox_urls = infobox.get("urls") or []
+    infobox_link = str(infobox.get("id") or "")
+    if not infobox_link and infobox_urls and isinstance(infobox_urls[0], dict):
+        infobox_link = str(infobox_urls[0].get("url") or "")
+
     data: dict[str, Any] = {"name": entity_name}
-    data["title"] = kg.get("title") or entity_name
-    data["type"] = kg.get("type") or ""
+    data["title"] = str(infobox.get("infobox") or "") or entity_name
+    data["type"] = _entity_type(infobox)
     data["image_url"] = final_image
-    data["source_link"] = source_link
+    data["source_link"] = infobox_link or source_link
 
     print(f"[widget_predictor] entity widget built: title={data['title']!r} type={data['type']!r}")
     return {"widget": "entity", "data": data}
@@ -561,11 +574,11 @@ _HAOZHE_WIDGET: dict[str, Any] = {
 # ── Main predictor ───────────────────────────────────────────────────────────
 
 _FETCHERS = {
-    "weather": lambda a: {"widget": "weather", "data": get_weather_forecast(a["location"])},
-    "stock": lambda a: {"widget": "stock", "data": get_stock_data(a["ticker"])},
+    "weather": lambda a: {"widget": "weather", "data": weather_forecast(a["location"])},
+    "stock": lambda a: {"widget": "stock", "data": stock_search(a["ticker"])},
     "currency": lambda a: {
         "widget": "currency",
-        "data": get_realtime_currency_rate(a["base_currency"], a["target_currency"]),
+        "data": currency_convert(a["base_currency"], a["target_currency"]),
     },
     "entity": lambda a: _fetch_entity(a["entity_name"]),
 }

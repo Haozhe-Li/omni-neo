@@ -32,11 +32,11 @@ The frontend resolves place names to coordinates automatically — you never nee
 
 Every pin must be one of:
 
-1. **A result from `google_search_places`** — restaurants, hotels, attractions, shops, or any specific venue
-2. **A result from web search** (`google_search` / `tavily_search`) — e.g. a hotel name mentioned in an article
+1. **A result from `web_search`** — a named restaurant, hotel, attraction or shop found in the results
+2. **A page you read with `fetch_url`** — e.g. a hotel named in a review or a "best of" article
 3. **A high-scope geographic entity** — cities, neighbourhoods, states, countries, or widely known landmarks (e.g. `"Eiffel Tower, Paris"`, `"Manhattan, New York"`)
 
-**Never invent a specific business or venue name.** If you want to put a restaurant or hotel on the map and haven't searched for it yet, call `google_search_places` first.
+**Never invent a specific business or venue name.** If you want to put a restaurant or hotel on the map and haven't searched for it yet, `web_search` for it first — query the venue type plus the city, e.g. `"best ramen Shinjuku Tokyo"`.
 
 ## Hard rules
 

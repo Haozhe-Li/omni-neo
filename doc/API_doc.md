@@ -299,57 +299,49 @@ X-Guest-Id: guest_<uuid>
 
 ---
 
-##### `tool: "tavily_search"` — 联网搜索
+工具名是稳定契约：Agent 只暴露 `core/tools/adapters.py` 里的适配器工具，
+后端换实现（例如 web 搜索从 SearXNG 换成别的）不会改变这里的 `tool` 字段。
+
+| `tool` | 说明 | 展示 |
+| --- | --- | --- |
+| `web_search` | 联网搜索 | `Searching the web for: "<query>"` |
+| `fetch_url` | 网页精读 | `Intensive reading: <url>` |
+| `weather_current` | 当前天气 | `Checking the weather in <location>` |
+| `weather_forecast` | 天气预报 | `Checking the forecast for <location>` |
+| `stock_search` | 股票行情 | `Looking up <symbol>` |
+| `currency_convert` | 汇率 | `Converting <base> to <target>` |
+| `python_exec` | 运行 Python 代码 | `Running Python code...`，代码默认折叠 |
+| `write_todos` | 研究进度 Todo | 见下 |
+
+---
+
+##### `tool: "web_search"` — 联网搜索
 
 ```json
 {
   "type": "tool",
-  "tool": "tavily_search",
+  "tool": "web_search",
   "agent": "Sub-agent",
   "content": "Tool Calling",
   "raw": {
-    "args": { "query": "Tesla Q4 2025 earnings", "max_results": 5, "topic": "general" },
+    "args": { "query": "Tesla Q4 2025 earnings", "k": 5, "time_range": "month" },
     "id": "fc_..."
   }
 }
 ```
+
+`time_range` 可选，取值 `day` / `week` / `month` / `year`，不传表示不限时间。
 
 展示：`Searching the web for: "Tesla Q4 2025 earnings"`
 
 ---
 
-##### `tool: "skimming_web_pages"` — 网页速读
+##### `tool: "fetch_url"` — 网页精读
 
 ```json
 {
   "type": "tool",
-  "tool": "skimming_web_pages",
-  "agent": "Sub-agent",
-  "content": "Tool Calling",
-  "raw": {
-    "args": {
-      "purpose": "了解特斯拉 Q4 营收情况",
-      "urls": ["https://example.com/1", "https://example.com/2"]
-    },
-    "id": "fc_..."
-  }
-}
-```
-
-展示：
-```
-Gathering information on: 了解特斯拉 Q4 营收情况
-https://example.com/1, https://example.com/2
-```
-
----
-
-##### `tool: "load_web_page"` — 网页精读
-
-```json
-{
-  "type": "tool",
-  "tool": "load_web_page",
+  "tool": "fetch_url",
   "agent": "Sub-agent",
   "content": "Tool Calling",
   "raw": {
@@ -363,22 +355,68 @@ https://example.com/1, https://example.com/2
 
 ---
 
-##### `tool: "verify_claim"` — 断言验证
+##### `tool: "weather_current"` / `"weather_forecast"` — 天气
 
 ```json
 {
   "type": "tool",
-  "tool": "verify_claim",
+  "tool": "weather_forecast",
   "agent": "Sub-agent",
   "content": "Tool Calling",
   "raw": {
-    "args": { "fact": "特斯拉 2025 Q4 营收同比增长 20%" },
-    "id": "call_..."
+    "args": { "location": "Tokyo" },
+    "id": "fc_..."
   }
 }
 ```
 
-展示：`Verifying: 特斯拉 2025 Q4 营收同比增长 20%`
+展示：`Checking the forecast for Tokyo`
+
+---
+
+##### `tool: "stock_search"` / `"currency_convert"` — 行情与汇率
+
+```json
+{
+  "type": "tool",
+  "tool": "stock_search",
+  "agent": "Sub-agent",
+  "content": "Tool Calling",
+  "raw": {
+    "args": { "symbol": "TSLA" },
+    "id": "fc_..."
+  }
+}
+```
+
+`currency_convert` 的 `args` 为 `{ "base_currency": "USD", "target_currency": "CNY" }`。
+
+展示：`Looking up TSLA` / `Converting USD to CNY`
+
+---
+
+##### `tool: "python_exec"` — 运行 Python 代码
+
+```json
+{
+  "type": "tool",
+  "tool": "python_exec",
+  "agent": "Sub-agent",
+  "content": "Tool Calling",
+  "raw": {
+    "args": { "filename": "compound_interest.py", "code": "print(1 + 1)" },
+    "id": "bvstagb3n"
+  }
+}
+```
+
+展示：`Running Python code...`，代码内容默认折叠，展开后显示代码块。
+
+---
+
+> **已下线的工具名**：`tavily_search`、`skimming_web_pages`、`load_web_page`、
+> `verify_claim`、`run_python_tool`、`google_search`、`google_search_places`、
+> `search_place`。历史 thread 里仍会出现，前端应继续能渲染，但不会再有新的调用。
 
 ---
 
@@ -410,25 +448,6 @@ https://example.com/1, https://example.com/2
 | `completed` | ✅ |
 | `in_progress` | `⋯`（进行中） |
 | `pending` | ○ |
-
----
-
-##### `tool: "run_python_tool"` — 运行 Python 代码
-
-```json
-{
-  "type": "tool",
-  "tool": "run_python_tool",
-  "agent": "Sub-agent",
-  "content": "Tool Calling",
-  "raw": {
-    "args": { "code": "import pandas as pd\nprint(pd.__version__)" },
-    "id": "bvstagb3n"
-  }
-}
-```
-
-展示：`Running Python code...`，代码内容默认折叠，展开后显示代码块。
 
 ---
 

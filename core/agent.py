@@ -44,25 +44,10 @@ from deepagents.backends.utils import create_file_data
 from pydantic import BaseModel, Field
 
 import core.database.checkpointer as _db
-from core.tools.web_search import google_search, google_search_places
-from core.tools.web_page_reader import load_web_page
-from core.tools.weather_tool import get_weather, get_weather_forecast
-from core.tools.stock_data_retriever import get_stock_data
-from core.tools.currency_tool import get_realtime_currency_rate
-from core.tools.coding_sandbox import run_python
+from core.tools.adapters import RETRIEVAL_TOOLS
 from core.chat_models import CHAT_MODELS, ChatModel, resolve_model
 from core.llm import *
 
-RETRIEVAL_TOOLS = [
-    google_search,
-    load_web_page,
-    google_search_places,
-    get_weather,
-    get_weather_forecast,
-    get_stock_data,
-    get_realtime_currency_rate,
-    run_python,
-]
 
 # Charts AND reports are produced inline in the answer stream (```echarts fences
 # and `<report>…</report>` blocks), taught by the charting / report-writing
@@ -167,23 +152,23 @@ _S_RETRIEVAL = """
 ## Retrieval
 
 NEVER answer from your own knowledge alone. For anything beyond pure chit-chat
-you MUST call a grounding tool — at minimum one `google_search` — before you
+you MUST call a grounding tool — at minimum one `web_search` — before you
 answer, even when you are already confident. Confidence is not the same as
 current or correct; treat your own knowledge as unverified until a tool backs
 it up. Route by topic:
 
-- Facts, current events, specifics — `google_search`, then `load_web_page` on the most relevant results.
-- Local places, venues, businesses — `google_search_places`.
-- Current weather only — `get_weather`. Forecasts, tomorrow, next week, specific hours today, upcoming conditions — `get_weather_forecast` (returns current conditions, today's hourly slots, and a daily outlook out to about a week).
-- Stocks — `get_stock_data`. FX rates — `get_realtime_currency_rate`.
+- Facts, current events, specifics — `web_search`, then `fetch_url` on the most relevant results.
+- Local places, venues, businesses — `web_search`; include the city in the query and read the promising results with `fetch_url`.
+- Current weather only — `weather_current`. Forecasts, tomorrow, next week, specific hours today, upcoming conditions — `weather_forecast` (returns current conditions, today's hourly slots, and a daily outlook out to about a week).
+- Stocks — `stock_search`. FX rates — `currency_convert`.
 - Questions about an uploaded document — it is mounted under `/uploads/`; use `ls`, `read_file`, or `grep` to explore and read it.
-- The user gives you a specific URL and asks you to read, fetch, summarize, or answer questions about it — call `load_web_page` on that exact URL directly. Do not `google_search` for it first and do not substitute a different source: a URL the user names outranks anything you'd find yourself.
+- The user gives you a specific URL and asks you to read, fetch, summarize, or answer questions about it — call `fetch_url` on that exact URL directly. Do not `web_search` for it first and do not substitute a different source: a URL the user names outranks anything you'd find yourself.
 - No search needed for pure computation (see Computation) or creative writing — there is nothing external to verify.
 
 Search discipline (hard limits, no exceptions):
 
-- At most 2 `google_search` calls per question or sub-topic: one focused query, plus one reformulation if the first turns up nothing useful. Never a third on the same sub-topic.
-- At most 2 pages via `load_web_page` per search. Stop as soon as you can answer — do not read for completeness.
+- At most 2 `web_search` calls per question or sub-topic: one focused query, plus one reformulation if the first turns up nothing useful. Never a third on the same sub-topic.
+- At most 2 pages via `fetch_url` per search. Stop as soon as you can answer — do not read for completeness.
 - If results are still weak after two searches, answer with what you have and note the limitation. Do not keep searching.
 - Prefer primary sources and established outlets over aggregators. When sources disagree, surface the disagreement instead of silently picking one.
 """
@@ -192,7 +177,7 @@ _S_CITATIONS = """
 ## Citations
 
 Citing is MANDATORY for any claim, fact, figure, or quote that came from a
-`google_search`, `load_web_page`, `get_weather`, or `get_weather_forecast`
+`web_search`, `fetch_url`, `weather_current`, or `weather_forecast`
 result (each carries an `n`), no matter how obvious the fact seems. Facts you
 already knew, and pure reasoning or opinion, need no citation.
 
@@ -215,7 +200,7 @@ Never invent one.
 _S_COMPUTATION = """
 ## Computation
 
-You MUST call `run_python` — never approximate in your head, never make numbers
+You MUST call `python_exec` — never approximate in your head, never make numbers
 up — for any of the following:
 
 - Arithmetic beyond trivial mental math (multi-step, fractions, large numbers).
@@ -224,7 +209,7 @@ up — for any of the following:
 - Numerical algorithms (sorting, searching, optimisation, simulation).
 - Anything the user asks you to calculate, compute, run, simulate, or verify with code.
 
-`run_python` is text-only and cannot produce images — visualisations go through
+`python_exec` is text-only and cannot produce images — visualisations go through
 the charting skill. Write one complete, self-contained script per call. Do not
 reach for it when no computation is involved, such as explaining a concept or
 translating text.
@@ -482,21 +467,22 @@ the structured report you produce at the end, delivered later by email.
 
 <retrieval_policy>
 NEVER answer from your own knowledge alone. You MUST call a grounding tool —
-at minimum one `google_search` — before writing the report, even if you're
+at minimum one `web_search` — before writing the report, even if you're
 already confident you know it. Confidence is not the same as current or
 correct; treat your own knowledge as unverified until a tool backs it up.
 Route by topic:
-- Facts / current events / specifics → `google_search`, then `load_web_page`
+- Facts / current events / specifics → `web_search`, then `fetch_url`
   to read the most relevant results.
-- Local places, venues, businesses → `google_search_places`.
-- Current weather → `get_weather`. Forecasts (including next week) →
-  `get_weather_forecast`. Stocks → `get_stock_data`. FX rates →
-  `get_realtime_currency_rate`.
+- Local places, venues, businesses → `web_search` with the city in the
+  query, then `fetch_url` on the promising results.
+- Current weather → `weather_current`. Forecasts (including next week) →
+  `weather_forecast`. Stocks → `stock_search`. FX rates →
+  `currency_convert`.
 </retrieval_policy>
 
 <citation_policy>
 Citing is MANDATORY whenever a claim, fact, figure, or quote in the report
-came from a `google_search`/`load_web_page`/`get_weather`/`get_weather_forecast`
+came from a `web_search`/`fetch_url`/`weather_current`/`weather_forecast`
 result (each carries a `n`) — never skip it, no matter how obvious the fact
 seems. Facts you already knew, or pure reasoning, need no citation.
 
@@ -509,9 +495,9 @@ came from an actual tool result this run. Never invent a citation number.
 </citation_policy>
 
 <computation_policy>
-You MUST call `run_python` for arithmetic beyond trivial mental math,
+You MUST call `python_exec` for arithmetic beyond trivial mental math,
 statistics, comparisons, unit conversions, or any other numerical analysis —
-never approximate in your head or make up numbers. `run_python` is
+never approximate in your head or make up numbers. `python_exec` is
 text-only; for visualisations use an ```echarts fence directly in the report.
 </computation_policy>
 
@@ -529,7 +515,7 @@ arc every time, not a shortcut version of it:
    - Report: write it up last, once the above is done.
 
 2. Gather — for each sub-topic:
-   - One targeted `google_search` per sub-topic; `load_web_page` only on
+   - One targeted `web_search` per sub-topic; `fetch_url` only on
      clearly relevant, non-paywalled results.
    - Read 2-4 pages per sub-topic. Stop once two consecutive pages add
      nothing new.
@@ -764,7 +750,7 @@ def build_agent(model: ChatModel):
     Every model gets the *same* prompt, tools, skills and turn budget — they
     differ only in weights and in whether an image reroutes the turn. That
     uniformity is a requirement, not a convenience: `system_prompt` plus the
-    skill roster is the LoRA's compatibility key, so `rix` and `best` have
+    skill roster is a LoRA's compatibility key, so a fine-tune and `best` have
     to be assembled identically or the adapter is being served an input it was
     never trained on. See the Prompt sections block above and
     `finetune/pro_agent/fingerprint.py`.

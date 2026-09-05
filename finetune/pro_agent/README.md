@@ -152,8 +152,8 @@ no gradient describes where the boundary is — so it has to stay in the prompt.
 
 | section | tokens | evidence in 129 traces | verdict |
 |---|---|---|---|
-| `_S_RETRIEVAL` | 429 | search 74, load_web_page 48, places 8, stock/fx/weather 1–4 | ✅ best candidate |
-| `_S_COMPUTATION` | 154 | `run_python` 31 | ✅ |
+| `_S_RETRIEVAL` | 429 | search 74, fetch_url 48, places 8, stock/fx/weather 1–4 | ✅ best candidate |
+| `_S_COMPUTATION` | 154 | `python_exec` 31 | ✅ |
 | `_S_PLANNING` | 66 | `write_todos` 40 | ✅ |
 | `_S_INPUT_FORMAT` | 279 | rarer tags only 6–12 rows each | ⚠️ compress, don't cut |
 | `_S_TOOL_DISCIPLINE` | 123 | 0 mixed turns — learned perfectly | ⚠️ but catastrophic if it breaks |
@@ -223,14 +223,14 @@ Two orthogonal axes. Category decides the must-pass checks:
 |---|---|---|
 | `budget-exhausted` | 20 | collected at low `run_limit`; must still produce the deliverable |
 | `deep-research` | 15 | `skill_loaded` web-research + report-writing, `has_report`, `chart_count`, `citation_count` |
-| `search-fact` | 15 | `tool_called:google_search`, `citation_count`, `citation_exists` |
+| `search-fact` | 15 | `tool_called:web_search`, `citation_count`, `citation_exists` |
 | `single-tool` | 12 | weather / stock / fx, 4 each |
 | `chart` | 10 | `skill_loaded:charting`, `chart_count`, `charts_valid` |
 | `teach` | 10 | `skill_loaded:guided-learning`, `question_block` |
 | `write-rewrite` | 10 | `textblock`, `followup_question`, `no_tool_calls` |
 | restraint negatives | 10 | `no_tool_calls` / `no_report` / `no_map` / `no_question_block` |
-| `places` | 8 | `google_search_places`, `skill_loaded:mapping`, `map_fence` |
-| `compute` | 8 | `tool_called:run_python`, `no_report` |
+| `places` | 8 | `web_search`, `skill_loaded:mapping`, `map_fence` |
+| `compute` | 8 | `tool_called:python_exec`, `no_report` |
 | `ask-question` | 8 | `skill_loaded:ask-question`, `question_block` |
 | `about` | 4 | `skill_loaded:about-omni` / `about-haozheli` |
 

@@ -50,23 +50,22 @@ Feel free to use `write_todos` to lay this out and track progress — use your j
 Work through the plan in order. Roughly 5 tool calls max per item (e.g. 2 searches + a couple of follow-ups) — if that's not turning up results, move on rather than linger.
 
 ### Weather
-- Travel dates **within 5 days**: call `get_weather_forecast`.
-- Travel dates **further out**: use `google_search` — query `"average weather in [city] in [month]"`.
+- Travel dates **within 5 days**: call `weather_forecast`.
+- Travel dates **further out**: use `web_search` — query `"average weather in [city] in [month]"`.
 
 ### Flights
-- Use `tavily_search` or `google_search` — query `"flights from [origin] to [destination] [month year] price"`.
+- Use `web_search` — query `"flights from [origin] to [destination] [month year] price"`.
 - Note price range, major airlines, and typical flight duration.
 
 ### Accommodation (per city)
-- Use `google_search_places` — query `"hotels in [city]"` filtered to budget tier.
-- Supplement with `google_search` for specific property reviews if needed.
+- Use `web_search` — query `"best hotels [city] [budget tier]"`, then `fetch_url` on a good roundup.
 
 ### Attractions & activities (per city)
-- Use `google_search_places` — query `"top attractions in [city]"` or `"things to do in [city]"`.
-- Use `google_search` to check opening hours or entrance fees for key sites.
+- Use `web_search` — query `"top attractions [city]"` or `"[landmark type] [city]"`, e.g. `"temples Kyoto"`.
+- Search again for opening hours or entrance fees for the key sites.
 
 ### Restaurants (per city)
-- Use `google_search_places` — query `"best restaurants in [city]"` or `"[cuisine] restaurants in [city]"`.
+- Use `web_search` — query `"best [cuisine] restaurants [city]"`, e.g. `"best izakaya Kyoto"`.
 - Match results to the user's dietary constraints and budget tier.
 
 ---
@@ -109,10 +108,10 @@ Write a `<report>` following the report-writing skill rules. Target **~1500 word
 
 - **First map** (in Overview): high-scope route overview. Pins are cities or
   neighbourhoods only (e.g. `"San Francisco, CA"`, `"Los Angeles, CA"`). No
-  `google_search_places` required for this map.
+  venue lookup required for this map.
 - **Subsequent maps** (at least 2 more, in Day sections): specific venues —
   restaurants, hotels, attractions. All pins must come from your research
-  (google_search_places or web search results). Never invent venue names.
+  (`web_search` or `fetch_url` results). Never invent venue names.
 - Place each map directly after the prose that introduces those locations.
 
 ### After the report

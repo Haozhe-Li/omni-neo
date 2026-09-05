@@ -2,24 +2,22 @@
 
 This replaced the fast/pro *mode* switch. A mode was a bundle of prompt, turn
 budget and skill roster; a model is just the weights. Everything else — the
-system prompt, the 15 tools, all 9 skills, the 30-call budget — is now identical
-across every entry here, which is what lets `rix` be served by a LoRA at
-all (see `core/agent.py`'s Prompt sections block: an adapter has exactly one
-compatible prompt).
+system prompt, the tools, all 9 skills, the 30-call budget — is identical
+across every entry here. That uniformity was originally what let `rix` be
+served by a LoRA (an adapter has exactly one compatible prompt); `rix` is
+offline pending a retrain against the tool adapter layer, but keeping the
+entries uniform is what makes serving the next one a one-line change.
 
-Five entries, two of them open to guests:
+Four entries, one of them open to guests:
 
-    best      rix, auto-routed to gemma when the turn has an image
-    rix  the fine-tune, text-only, no routing. Shown as "Rix" in the UI —
-              the id is the wire value and is persisted, so it does not follow
-              the display name.
+    best      the default, auto-routed to gemma when the turn has an image
     gemma     signed in
     luna      signed in
     gemini    signed in
 
 ## Billing
 
-`rix` is 1 credit and everything else is 3, *including* a `best` turn that
+`best` is 1 credit and everything else is 3, *including* a `best` turn that
 routes to gemma — the user pays for the model that actually ran, not the one
 they picked.
 
@@ -39,7 +37,6 @@ from dataclasses import dataclass
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from core.llm import (
-    rix_30b_a3b_v5,
     chat_llm,
     gemini_3_6_flash,
     gemma_4_31b,
@@ -55,13 +52,14 @@ class ChatModel:
     llm: BaseChatModel
     credits: float
     requires_auth: bool
-    # False only for `rix`: W&B serves the adapter text-only, so a
-    # multimodal request 400s. The frontend blocks the attachment before it is
-    # uploaded; `core/routers/chat.py` rejects it again for clients that don't.
+    # True for every model currently listed. It exists for text-only entries
+    # like the offline `rix` fine-tune, which W&B serves without vision: the
+    # frontend blocks the attachment before it is uploaded, and
+    # `core/routers/chat.py` rejects it again for clients that don't.
     accepts_images: bool
     # Model to swap in when the conversation contains an image. Set on `best`
     # only — that swap *is* what "best available" means here. None elsewhere:
-    # gemma/luna/gemini read images natively, and rix refuses them.
+    # gemma/luna/gemini read images natively.
     vision_fallback: BaseChatModel | None = None
     # Credits charged when `vision_fallback` takes the turn.
     vision_credits: float | None = None
@@ -77,14 +75,6 @@ CHAT_MODELS: dict[str, ChatModel] = {
         accepts_images=True,
         vision_fallback=vision_llm,
         vision_credits=3.0,
-    ),
-    "rix": ChatModel(
-        id="rix",
-        label="Rix",
-        llm=rix_30b_a3b_v5,
-        credits=1.0,
-        requires_auth=False,
-        accepts_images=False,
     ),
     "gemma": ChatModel(
         id="gemma",
@@ -114,11 +104,12 @@ CHAT_MODELS: dict[str, ChatModel] = {
 
 DEFAULT_MODEL = "best"
 
-# Wire-level compatibility. Threads created before this change carry
-# `mode: "fast" | "pro"`, and those values are persisted in message rows and in
-# the frontend's localStorage — a rewind of an old thread will send one. Both
-# map to `best`, which is the closest thing to what either used to do.
-_LEGACY_ALIASES = {"fast": "best", "pro": "best"}
+# Wire-level compatibility. Persisted message rows and the frontend's
+# localStorage still carry ids this table no longer lists: `mode: "fast" |
+# "pro"` from before the mode/model switch, and `rix` from before the
+# fine-tune was taken offline. A rewind of an old thread will send one. All
+# map to `best`, the closest thing to what each used to do.
+_LEGACY_ALIASES = {"fast": "best", "pro": "best", "rix": "best"}
 
 
 def resolve_model(model_id: str | None) -> ChatModel:
