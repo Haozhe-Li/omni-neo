@@ -182,9 +182,13 @@ def _distinct_domains(trace: RunTrace, spec: CheckSpec) -> CheckResult:
 
 @check("search_discipline", args=("max_per_topic",))
 def _search_discipline(trace: RunTrace, spec: CheckSpec) -> CheckResult:
-    """SYSTEM_PROMPT caps searches per sub-topic. Sub-topics aren't labelled in the
-    trace, so this approximates one by near-identical queries: the same query
-    re-run more than the cap is the behaviour the rule exists to stop."""
+    """Catches a query re-run verbatim past the cap.
+
+    The prompt no longer sets a hard per-sub-topic search budget — `web_search`'s
+    own description asks for coverage instead, and following up on a thin or
+    conflicting result is now correct behaviour. Repeating the *same* query is
+    not: it returns the same cached results and buys nothing. Sub-topics aren't
+    labelled in the trace, so near-identical queries stand in for one."""
     cap = int(spec.args.get("max_per_topic", 2))
     counts: dict[str, int] = {}
     for t in _turns(trace, spec):
@@ -371,9 +375,12 @@ def _no_question_block(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     args=("min", "max", "require_type", "require_subject", "min_words", "max_words"),
 )
 def _textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
-    """The writing path's output contract, per SYSTEM_PROMPT's "Writing and
-    Rewrites" section: the finished deliverable — and nothing else — goes in a
-    `<textblock>…</textblock>`.
+    """The email deliverable's output contract, per the draft-email skill: the
+    finished email — and nothing else — goes in a
+    `<textblock type="email" subject="…">…</textblock>`.
+
+    Prose deliverables that are not emails moved to a ```text fence; those are
+    graded by `text_fence`.
 
     Replaces `has_delimiters`, which looked for `---` horizontal rules. That
     convention was retired from the prompt, and `_S_FORMATTING_PRO` now says to
@@ -417,16 +424,51 @@ def _textblock(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     return CheckResult.ok(f"{len(blocks)} well-formed <textblock>", n=len(blocks), words=words)
 
 
+@check("text_fence", args=("min", "max", "min_words", "max_words"))
+def _text_fence(trace: RunTrace, spec: CheckSpec) -> CheckResult:
+    """The writing path's output contract, per SYSTEM_PROMPT's "Writing and
+    Rewrites" section: a rewrite, polish or translation goes inside a ```text
+    fence — one short line of commentary, the fence, a follow-up question, and
+    the deliverable nowhere else.
+
+    Replaced `<textblock>` for prose deliverables when the fence took over (the
+    fence is what carries the product's copy button). `textblock` still grades
+    emails, which kept the tag because the frontend renders a card from its
+    `type`/`subject` attributes — see the draft-email skill.
+    """
+    blocks = parsers.extract_text_fences(_text(trace, spec))
+    args = spec.args
+    if not blocks:
+        return CheckResult.fail("no ```text deliverable")
+    if not _in_range(len(blocks), args):
+        return CheckResult.fail(
+            f"{len(blocks)} ```text fence(s), expected {_range_str(args)}", n=len(blocks)
+        )
+
+    problems: list[str] = []
+    decorated = [d for b in blocks for d in b.decoration]
+    if decorated:
+        problems.append(f"markdown/citations inside the fence: {decorated[:2]}")
+
+    words = sum(b.words for b in blocks)
+    lo, hi = args.get("min_words"), args.get("max_words")
+    if (lo is not None and words < lo) or (hi is not None and words > hi):
+        problems.append(f"{words} words in the deliverable, expected [{lo}, {hi}]")
+
+    if problems:
+        return CheckResult.fail("; ".join(problems[:2]), n=len(blocks), words=words)
+    return CheckResult.ok(f"{len(blocks)} well-formed ```text fence", n=len(blocks), words=words)
+
+
 @check("code_block", args=("lang", "min", "min_lines"))
 def _code_block(trace: RunTrace, spec: CheckSpec) -> CheckResult:
     """Code the user asked for must arrive in a fenced code block.
 
     The positive half of the pair `no_textblock` forms on code-writing tasks.
-    `<textblock>` is for *prose* deliverables — an email, a translation, a
-    polished paragraph — and SYSTEM_PROMPT's writing section lists only those.
-    Code wrapped in a textblock loses syntax highlighting and the copy-button
-    affordance in the product, so the two checks together say "a fence, and not
-    a textblock" rather than leaving the boundary implicit.
+    `<textblock>` is the *email* deliverable, and code wrapped in one loses
+    syntax highlighting and the copy-button affordance in the product, so the
+    two checks together say "a fence, and not an email block" rather than
+    leaving the boundary implicit.
 
     Chart and map fences do not count; see `parsers.extract_code_fences`.
     """

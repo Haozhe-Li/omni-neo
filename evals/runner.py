@@ -23,7 +23,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from core.utils.citations import all_citations, reset_citation_registry
-from evals.agent_factory import build_eval_agent, build_personalization, build_user_message
+from evals.agent_factory import build_eval_agent, build_system_reminder, build_user_message
 from evals.config import Case
 from evals.models import ModelSpec
 from evals.toolcache import ToolCache, load_fixture, wrap_tools
@@ -54,7 +54,7 @@ async def run_case(
     from evals.agent_factory import skill_files
 
     thread_id = f"eval-{uuid.uuid4()}"
-    personalization = build_personalization(case.personalization)
+    system_reminder = build_system_reminder(case.personalization)
 
     try:
         for i, turn in enumerate(case.turns):
@@ -63,7 +63,7 @@ async def run_case(
                     agent=agent,
                     index=i,
                     query=turn.text,
-                    personalization=personalization,
+                    system_reminder=system_reminder,
                     thread_id=thread_id,
                     files=skill_files() if i == 0 else None,
                     requested_skill=None,
@@ -91,13 +91,13 @@ async def _run_turn(
     agent,
     index: int,
     query: str,
-    personalization: str,
+    system_reminder: str,
     thread_id: str,
     files: dict | None,
     requested_skill: str | None,
 ) -> TurnTrace:
     turn = TurnTrace(index=index, query=query)
-    content = build_user_message(query, personalization, skill=requested_skill)
+    content = build_user_message(query, system_reminder, skill=requested_skill)
     input_state: dict[str, Any] = {"messages": [{"role": "user", "content": content}]}
     if files:
         # Skill files ride in on the first turn only; the `files` channel merges

@@ -6,9 +6,7 @@ the report title, this module:
 1. Rewrites the title into a short, concrete image-search query with a fast
    LLM (titles are long/abstract — searching them verbatim mostly returns
    screenshots and infographics, not usable photos).
-2. Runs that query through SearXNG's image search and takes the first hit —
-   same "search once, take the first result" pattern already used for
-   entity widgets, see ``core/widget_predictor.py::_fetch_entity_image``.
+2. Runs that query through SearXNG's image search and takes the first hit.
 3. Re-hosts the image on our own R2/CDN bucket, since the search result is a
    hotlink to a random third-party page that can disappear at any time,
    which would silently break a cover that's meant to stay up indefinitely.

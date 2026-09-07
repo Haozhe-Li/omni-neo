@@ -1,13 +1,15 @@
 """Unified chat stream handler for the single Omni agent.
 
 `run_agent_stream` is an async generator yielding Server-Sent-Event strings. It
-runs the pre-flight widget predictor and the agent concurrently (widgets flush
-the instant they are ready, independent of the agent's first token), normalises
-LangGraph's stream into a stable wire protocol, and validates artifact/report
-tool output before forwarding it.
+runs the pre-flight context-enrichment scout (core/context_enrichment.py) ahead
+of the agent — its one retrieval is folded into the user message, so it has to
+finish first — then normalises LangGraph's stream into a stable wire protocol
+and validates artifact/report tool output before forwarding it.
 
 Wire protocol (one JSON object per `data:` line):
-    widget    {type, widget, data}                     – pre-flight live-data card
+    widget    {type, widget, data}                     – live-data card from the
+                                                            pre-flight scout (see
+                                                            core/context_enrichment.py)
     reasoning {type, content}                           – streamed reasoning/thinking
                                                             tokens (Groq gpt-oss:
                                                             reasoning_content; Cerebras
@@ -33,10 +35,11 @@ Wire protocol (one JSON object per `data:` line):
 Reports are NOT a distinct event: the agent writes them inline as a
 `<report>…</report>` block within the normal `text` stream (just like charts are
 written inline as ```echarts fences). The frontend parses the block out of the
-answer and renders it live in the side reader. Rewrite/translation/drafting
-deliverables use the same trick with a `<textblock>…</textblock>` block (see
-`_S_WRITING_FORMAT` in core/agent.py) — also not a distinct event, also parsed
-out of `text` by the frontend.
+answer and renders it live in the side reader. Email drafts use the same trick
+with a `<textblock type="email" subject="…">` block, taught by the draft-email
+skill — also not a distinct event, also parsed out of `text` by the frontend.
+Ordinary rewrite/translation/polish deliverables are plain ```text fences (see
+`_S_WRITING_FORMAT` in core/agent.py) and need no parsing at all.
 """
 
 from __future__ import annotations
@@ -66,7 +69,7 @@ from core.database.db_threads_control import lock_thread_state
 from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.tools.web_page_reader import first_party_redis_shortcut, load_web_page_spider
-from core.widget_predictor import predict_widgets
+from core.context_enrichment import Enrichment, enrich_context
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_EXTENSIONS
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
 
@@ -373,7 +376,7 @@ def _fetch_source_urls(urls: list[str]) -> tuple[str, dict, list[dict]]:
     the source didn't load instead of silently answering without it.
 
     Returns ``(prompt_text, files, doc_sources)`` — `prompt_text` is the
-    ready-to-embed body for a `<priority_sources>` tag (or "" if every URL
+    ready-to-embed body for the `<context_enrichment>` tag (or "" if every URL
     was empty/duplicate), `files`/`doc_sources` follow the same shape
     `build_message_content` already returns for attached documents.
     """
@@ -448,7 +451,7 @@ def _fetch_source_urls(urls: list[str]) -> tuple[str, dict, list[dict]]:
 
 def build_message_content(
     query: str,
-    personalization: str,
+    system_reminder: str,
     attached_file_ids: list[dict[str, str]] | None,
     thread_id: str | None = None,
     *,
@@ -456,13 +459,14 @@ def build_message_content(
     follow_up_content: str | None = None,
     skill: str | None = None,
     source_url: list[str] | None = None,
+    enrichment_text: str = "",
 ) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
 
     Every piece of context is wrapped in its own tag and the real question goes
-    last, in the order the prompt's "Input Format" section documents:
-    attachments, personalization, memory, requested skill, follow-up selection,
-    priority sources, then ``<user_query>``. Tags here (rather than the
+    last, in the order the prompt's "Input Format" section documents: memory,
+    system reminder, attachments, requested skill, follow-up selection, context
+    enrichment, then ``<user_query>``. Tags here (rather than the
     Markdown the system prompt uses) mark the boundary between *data* and
     *instructions* — most of these blocks are app-supplied context that must
     never be read as the user making a request, which is exactly what
@@ -479,6 +483,13 @@ def build_message_content(
     stream itself. `source_url` entries add to the same two return values —
     see `_fetch_source_urls` for how those are split between inline text and
     mounted files.
+
+    ``<context_enrichment>`` carries one of two things, never both: the pages
+    behind `source_url` when the user named any, otherwise `enrichment_text`
+    from the pre-flight scout (core/context_enrichment.py). A URL the user
+    picked outranks anything the scout would have guessed at, and the caller
+    skips the scout entirely in that case — this is only where the precedence
+    is spelled out.
 
     Must be called after `reset_citation_registry(thread_id, turn)` —
     `register_document_citation` below needs that context already set up.
@@ -526,9 +537,9 @@ def build_message_content(
             + "\n".join(f"- {note}" for note in document_notes)
         )
 
-    priority_sources = ""
+    context_enrichment = enrichment_text
     if source_url:
-        priority_sources, source_files, source_doc_sources = _fetch_source_urls(source_url)
+        context_enrichment, source_files, source_doc_sources = _fetch_source_urls(source_url)
         files.update(source_files)
         doc_sources.extend(source_doc_sources)
 
@@ -539,9 +550,9 @@ def build_message_content(
     #   user_memory        — same for ~every turn/thread of this user until
     #                         they update it; put right after the (separately
     #                         cached, fully static) system prompt.
-    #   personalization    — mostly stable (language/location), only its
-    #                         trailing datetime field changes every turn.
-    #   attached_files/requested_skill/follow_up_selection/priority_sources —
+    #   system_reminder    — mostly stable (identity/language/location), only
+    #                         its trailing datetime field changes every turn.
+    #   attached_files/requested_skill/follow_up_selection/context_enrichment —
     #                         per-turn, usually absent entirely (dropped by
     #                         _tagged_block).
     #   user_query         — always unique, must stay last.
@@ -549,11 +560,11 @@ def build_message_content(
         block
         for block in (
             _tagged_block("user_memory", user_memory),
-            _tagged_block("personalization", personalization),
+            _tagged_block("system_reminder", system_reminder),
             _tagged_block("attached_files", attached_files),
             _tagged_block("requested_skill", skill),
             _tagged_block("follow_up_selection", follow_up_content),
-            _tagged_block("priority_sources", priority_sources),
+            _tagged_block("context_enrichment", context_enrichment),
             _tagged_block("user_query", query),
         )
         if block
@@ -587,19 +598,21 @@ async def _stream_agent(
     query: str,
     thread_id: str | None,
     model_id: str,
-    personalization: str,
+    system_reminder: str,
     attached_file_ids: list[dict[str, str]] | None,
     *,
     user_memory: str = "",
     follow_up_content: str | None = None,
     skill: str | None = None,
+    user_location: str | None = None,
+    user_local_datetime: str | None = None,
     turn: int | None = None,
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
-    """Drive the agent and yield SSE strings (everything except widgets).
+    """Run the pre-flight scout, then drive the agent, yielding SSE strings.
 
     If ``rewind_config`` is provided the agent replays / forks from that
     LangGraph checkpoint instead of appending a new user message. In that
@@ -613,8 +626,8 @@ async def _stream_agent(
     # traces separate by which weights actually served the turn.
     agent = get_agent(model_id)
 
-    # Must run before build_message_content: mounting a document assigns it a
-    # citation number via register_document_citation, which needs the
+    # Must run before the scout and build_message_content: both assign citation
+    # numbers (register_citation / register_document_citation), which need the
     # thread/turn context this sets up.
     await reset_citation_registry_async(thread_id, turn)
 
@@ -623,21 +636,38 @@ async def _stream_agent(
         config = rewind_config
         input_state = None
         doc_sources: list[dict] = []
+        enrichment = Enrichment()
     else:
         # `turn` rides along in `configurable` purely so the checkpointer's
         # aput hook can key the rewind_points map by it (see
         # core/database/checkpointer.py) — nothing in the graph itself reads it.
         config = {"configurable": {"thread_id": thread_id, "turn": turn}}
+        # Pre-flight scout, on the critical path by necessity: whatever it
+        # finds has to be inside the user message the agent is about to read,
+        # so the agent cannot start until it returns. It is timeout-bounded and
+        # fails soft to "no enrichment" (core/context_enrichment.py).
+        # Skipped entirely when the user named their own URLs — those are
+        # fetched inside build_message_content and fill the same
+        # `<context_enrichment>` block, and a URL the user picked outranks
+        # anything the scout would have guessed at.
+        enrichment = Enrichment()
+        if not source_url:
+            enrichment = await enrich_context(
+                query,
+                user_location=user_location,
+                user_local_datetime=user_local_datetime,
+            )
         content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             query,
-            personalization,
+            system_reminder,
             attached_file_ids,
             thread_id,
             user_memory=user_memory,
             follow_up_content=follow_up_content,
             skill=skill,
             source_url=source_url,
+            enrichment_text=enrichment.text,
         )
         # The agent is a deep agent with a StateBackend: hand it the skill files
         # (so SkillsMiddleware can surface/read them) plus any uploaded
@@ -682,11 +712,20 @@ async def _stream_agent(
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="prompt_leakage"))
         yield _sse({"type": "done", "sources": all_sources, "artifacts": artifact_ids})
 
+    # The scout's step, before anything the agent does — same event shape the
+    # agent's own tool loop emits below, so the frontend renders it as a
+    # regular step and (for weather/stock/currency) a live-data card.
+    for event in enrichment.events:
+        yield _sse(event)
+
     # Documents never go through a tool call, so they never hit the
     # ToolMessage-sourced citation path below — surface them the same way
     # tool-fetched sources are: dedup, accumulate, and push an SSE event now.
+    # The scout's citations ride the same path: they are registered in the
+    # registry like any tool's, but they were registered before the agent
+    # started, so nothing in the loop below would ever emit them.
     new_doc_sources = []
-    for s in [*doc_sources, *(extra_sources or [])]:
+    for s in [*enrichment.sources, *doc_sources, *(extra_sources or [])]:
         key = (s.get("title"), s.get("url"), s.get("content"))
         if key not in seen_sources:
             seen_sources.add(key)
@@ -852,7 +891,7 @@ async def run_agent_stream(
     query: str,
     thread_id: str | None,
     model_id: str = DEFAULT_MODEL,
-    personalization: str = "",
+    system_reminder: str = "",
     attached_file_ids: list[dict[str, str]] | None = None,
     user_memory: str = "",
     follow_up_content: str | None = None,
@@ -865,7 +904,14 @@ async def run_agent_stream(
     source_url: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
-    """Top-level SSE generator: widgets + agent, concurrent, fail-soft."""
+    """Top-level SSE generator: input gates, then the agent, fail-soft.
+
+    A single linear pass since the pre-flight scout became part of the turn's
+    input rather than a parallel side channel — it now runs inside
+    `_stream_agent`, ahead of the user message it feeds (see
+    core/context_enrichment.py). What used to be two racing producers merged
+    through a queue is just this loop.
+    """
     test_code = _match_test_error_command(query)
     if test_code is not None:
         yield _sse(error_payload(test_code, detail=f"test_command:{query.strip()}"))
@@ -876,71 +922,26 @@ async def run_agent_stream(
         yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
         return
 
-    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
-    _DONE = object()
-
-    async def widget_producer():
-        if rewind_config is not None:
-            # Rewind replays from a checkpoint — no new query to predict widgets for.
-            await queue.put(_DONE)
-            return
-        try:
-            for w in await predict_widgets(
-                query,
-                user_location=user_location,
-                user_local_datetime=user_local_datetime,
-            ):
-                await queue.put(_sse({"type": "widget", **w}))
-        except Exception as exc:  # widgets must never break the chat
-            print(f"[stream] widget producer error: {exc}")
-        finally:
-            await queue.put(_DONE)
-
-    async def agent_producer():
-        try:
-            async for event in _stream_agent(
-                query, thread_id, model_id, personalization, attached_file_ids,
-                user_memory=user_memory,
-                follow_up_content=follow_up_content,
-                skill=skill,
-                turn=turn,
-                rewind_config=rewind_config,
-                extra_sources=extra_sources,
-                source_url=source_url,
-                cancellation_event=cancellation_event,
-            ):
-                await queue.put(event)
-        except Exception as exc:
-            import traceback
-
-            traceback.print_exc()
-            await queue.put(_sse(error_payload(ErrorCode.GENERATION_FAILED, detail=str(exc))))
-        finally:
-            await queue.put(_DONE)
-
-    tasks = [asyncio.create_task(widget_producer()), asyncio.create_task(agent_producer())]
-    remaining = len(tasks)
-    # Hold the agent's terminal `done` event until BOTH producers have finished.
-    # The frontend stops reading the stream the instant it sees `done`, so emitting
-    # it while the (slower) widget predictor is still running would drop late
-    # widgets — e.g. the entity card, which makes two SearXNG calls.
-    final_done: str | None = None
     try:
-        while remaining:
-            item = await queue.get()
-            if item is _DONE:
-                remaining -= 1
-                continue
+        async for event in _stream_agent(
+            query, thread_id, model_id, system_reminder, attached_file_ids,
+            user_memory=user_memory,
+            follow_up_content=follow_up_content,
+            skill=skill,
+            user_location=user_location,
+            user_local_datetime=user_local_datetime,
+            turn=turn,
+            rewind_config=rewind_config,
+            extra_sources=extra_sources,
+            source_url=source_url,
+            cancellation_event=cancellation_event,
+        ):
             if cancellation_event and cancellation_event.is_set():
                 yield _sse({"type": "stopped"})
                 return
-            if '"type": "done"' in item:
-                final_done = item
-                continue
-            yield item
-        if final_done is not None:
-            yield final_done
-    finally:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
+            yield event
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+        yield _sse(error_payload(ErrorCode.GENERATION_FAILED, detail=str(exc)))

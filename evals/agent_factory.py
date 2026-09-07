@@ -22,7 +22,7 @@ from core.agent import (
     _register_harness_profiles,
 )
 from core.utils.data_model import Personalization
-from core.utils.utils import format_personalization
+from core.utils.utils import format_system_reminder
 
 RUN_LIMIT = 30
 
@@ -88,10 +88,10 @@ def skill_files() -> dict:
     return SKILL_FILES
 
 
-def build_personalization(cfg: dict[str, str]) -> str:
-    """Render the `<personalization>` block exactly as production renders it.
+def build_system_reminder(cfg: dict[str, str]) -> str:
+    """Render the `<system_reminder>` block exactly as production renders it.
 
-    Delegated to `format_personalization` rather than assembled here, which is
+    Delegated to `format_system_reminder` rather than assembled here, which is
     the fourth departure this module would otherwise have and the only one that
     was never deliberate. The hand-rolled version emitted `Response language:` /
     `User location:` / `User local date and time:`; production emits
@@ -115,7 +115,7 @@ def build_personalization(cfg: dict[str, str]) -> str:
     turns actually carry was tested by nothing. The sentinel asks for the same
     behaviour the omission was probing, in the words production uses.
     """
-    return format_personalization(
+    return format_system_reminder(
         Personalization(
             response_language=(cfg.get("language") or "").strip() or FOLLOW_QUERY,
             user_location=cfg.get("location") or "Unknown",
@@ -126,18 +126,18 @@ def build_personalization(cfg: dict[str, str]) -> str:
     )
 
 
-def build_user_message(query: str, personalization: str, *, skill: str | None = None) -> str:
+def build_user_message(query: str, system_reminder: str, *, skill: str | None = None) -> str:
     """Assemble the tagged user turn.
 
     Same block order as `core/stream.py::build_message_content` — memory,
-    personalization, requested skill, then the query last. Rebuilt here rather
+    system reminder, requested skill, then the query last. Rebuilt here rather
     than imported because the production function also resolves uploaded-file
     records out of the database, and no eval case has attachments; importing it
     would make every case depend on a DB round trip that returns nothing.
     """
     blocks = []
-    if personalization.strip():
-        blocks.append(f"<personalization>\n{personalization.strip()}\n</personalization>")
+    if system_reminder.strip():
+        blocks.append(f"<system_reminder>\n{system_reminder.strip()}\n</system_reminder>")
     if skill:
         blocks.append(f"<requested_skill>\n{skill}\n</requested_skill>")
     blocks.append(f"<user_query>\n{query.strip()}\n</user_query>")

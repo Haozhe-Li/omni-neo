@@ -99,6 +99,9 @@ gpt_oss_120b_medium_groq = ChatGroq(
     model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium", reasoning_format="parsed"
 )
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
+gpt_oss_20b_low = ChatGroq(
+    model="openai/gpt-oss-20b", temperature=0.1, reasoning_effort="low"
+)
 qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
@@ -223,16 +226,6 @@ qwen3_30b_a3b = ChatWandb(
 #     max_tokens=8192,
 # )
 
-omni_widget_predictor_14b = ChatOpenAI(
-    model=(
-        os.environ["WIDGET_PREDICTOR_14B_MODEL"]
-    ),
-    base_url="https://api.inference.wandb.ai/v1",
-    api_key=os.environ["WANDB_API_KEY"],
-    temperature=0,
-    max_tokens=128,
-)
-
 # For chat
 chat_llm = gpt_oss_120b_low
 vision_llm = gemma_4_31b
@@ -240,7 +233,8 @@ vision_llm = gemma_4_31b
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
 update_memories_llm = gpt_oss_20b
-widget_predictor_llm = omni_widget_predictor_14b
+# One structured-output call in front of every turn — see core/context_enrichment.py.
+context_enrich_llm = gpt_oss_20b_low
 credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
 research_schedule_llm = gpt_oss_120b_low

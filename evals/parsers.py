@@ -166,7 +166,7 @@ def extract_fences(text: str, lang: str) -> list[str]:
 # asked to be written. `charts_valid` and `map_fence` already grade these, and
 # counting them as "the model produced code" would let a chart answer satisfy a
 # code-writing check.
-_NON_CODE_FENCE_LANGS = {"echarts", "map"}
+_NON_CODE_FENCE_LANGS = {"echarts", "map", "text"}
 
 
 def extract_code_fences(text: str, lang: str | None = None) -> list[tuple[str, str]]:
@@ -283,6 +283,41 @@ def extract_textblocks(text: str) -> list[TextBlock]:
             )
         )
     return out
+
+
+@dataclass
+class TextFence:
+    """A ```text deliverable — the writing path's output contract."""
+
+    body: str
+    decoration: list[str]
+
+    @property
+    def words(self) -> int:
+        return count_words(self.body)
+
+
+def extract_text_fences(text: str) -> list[TextFence]:
+    """```text fences, per SYSTEM_PROMPT's "Writing and Rewrites" section.
+
+    A rewrite, polish, proofread or translation goes in one of these and
+    nowhere else. It is the successor to `<textblock>` for prose deliverables:
+    the fence renders with the product's copy button, which is what a user does
+    with a finished piece of text. `<textblock>` survives only for emails,
+    where the frontend renders a card off `type`/`subject` — see
+    `extract_textblocks`.
+
+    `decoration` reuses the textblock rule: the block holds finished plain text,
+    so `**bold**`, `#` headings and `[n]` markers leaking in are defects rather
+    than style quibbles.
+    """
+    return [
+        TextFence(
+            body=body.strip(),
+            decoration=[d.strip() for d in _TB_DECORATION_RE.findall(body)][:3],
+        )
+        for body in extract_fences(text, "text")
+    ]
 
 
 def extract_question(text: str) -> QuestionBlock | None:

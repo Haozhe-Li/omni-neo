@@ -33,7 +33,7 @@ from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequ
 from core.check_source import check_source_matches
 from core.utils.citations import reset_citation_registry_async
 from core.utils.errors import ErrorCode, error_payload
-from core.utils.utils import format_personalization, format_user_memory
+from core.utils.utils import format_system_reminder, format_user_memory
 from core.auth import get_current_user
 from core.database.db_user_threads import (
     get_thread_messages,
@@ -98,7 +98,7 @@ async def _generate_background(
     user_id: str,
     query: str,
     model_id: str,
-    personalization: str,
+    system_reminder: str,
     attached_file_ids: list | None,
     user_location: str | None,
     user_local_datetime: str | None,
@@ -147,7 +147,7 @@ async def _generate_background(
             query=query,
             thread_id=thread_id,
             model_id=model_id,
-            personalization=personalization,
+            system_reminder=system_reminder,
             attached_file_ids=attached_file_ids,
             user_memory=user_memory,
             follow_up_content=follow_up_content,
@@ -518,7 +518,7 @@ async def chat(
     query_text = request.query
     requested_skill = resolve_skill_name(request.skill)
 
-    personalization_str = format_personalization(request.personalization)
+    system_reminder_str = format_system_reminder(request.personalization)
     user_memory_str = format_user_memory(stored_memory) if should_inject_memory else ""
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
@@ -537,7 +537,7 @@ async def chat(
                 user_id=user_id,
                 query=query_text,
                 model_id=model.id,
-                personalization=personalization_str,
+                system_reminder=system_reminder_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
                 follow_up_content=request.follow_up_content,
@@ -568,7 +568,7 @@ async def chat(
                 query=query_text,
                 thread_id=None,
                 model_id=model.id,
-                personalization=personalization_str,
+                system_reminder=system_reminder_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
                 follow_up_content=request.follow_up_content,
@@ -777,7 +777,7 @@ async def api_rewind_thread(
     # the checkpointer, so re-injecting it on an edit further into the
     # thread would just duplicate it.
     p = body.personalization
-    personalization_str = format_personalization(p)
+    system_reminder_str = format_system_reminder(p)
     user_memory_str = ""
     if p and p.memory_enabled and target_turn == 1:
         stored_memory = await asyncio.to_thread(get_user_memory, user_id)
@@ -794,7 +794,7 @@ async def api_rewind_thread(
         await reset_citation_registry_async(thread_id, target_turn)
         new_content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
-            body.new_query, personalization_str, body.attached_file_ids, thread_id,
+            body.new_query, system_reminder_str, body.attached_file_ids, thread_id,
             user_memory=user_memory_str,
         )
     else:
@@ -824,7 +824,7 @@ async def api_rewind_thread(
                 query="",  # unused in rewind mode
                 thread_id=thread_id,
                 model_id=model.id,
-                personalization=personalization_str,
+                system_reminder=system_reminder_str,
                 attached_file_ids=body.attached_file_ids,
                 user_location=p.user_location if p else None,
                 user_local_datetime=p.user_local_datetime if p else None,
