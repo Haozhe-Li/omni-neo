@@ -646,12 +646,29 @@ async def _stream_agent(
         # finds has to be inside the user message the agent is about to read,
         # so the agent cannot start until it returns. It is timeout-bounded and
         # fails soft to "no enrichment" (core/context_enrichment.py).
-        # Skipped entirely when the user named their own URLs — those are
-        # fetched inside build_message_content and fill the same
-        # `<context_enrichment>` block, and a URL the user picked outranks
-        # anything the scout would have guessed at.
+        #
+        # Two conditions gate it:
+        #
+        # - Not when the user named their own URLs. Those are fetched inside
+        #   build_message_content and fill the same `<context_enrichment>`
+        #   block, and a URL the user picked outranks anything the scout would
+        #   have guessed at. That path is deterministic and stays available on
+        #   every turn.
+        # - First turn only. The scout classifies the raw query with no
+        #   conversation history — `enrich_context` is handed the query string
+        #   and nothing else — so on a follow-up like "那它的市值呢" it sees an
+        #   unresolvable fragment and would either skip or search the wrong
+        #   subject. The agent, which does have the history, is strictly better
+        #   placed to decide what to retrieve by then, and paying blocking
+        #   latency to guess ahead of it is a bad trade.
+        #
+        # `turn is None` is a client too old to send one (QueryRequest.turn is
+        # frontend-assigned), and a thread-less direct stream has no persisted
+        # history at all. Both count as a first turn — the same rule, for the
+        # same reason, as memory injection in core/routers/chat.py.
+        first_turn = thread_id is None or turn is None or turn == 1
         enrichment = Enrichment()
-        if not source_url:
+        if not source_url and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,

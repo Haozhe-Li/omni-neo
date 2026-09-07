@@ -17,7 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from core.agent import (
     SKILL_FILES,
     SYSTEM_PROMPT,
-    RETRIEVAL_TOOLS,
+    AGENT_TOOLS,
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
@@ -73,7 +73,7 @@ def build_eval_agent(
         # the model being broken rather than the name being illegal.
         name="omni-eval",
         model=llm,
-        tools=tools if tools is not None else RETRIEVAL_TOOLS,
+        tools=tools if tools is not None else AGENT_TOOLS,
         system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE],
         checkpointer=InMemorySaver(),

@@ -50,7 +50,7 @@ from deepagents.backends.utils import create_file_data
 from pydantic import BaseModel, Field
 
 import core.database.checkpointer as _db
-from core.tools.adapters import RETRIEVAL_TOOLS
+from core.tools.adapters import AGENT_TOOLS
 from core.chat_models import CHAT_MODELS, ChatModel, resolve_model
 from core.llm import *
 
@@ -626,7 +626,7 @@ def build_scheduled_agent():
     return create_deep_agent(
         name="Omni Scheduled",
         model=gemini_flash_lite_latest,
-        tools=RETRIEVAL_TOOLS,
+        tools=AGENT_TOOLS,
         system_prompt=_SCHEDULED_PROMPT,
         skills=[SKILLS_SOURCE] if SCHEDULED_SKILL_FILES else None,
         checkpointer=_db.checkpointer,
@@ -823,7 +823,7 @@ def build_agent(model: ChatModel):
         # `^[^\s<|\\/>]+$`, so a space here 400s every luna request.
         name=f"omni-{model.id}",
         model=model.llm,
-        tools=RETRIEVAL_TOOLS,
+        tools=AGENT_TOOLS,
         system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE] if SKILL_FILES else None,
         checkpointer=_db.checkpointer,

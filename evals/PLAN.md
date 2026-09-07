@@ -29,7 +29,7 @@
 | **移除 `ModelFallbackMiddleware`** | 否则 Cerebras 挂掉时静默 fallback 到 Gemini,你以为在测 gemma 实际在测 gemini —— 整批数据作废且无感知 |
 | `model` 参数化 | 模型矩阵的前提,`build_agent("pro")` 目前硬编码 `pro_llm` |
 
-其余保持一致:`PRO_PROMPT`、`RETRIEVAL_TOOLS`、`ToolCallLimitMiddleware(run_limit=30)`、`input_state["files"] = PRO_SKILL_FILES`。
+其余保持一致:`PRO_PROMPT`、`AGENT_TOOLS`、`ToolCallLimitMiddleware(run_limit=30)`、`input_state["files"] = PRO_SKILL_FILES`。
 
 `<personalization>` 块固定注入(语言 / 地点 / **写死的日期时间**),否则"今年"、"最近"类问题跨天不可复现。
 

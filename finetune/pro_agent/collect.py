@@ -60,7 +60,7 @@ import core.stream as stream_mod  # noqa: E402
 from core.agent import (  # noqa: E402
     SYSTEM_PROMPT,
     SKILL_FILES,
-    RETRIEVAL_TOOLS,
+    AGENT_TOOLS,
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
@@ -236,7 +236,7 @@ async def rollout(spec: Spec, q: Query, sample: int, cache: ToolCache) -> Rollou
     agent = create_deep_agent(
         name="omni-eval-pro",
         model=gpt_5_6_luna,
-        tools=wrap_tools(RETRIEVAL_TOOLS, cache),
+        tools=wrap_tools(AGENT_TOOLS, cache),
         system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE],
         checkpointer=InMemorySaver(),

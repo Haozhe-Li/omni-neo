@@ -192,7 +192,7 @@ class ToolCache:
 def wrap_tools(tools: list[Any], cache: ToolCache) -> list[Any]:
     """Return `tools` with every cacheable one memoised through `cache`.
 
-    Handles both shapes `core.agent.RETRIEVAL_TOOLS` actually contains: most
+    Handles both shapes `core.agent.AGENT_TOOLS` actually contains: most
     entries are plain functions that LangChain converts to tools itself by
     reading their signature and docstring, and only `python_exec` arrives as a
     `BaseTool`. Wrapping a bare function has to preserve that signature — the

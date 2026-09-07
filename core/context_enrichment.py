@@ -20,6 +20,10 @@ Design constraints, all deliberate:
   the agent cannot start until it finishes. Everything here is therefore
   timeout-bounded, and every failure degrades to "no enrichment" rather than
   to an error.
+- **First turn only**, and the caller enforces that (`_stream_agent` in
+  core/stream.py, which is also where the exemption for user-named URLs
+  lives). Nothing here sees the conversation, so there is nothing useful for
+  it to say about a follow-up.
 - **Citations are the real thing.** ``web_search`` here is the same
   ``core.tools.adapters.web_search`` the agent calls, so its results are
   credibility-classified and registered in the citation registry exactly like

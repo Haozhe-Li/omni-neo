@@ -48,9 +48,9 @@ async def run_case(
     if case.fixture:
         load_fixture(cache, case.fixture)
 
-    from core.agent import RETRIEVAL_TOOLS
+    from core.agent import AGENT_TOOLS
 
-    agent = build_eval_agent(model.llm, tools=wrap_tools(RETRIEVAL_TOOLS, cache))
+    agent = build_eval_agent(model.llm, tools=wrap_tools(AGENT_TOOLS, cache))
     from evals.agent_factory import skill_files
 
     thread_id = f"eval-{uuid.uuid4()}"

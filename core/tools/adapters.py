@@ -394,7 +394,7 @@ def currency_convert(base_currency: str, target_currency: str) -> dict:
 
 
 # The tools handed to the agent, in the order they're offered.
-RETRIEVAL_TOOLS = [
+AGENT_TOOLS = [
     web_search,
     fetch_url,
     weather_current,
