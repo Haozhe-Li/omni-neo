@@ -349,6 +349,71 @@ _ACTIONS: dict[str, _Action] = {
 
 # ── Result ──────────────────────────────────────────────────────────────────
 
+# ── Deterministic shortcut ──────────────────────────────────────────────────
+# A short "what is X" is the one query shape whose routing needs no judgement:
+# it is a lookup, the search query is the question itself, and the scout model
+# has never decided otherwise on one. Skipping the classification call takes
+# ~0.4s off the front of the turn — and this sits on the critical path, so that
+# is 0.4s the user spends watching an empty screen.
+#
+# Everything else still goes through the model. The shape of a weather, stock,
+# FX or direct-response request is not reliably decidable by pattern, and a
+# wrong deterministic answer is worse than a slower right one.
+
+_ASK_PATTERNS = re.compile(
+    r"""(?ix)
+    (?: ^|\b )
+    (?: what\s+(?:is|are|was|were)\b | what's\b | who\s+(?:is|are)\b
+      | tell\s+me\b | explain\b | define\b
+      | how\s+(?:does|do)\b | meaning\s+of\b )
+    """
+)
+# Chinese has no word boundaries for \b to hang on, so these are plain
+# substrings — which is also why they are written as whole phrases rather than
+# fragments like "解释".
+_ASK_PATTERNS_ZH = (
+    "什么是", "是什么", "什么叫", "何为", "是啥", "啥是",
+    "介绍一下", "解释一下", "讲讲", "说说", "科普", "告诉我", "的意思","多少"
+)
+
+# Queries that match the ask patterns but must still go to the model. Every one
+# of these has a dedicated tool whose result the frontend renders as a live
+# card, and "what is the weather in Tokyo" matches "what is" perfectly — routed
+# to web_search it would silently cost the user the weather widget, which is a
+# visible product regression rather than a slower answer.
+_SHORTCUT_BLOCKERS = (
+    "weather", "temperature", "forecast", "raining", "rain today",
+    "天气", "气温", "下雨", "温度",
+    "stock", "share price", "ticker", "earnings", "market cap",
+    "股价", "股票", "市值", "财报",
+    "exchange rate", "convert", "汇率", "兑换", "换算",
+)
+
+# Words, not characters: `word_count` counts each CJK character as one and
+# whitespace-splits the rest, so this is ~20 Chinese characters or ~20 English
+# words. Past that a question is usually carrying enough context that the
+# model's reformulation earns its latency.
+_SHORTCUT_WORD_LIMIT = 20
+
+
+def shortcut_decision(query: str) -> EnrichmentDecision | None:
+    """A `web_search` decision reached without asking the model, or None.
+
+    Returns the query *verbatim* as the search query. That is the point: for a
+    short question the text already is a good search string, and the value here
+    is skipping the round trip, not improving on it.
+    """
+    q = query.strip()
+    if not q or word_count(q) >= _SHORTCUT_WORD_LIMIT:
+        return None
+    lowered = q.lower()
+    if any(b in lowered for b in _SHORTCUT_BLOCKERS):
+        return None
+    if not (_ASK_PATTERNS.search(q) or any(p in q for p in _ASK_PATTERNS_ZH)):
+        return None
+    return EnrichmentDecision(action="web_search", search_query=q)
+
+
 @dataclass
 class Enrichment:
     """What the scout produced for one turn.
@@ -425,7 +490,10 @@ async def enrich_context(
         return Enrichment()
 
     t0 = time.monotonic()
-    decision = await classify(query, user_location, user_local_datetime)
+    decision = shortcut_decision(query)
+    shortcut = decision is not None
+    if decision is None:
+        decision = await classify(query, user_location, user_local_datetime)
     if decision is None:
         return Enrichment()
     t_classify = time.monotonic() - t0
@@ -487,7 +555,8 @@ async def enrich_context(
         events.append({"type": "widget", **widget})
 
     logger.info(
-        "[context_enrichment] %.2fs (classify %.2fs) action=%s tool=%s args=%s sources=%d",
-        time.monotonic() - t0, t_classify, decision.action, action.tool, args, len(sources),
+        "[context_enrichment] %.2fs (%s %.2fs) action=%s tool=%s args=%s sources=%d",
+        time.monotonic() - t0, "shortcut" if shortcut else "classify",
+        t_classify, decision.action, action.tool, args, len(sources),
     )
     return Enrichment(action=decision.action, text=text, events=events, sources=sources)

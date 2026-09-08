@@ -769,12 +769,12 @@ class VisionModelMiddleware(AgentMiddleware):
     Qwen3-30B-A3B-Instruct served by W&B Inference, which is text-only, so
     without this middleware every image turn in the product 400s.
 
-    Note what this does *not* do — it swaps the model, not the prompt. Gemma
+    Note what this does *not* do — it swaps the model, not the prompt. Luna
     receives the same system prompt the adapter was trained on, which is correct
-    (it is a general instruction-following model and reads it fine) but does
-    mean image turns are served by a model that has never been tuned on this
-    harness. Expect image answers to behave like the gemma baseline, not like
-    the fine-tune."""
+    (it is the teacher those trajectories were distilled from, so it reads the
+    prompt natively) but does mean image turns are served by a model that has
+    never been tuned on this harness. Expect image answers to behave like the
+    luna baseline, not like the fine-tune."""
 
     def __init__(self, vision_model):
         super().__init__()

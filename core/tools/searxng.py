@@ -18,6 +18,7 @@ canonical shape the tool adapters expect (see ``core/tools/adapters.py``).
 """
 
 import os
+import time
 
 import httpx
 
@@ -29,6 +30,70 @@ SEARXNG_BASE_URL = os.environ.get(
 ).rstrip("/")
 
 _DEFAULT_TIMEOUT = 10.0
+
+# Which engines `search_web` asks for, by name, in one request. Sent as
+# SearXNG's `engines` query param — a per-request selection that needs no
+# change to the instance's settings.yml.
+#
+# Naming them beats relying on the instance's default category. That default
+# was four web engines plus six lookup plugins, and on 2026-09-07 all four of
+# the real ones were suspended at once (brave/google cse rate-limited,
+# startpage CAPTCHA'd, duckduckgo timing out) — every search in the product
+# returned nothing, with no redundancy to fall back on. This list is the whole
+# `web` category instead, so a single engine dying costs coverage rather than
+# service.
+#
+# Kept deliberately wide, including engines currently scoring badly on the
+# instance's own reliability panel: they recover, and the cost of carrying a
+# dead one is a name in `unresponsive_engines`, while the cost of a short list
+# is another total outage. Quality is filtered downstream — `_attribute` in
+# core/tools/adapters.py credibility-classifies every result and drops the junk
+# before the agent reads it, which is what handles the two engines measured
+# returning off-query or spam results here (bing answered a vaccines query with
+# "Integer Calculator"; qwant returns SEO-farm domains on Chinese queries).
+_DEFAULT_ENGINES = (
+    "bing",
+    "brave",
+    "duckduckgo",
+    "google",
+    "google cse",
+    "mojeek",
+    "qwant",
+    "startpage",
+    "yahoo",
+)
+SEARXNG_ENGINES = os.environ.get("SEARXNG_ENGINES", ",".join(_DEFAULT_ENGINES)).strip()
+
+# Statuses worth trying again. 429/503 are the bot limiter; 400/422 are what
+# the instance returns when the engines it queried all failed, which is a
+# property of that moment rather than of the query.
+_RETRY_STATUS = frozenset({400, 422, 429, 500, 502, 503, 504})
+
+
+class SearxngUnavailable(RuntimeError):
+    """Every upstream engine failed, so the empty body means nothing.
+
+    SearXNG does not fail the request when the engines it fans out to do: it
+    answers 200 with `results: []` and names the casualties in
+    `unresponsive_engines`. Read naively that is indistinguishable from a query
+    with genuinely no matches, and the difference matters enormously — the
+    caller tells the agent "no results found, please change your query", so the
+    agent rewrites a perfectly good query, searches again into the same outage,
+    and burns its budget without ever being able to tell the user the truth.
+
+    Raised so the retry loop treats it like any other transport failure, and so
+    a persistent outage surfaces to `core/tools/adapters.py` as an exception,
+    where it degrades to "search unavailable — say you could not verify this"
+    instead of a lie about the query.
+    """
+_MAX_ATTEMPTS = 3
+# Fewer attempts when every engine is down. An HTTP error or a timeout is often
+# one bad request and worth three tries; engines suspended for rate limiting or
+# sitting behind a CAPTCHA will not recover inside a 4-second backoff, and at
+# three attempts each search costs ~11s of pure waiting — several of those in
+# one turn is a minute of silence before the agent can even say it failed.
+_MAX_ATTEMPTS_ALL_ENGINES_DOWN = 2
+_RETRY_BACKOFF = 1.5
 
 # SearXNG's bot limiter looks at request headers; a client with no
 # User-Agent is one of the things it filters out.
@@ -66,6 +131,54 @@ def normalize_time_range(time_range: str | None) -> str | None:
     return _LEGACY_TBS_TO_TIME_RANGE.get(value)
 
 
+def _warn_if_engines_ignored(dead_engines: list) -> None:
+    """Catch a mistyped `SEARXNG_ENGINES` before it looks like an outage.
+
+    SearXNG does not reject an engine name it does not know — it quietly falls
+    back to the whole general category instead. Verified: `engines=` with a
+    nonsense value came back reporting brave/duckduckgo/google cse/startpage as
+    unresponsive, which are exactly the defaults and none of them was asked
+    for. So a typo produces the precise failure the setting exists to escape,
+    and looks identical to "the engine I picked has no results".
+
+    An engine we did not ask for appearing in the casualty list is the tell.
+    """
+    if not SEARXNG_ENGINES or not dead_engines:
+        return
+    asked = {e.strip().lower() for e in SEARXNG_ENGINES.split(",") if e.strip()}
+    reported = {
+        (d[0] if isinstance(d, (list, tuple)) else str(d)).strip().lower()
+        for d in dead_engines
+    }
+    unasked = reported - asked
+    if unasked:
+        print(
+            f"[searxng] SEARXNG_ENGINES={SEARXNG_ENGINES!r} was ignored — the "
+            f"instance fell back to its default engines ({', '.join(sorted(unasked))}). "
+            "Check the names against the instance's /config."
+        )
+
+
+def _raise_if_all_engines_down(body: dict) -> None:
+    """Reject an empty body that is empty *because the engines failed*.
+
+    Only when the response carries nothing usable at all AND names unresponsive
+    engines. A query with genuinely no matches comes back empty with no
+    casualties, and that is a real answer the caller should pass through as
+    "no results" — the distinction is the whole point of this function.
+    """
+    if body.get("results") or body.get("answers") or body.get("infoboxes"):
+        return
+    dead = body.get("unresponsive_engines") or []
+    if not dead:
+        return
+    names = ", ".join(
+        f"{d[0]} ({d[1]})" if isinstance(d, (list, tuple)) and len(d) > 1 else str(d)
+        for d in dead[:6]
+    )
+    raise SearxngUnavailable(f"no results and every engine failed: {names}")
+
+
 def searxng_search(
     query: str,
     *,
@@ -79,8 +192,18 @@ def searxng_search(
 ) -> dict:
     """Run one SearXNG query and return the raw JSON body.
 
-    Raises on transport/HTTP errors — callers decide whether a failed search
-    is fatal or degrades to an empty result.
+    Retries a handful of times before giving up. SearXNG is a metasearch
+    front-end over engines that rate-limit it, and it answers a request it
+    could not serve with 4xx as readily as 5xx — 429 and 503 from the limiter,
+    but also 400/422 when the upstream engines it fanned out to all came back
+    empty or malformed. Those are transient in the ordinary case: the same
+    query a second later fans out to a different set of responsive engines and
+    succeeds. Without a retry each one costs a whole turn its evidence, and
+    during data collection it silently produces a trajectory that answers with
+    no sources at all.
+
+    Raises after the last attempt — callers decide whether a failed search is
+    fatal or degrades to an empty result.
     """
     params: dict[str, str | int] = {
         "q": query,
@@ -98,16 +221,37 @@ def searxng_search(
     if language:
         params["language"] = language
 
-    resp = httpx.get(
-        f"{SEARXNG_BASE_URL}/search",
-        params=params,
-        headers=_HEADERS,
-        timeout=timeout,
-        follow_redirects=True,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    return body if isinstance(body, dict) else {}
+    last: Exception | None = None
+    attempts = _MAX_ATTEMPTS
+    for attempt in range(attempts):
+        try:
+            resp = httpx.get(
+                f"{SEARXNG_BASE_URL}/search",
+                params=params,
+                headers=_HEADERS,
+                timeout=timeout,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if not isinstance(body, dict):
+                return {}
+            _raise_if_all_engines_down(body)
+            return body
+        except httpx.HTTPStatusError as exc:
+            last = exc
+            if exc.response.status_code not in _RETRY_STATUS:
+                raise
+        except (httpx.TransportError, ValueError, SearxngUnavailable) as exc:
+            # TransportError covers timeouts and connection resets; ValueError
+            # is a body that did not parse as JSON, which the instance returns
+            # as an HTML error page under load.
+            last = exc
+            if isinstance(exc, SearxngUnavailable):
+                attempts = min(attempts, _MAX_ATTEMPTS_ALL_ENGINES_DOWN)
+        if attempt < attempts - 1:
+            time.sleep(_RETRY_BACKOFF * (2 ** attempt))
+    raise last if last else RuntimeError("searxng: exhausted retries with no error")
 
 
 # ── Web search ──────────────────────────────────────────────────────────────
@@ -126,7 +270,9 @@ def search_web(
     same way Serper's answerBox/knowledgeGraph used to be — they're direct
     answers to the query and belong at the top of what the agent reads.
     """
-    raw = searxng_search(query, time_range=time_range)
+    raw = searxng_search(query, time_range=time_range, engines=SEARXNG_ENGINES or None)
+    dead_engines = raw.get("unresponsive_engines") or []
+    _warn_if_engines_ignored(dead_engines)
 
     normalized: list[dict] = []
 
@@ -178,6 +324,20 @@ def search_web(
             if published:
                 entry["published_date"] = published
             normalized.append(entry)
+
+    # The outage check has to run *here*, on what survived normalization, not on
+    # the raw body. `searxng_search` already rejects a body with nothing in it
+    # at all, but a body can carry an infobox that this function then drops (no
+    # url, no content) — "how vaccines work" does exactly that while all four
+    # web engines are suspended. Judged on the raw body it looks like a served
+    # query; judged on the output it is an outage, and only the caller's view
+    # is the honest one.
+    if not normalized and dead_engines:
+        names = ", ".join(
+            f"{d[0]} ({d[1]})" if isinstance(d, (list, tuple)) and len(d) > 1 else str(d)
+            for d in dead_engines[:6]
+        )
+        raise SearxngUnavailable(f"nothing usable and every engine failed: {names}")
 
     return normalized[:k]
 

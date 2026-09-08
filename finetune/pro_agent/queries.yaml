@@ -179,6 +179,20 @@ categories:
       # 加上它不改变这十条的判定,只是把原本隐含的要求写出来。
       - {key: no_textblock}
 
+  read-url:
+    n: 6
+    why: >-
+      用户直接把网址贴在问题里(「读一下这个页面然后总结」)。生产上这条路
+      **不经过 agent 的 fetch_url** —— 前端把 URL 作为 `source_url` 发过来,
+      后端在 `<context_enrichment>` 里预抓好:第一方页面(omniknows.xyz)整篇
+      内联,外部页面挂到 `/sources/NN.md` 让 agent 自己 `read_file`。
+      两条路的形状完全不同,都得有数据。
+      这也是唯一一类 **scout 不会跑**的 query —— 用户钉的 URL 优先级高于
+      scout 的猜测(core/stream.py::_stream_agent),所以它同时是那条优先级
+      规则的正例。
+    checks:
+      - {key: citation_count, args: {min: 1}}
+
   places:
     n: 8
     why: >-
@@ -614,6 +628,47 @@ queries:
   - {id: pl-06, cat: places, lang: en, text: "Any good vegetarian restaurants near the Mission in San Francisco?", block: attached_files}
   - {id: pl-07, cat: places, lang: zh, text: "成都春熙路附近有什么本地人常去的火锅店?"}
   - {id: pl-08, cat: places, lang: en, text: "Recommend a few museums worth visiting in central Berlin."}
+
+  # ── read-url ──────────────────────────────────────────────────────────────
+  # `block: priority_sources` 是**输入旋钮**的名字(它填的是 `source_url`),
+  # 渲染出来的标签是 `<context_enrichment>`。ru-04 故意指向第一方页面,走
+  # `first_party_redis_shortcut` 的内联路径,其余走 Spider 挂载路径。
+  - id: ru-01
+    cat: read-url
+    lang: zh
+    text: "读一下这个页面,帮我总结成几个要点:https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)']
+  - id: ru-02
+    cat: read-url
+    lang: en
+    text: "Read this page and summarize it for me: https://en.wikipedia.org/wiki/Photovoltaics"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Photovoltaics']
+  - id: ru-03
+    cat: read-url
+    lang: zh
+    text: "这个页面讲了什么?我主要想知道成本相关的部分:https://en.wikipedia.org/wiki/Desalination"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Desalination']
+  - id: ru-04
+    cat: read-url
+    lang: en
+    text: "Have a look at https://omniknows.xyz/benchmark/llms.txt and tell me what it actually measures."
+    block: priority_sources
+    source_url: ['https://omniknows.xyz/benchmark/llms.txt']
+  - id: ru-05
+    cat: read-url
+    lang: zh
+    text: "这两个页面对比着看一下,主要差别在哪:https://en.wikipedia.org/wiki/Lithium-ion_battery 和 https://en.wikipedia.org/wiki/Sodium-ion_battery"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Lithium-ion_battery', 'https://en.wikipedia.org/wiki/Sodium-ion_battery']
+  - id: ru-06
+    cat: read-url
+    lang: en
+    text: "Summarize this for me and tell me what it leaves out: https://en.wikipedia.org/wiki/Heat_pump"
+    block: priority_sources
+    source_url: ['https://en.wikipedia.org/wiki/Heat_pump']
 
   # ══════════════════════════════════════════════════════════════════════════
   # compute (8) —— python_exec,禁止心算

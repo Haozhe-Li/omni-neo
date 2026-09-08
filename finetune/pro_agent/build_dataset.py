@@ -159,7 +159,12 @@ def shrink_row(row: dict, cap: int, tok) -> tuple[dict, int]:
     return best if best else apply(0)
 
 
-_PERSONALIZATION_RE = re.compile(r"<personalization>\n(.*?)\n</personalization>", re.S)
+_SYSTEM_REMINDER_RE = re.compile(r"<system_reminder>\n(.*?)\n</system_reminder>", re.S)
+
+
+def _is_subsequence(small: list[str], big: list[str]) -> bool:
+    it = iter(big)
+    return all(item in it for item in small)
 
 
 def check_personalization_labels(traces: list[dict]) -> None:
@@ -185,30 +190,41 @@ def check_personalization_labels(traces: list[dict]) -> None:
     this cannot drift out of sync with the thing it is checking.
     """
     from core.utils.data_model import Personalization
-    from core.utils.utils import format_personalization
+    from core.utils.utils import format_system_reminder
 
-    probe = format_personalization(
+    probe = format_system_reminder(
         Personalization(response_language="L", user_location="C", user_local_datetime="T")
     )
-    expected = [ln.split(":", 1)[0] for ln in probe.strip().split("\n")]
+    # Only the `Label: value` lines. `format_system_reminder` opens with the
+    # identity sentence, which carries no colon and is not a field — splitting
+    # it on ":" would invent a label that no trace can ever match.
+    expected = [ln.split(":", 1)[0] for ln in probe.strip().split("\n") if ":" in ln]
 
     stale: list[str] = []
     for t in traces:
         user = next((m for m in t["messages"] if m["role"] == "user"), None)
-        block = _PERSONALIZATION_RE.search((user or {}).get("content") or "")
+        block = _SYSTEM_REMINDER_RE.search((user or {}).get("content") or "")
         if not block:
             continue
-        labels = [ln.split(":", 1)[0] for ln in block.group(1).split("\n")]
-        if labels != expected:
-            stale.append(f"{t['id']}: {labels}")
+        labels = [ln.split(":", 1)[0] for ln in block.group(1).split("\n") if ":" in ln]
+        # Subsequence, not equality. `format_system_reminder` emits a field only
+        # when the request set it, so a row collected with no personalization at
+        # all carries the identity line and nothing else — a real production
+        # shape, and one the randomised envelopes produce on purpose. What must
+        # never happen is a label production does not use, or production's
+        # labels in a different order: that is the drift this check exists for
+        # (v4 trained on `Response language:` while production sent
+        # `Response Language:`).
+        if not _is_subsequence(labels, expected):
+            stale.append(f"{t['id']} v{t.get('variant', 0)}: {labels}")
     if stale:
         raise SystemExit(
-            f"{len(stale)} trace(s) label <personalization> differently than production "
+            f"{len(stale)} trace(s) label <system_reminder> differently than production "
             f"({expected}) — re-collect them, or relabel in place:\n  "
             + "\n  ".join(stale[:10])
             + (f"\n  ... and {len(stale) - 10} more" if len(stale) > 10 else "")
         )
-    print(f"personalization labels match production: {expected}")
+    print(f"system_reminder labels match production: {expected}")
 
 
 def dump_row(row: dict) -> str:
@@ -228,11 +244,19 @@ def main() -> int:
     args = ap.parse_args()
 
     traces = read_jsonl(DATA / "traces.jsonl")
-    # Later rows win: the retry pass re-collected queries the first pass
-    # rejected, and its version is the one that cleared the rubric.
-    by_id = {t["id"]: t for t in traces}
-    rows_in = list(by_id.values())
-    print(f"read {len(traces)} records -> {len(rows_in)} unique queries")
+    # Keyed on (query, variant), not query alone. One query is collected under
+    # several context envelopes — a memory block or none, a pinned language or
+    # production's follow-the-query default, a different clock and city — and
+    # each is a distinct training example: the whole point is an adapter that
+    # is invariant to the envelope. Keying on `id` alone silently kept one
+    # variant per query and dropped the rest.
+    #
+    # Later rows still win within a key, which is what the retry pass relies on
+    # (it re-collects exactly the (query, variant) pairs the first pass lost).
+    by_key = {(t["id"], t.get("variant", 0)): t for t in traces}
+    rows_in = list(by_key.values())
+    n_q = len({t["id"] for t in rows_in})
+    print(f"read {len(traces)} records -> {len(rows_in)} rows across {n_q} queries")
 
     prompts = {t["system_prompt"] for t in rows_in}
     if len(prompts) != 1:

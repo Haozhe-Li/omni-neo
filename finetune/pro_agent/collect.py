@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import random
 import sys
 import time
 from dataclasses import dataclass, field
@@ -56,6 +58,7 @@ from langchain.agents.middleware import (  # noqa: E402
 from langchain_core.messages import AIMessage, ToolMessage  # noqa: E402
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
+import core.context_enrichment as enrich_mod  # noqa: E402
 import core.stream as stream_mod  # noqa: E402
 from core.agent import (  # noqa: E402
     SYSTEM_PROMPT,
@@ -64,19 +67,32 @@ from core.agent import (  # noqa: E402
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
+from core.tools.adapters import _UNAVAILABLE  # noqa: E402
 from core.utils.citations import all_citations, reset_citation_registry  # noqa: E402
+from core.context_enrichment import Enrichment, enrich_context  # noqa: E402
 from core.utils.data_model import Personalization  # noqa: E402
-from core.utils.utils import format_personalization  # noqa: E402
+from core.utils.utils import format_system_reminder  # noqa: E402
 from evals import checks as checks_mod  # noqa: E402
 from evals.config import CheckSpec  # noqa: E402
 from evals.runner import _normalize_stream_item, _text_of  # noqa: E402
 from evals.toolcache import DEFAULT_CACHE_DIR, ToolCache, wrap_tools  # noqa: E402
 from evals.trace import RunTrace, ToolCallRecord, TurnTrace  # noqa: E402
 
-from spec import Query, Spec, doc_path, load  # noqa: E402
+from spec import (  # noqa: E402
+    FOLLOW_QUERY,
+    SOURCE_URL_BLOCKS,
+    Query,
+    Spec,
+    doc_path,
+    load,
+)
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "dataset"
+
+# Read off the adapter rather than retyped, so a reworded sentinel cannot
+# silently stop being detected here.
+_SEARCH_UNAVAILABLE = _UNAVAILABLE[0]["title"]
 
 # Which skill a `<requested_skill>` block should name, by category. Derived
 # rather than authored per query: the mapping is what the category already
@@ -105,6 +121,168 @@ USER_MEMORY_POOL = [
 ]
 
 
+# ── Context variants ────────────────────────────────────────────────────────
+# One query, several *envelopes*. Production wraps the same question in wildly
+# varying context — a memory block or none, a pinned response language or the
+# follow-the-query default, a location and a clock that are never the same
+# twice — and the adapter has to be invariant to all of it. One fixed envelope
+# per query teaches the opposite: every one of the 147 traces before this
+# carried a pinned language and a datetime inside a two-week window, so
+# "2026-08" and "简体中文" were as much a part of each example as the task was.
+#
+# Variant 0 is always the query's *authored* envelope, so each query keeps one
+# canonical row comparable with earlier rounds and the randomisation only ever
+# adds. Variants 1+ are seeded on (seed, query id) so a re-run reproduces them
+# exactly — a collection you cannot reproduce is one you cannot debug.
+#
+# What is randomised and what is not:
+#
+#   randomised   personalization (including "absent entirely"), user_memory
+#   authored     source_url, follow_up_selection, attached_files, requested_skill
+#
+# The split is not arbitrary. Memory and personalization are *about the user*
+# and could accompany any question, so varying them varies nothing about the
+# task. The other four are *about this query* — "read this page and summarise
+# it" without its URL is a different request — so dropping them at random
+# would quietly change what the row teaches.
+
+# How often a randomised variant drops personalization entirely. Not a rare
+# edge: a client that sends no `personalization` object at all still gets a
+# `<system_reminder>` (the identity line survives — see
+# core/utils/utils.py::format_system_reminder), and the model has never once
+# been trained on that shape.
+_P_NO_PERSONALIZATION = 0.15
+# How often a pool entry's pinned language is replaced by production's default,
+# `Follow User's Query Language`. The pool pins a language; production mostly
+# does not.
+_P_FOLLOW_QUERY = 0.40
+# How often a randomised variant carries a memory block, when the query does
+# not already demand one.
+_P_USER_MEMORY = 0.35
+
+
+@dataclass
+class Variant:
+    """One randomised context envelope for a query."""
+
+    index: int
+    # None means the client sent no personalization object at all — a real
+    # production shape, and distinct from "sent one with empty fields".
+    personalization: dict[str, str] | None
+    user_memory: str = ""
+    skill: str | None = None
+    follow_up: str = ""
+    source_url: list[str] = field(default_factory=list)
+    attach_doc: bool = False
+
+    @property
+    def blocks(self) -> list[str]:
+        """Which optional blocks this envelope will actually produce."""
+        out = []
+        if self.user_memory:
+            out.append("user_memory")
+        if self.personalization is not None:
+            out.append("system_reminder")
+        if self.attach_doc:
+            out.append("attached_files")
+        if self.skill:
+            out.append("requested_skill")
+        if self.follow_up:
+            out.append("follow_up_selection")
+        if self.source_url:
+            out.append("source_url")
+        return out
+
+
+def _authored_variant(spec: Spec, q: Query) -> Variant:
+    """Variant 0 — exactly what the query file asks for, nothing random."""
+    return Variant(
+        index=0,
+        personalization=spec.personalization_for(q),
+        user_memory=(
+            USER_MEMORY_POOL[int(q.id.split("-")[1]) % len(USER_MEMORY_POOL)]
+            if q.block == "user_memory" else ""
+        ),
+        skill=REQUESTED_SKILL_BY_CAT.get(q.cat, "web-research") if q.block == "requested_skill" else None,
+        follow_up=q.follow_up if q.block == "follow_up_selection" else "",
+        source_url=list(q.source_url or []) if q.block in SOURCE_URL_BLOCKS else [],
+        attach_doc=q.block == "attached_files",
+    )
+
+
+def _wanted_language(spec: Spec, q: Query) -> str:
+    """The language this query's personalization should state.
+
+    Mirrors `Spec.personalization_for`: the query's own language, flipped for
+    the queries that deliberately carry an override.
+    """
+    if q.id in spec.OVERRIDE_LANGUAGE:
+        return "en" if q.lang == "zh" else "zh"
+    return q.lang
+
+
+def _random_variant(spec: Spec, q: Query, index: int, rng: random.Random) -> Variant:
+    base = _authored_variant(spec, q)
+
+    if rng.random() < _P_NO_PERSONALIZATION:
+        personalization = None
+    else:
+        # Draw from the same language-matched slice `Spec.personalization_for`
+        # uses, and only randomise *within* it. Drawing from the whole pool
+        # instead re-creates a mismatch the spec removed on purpose: a Chinese
+        # query under an English `Response Language:` is a rule the teacher
+        # itself is unreliable at (spec.py::OVERRIDE_LANGUAGE documents luna
+        # answering in Chinese on all three samples despite an English
+        # personalization), so those rows teach "ignore the stated language"
+        # rather than the rule. Measured on the first 42 rows of this run,
+        # before the fix: 8 of them, 19%.
+        #
+        # The 12 designated override queries are the exception and keep their
+        # deliberate mismatch — `personalization_for` already flips them.
+        pool = spec.personalization_pool
+        want = _wanted_language(spec, q)
+        matched = [
+            p for p in pool
+            if ("zh" if "中文" in (p.get("language") or "") else "en") == want
+        ] or pool
+        picked = dict(rng.choice(matched))
+        # Production's default is an instruction ("follow the query"), not a
+        # language, so substituting it never creates a mismatch — but it would
+        # erase an override query's whole point.
+        if rng.random() < _P_FOLLOW_QUERY and q.id not in spec.OVERRIDE_LANGUAGE:
+            picked["language"] = FOLLOW_QUERY
+        personalization = picked
+
+    memory = base.user_memory
+    if not memory and rng.random() < _P_USER_MEMORY:
+        memory = rng.choice(USER_MEMORY_POOL)
+
+    return Variant(
+        index=index,
+        personalization=personalization,
+        user_memory=memory,
+        skill=base.skill,
+        follow_up=base.follow_up,
+        source_url=base.source_url,
+        attach_doc=base.attach_doc,
+    )
+
+
+def variants_for(spec: Spec, q: Query, n: int, seed: int = 0) -> list[Variant]:
+    # Seeded from a hash digest, not from the string itself. `random.Random(str)`
+    # leaves the *first* draw correlated across similar short seeds: over ten
+    # query ids, `random.Random(f"0:{qid}").random()` came back under 0.15 five
+    # times, so variant 1 would have dropped personalization on half the set
+    # instead of the configured 15%. blake2b avalanches, so neighbouring ids
+    # get uncorrelated streams.
+    digest = hashlib.blake2b(f"{seed}:{q.id}".encode(), digest_size=8).digest()
+    rng = random.Random(int.from_bytes(digest, "big"))
+    out = [_authored_variant(spec, q)]
+    while len(out) < n:
+        out.append(_random_variant(spec, q, len(out), rng))
+    return out[:n]
+
+
 @dataclass
 class Rollout:
     sample: int
@@ -116,6 +294,8 @@ class Rollout:
     messages: list[dict] = field(default_factory=list)
     failed_checks: list[str] = field(default_factory=list)
     blocked_calls: int = 0
+    variant: "Variant | None" = None
+    enrichment: "Enrichment | None" = None
 
 
 class _CaptureSystem(AgentMiddleware):
@@ -172,63 +352,98 @@ def _patch_file_records(q: Query) -> None:
     stream_mod.get_file_record = fake_record
 
 
-def build_message(spec: Spec, q: Query) -> tuple[Any, dict, list[dict]]:
-    """Production's user message, with this query's optional block attached.
+def _cache_scout_tools(cache: ToolCache) -> None:
+    """Point the scout's tools at the same disk cache the agent's tools use.
 
-    The `<personalization>` body goes through production's own
-    `format_personalization` rather than being assembled here. It used to be
-    hand-rolled, and the labels had drifted from production's — training and
-    the benchmark both emitted `Response language:` / `User location:` while
-    production emits `Response Language:` / `User Location:`. The adapter was
-    keyed on a string production never sends, and because the benchmark shared
-    the *training* spelling, no eval could see it.
+    `core/context_enrichment.py` imports the adapters directly, so its calls go
+    around `wrap_tools` and would hit the live providers on every rollout —
+    real money per row, and a re-run of the same seed would come back with
+    different search results, destroying the reproducibility the cache exists
+    to provide. The module looks these names up at call time, so rebinding them
+    on the module is enough.
 
-    Trajectories collected before 2026-08-12 carried the old spelling and have
-    since been relabelled in place. The earlier plan was to leave the mix alone
-    on the theory that a model invariant to the label serves production and the
-    benchmark both — that theory died on the numbers. The 20 rows that happened
-    to carry production's spelling were *exactly* the 20 carrying
-    `Follow User's Query Language`, so spelling and behaviour were perfectly
-    confounded: nothing taught the model that `Response Language: 简体中文` and
-    `Response language: 简体中文` mean the same thing, and it could just as well
-    have read the capital L as the instruction to follow the query.
-
-    `evals/agent_factory.py` still emits the old spelling, so the benchmark now
-    tests a form nothing was trained on. That is the honest direction to be
-    wrong in — production is the ground truth here — but it does mean the
-    benchmark understates `rix` until it is fixed too.
+    The wrapper also replays the citations a cached call originally registered
+    (`ToolCache.save` snapshots them), which is what keeps `[n]` numbering
+    identical between a cold rollout and a replayed one.
     """
-    p = spec.personalization_for(q)
-    personalization = format_personalization(
+    if not cache.enabled:
+        return
+    wrapped = {
+        getattr(t, "__name__", None) or getattr(t, "name", ""): t
+        for t in wrap_tools(AGENT_TOOLS, cache)
+    }
+    for name in ("web_search", "weather_forecast", "stock_search", "currency_convert"):
+        if name in wrapped:
+            setattr(enrich_mod, name, wrapped[name])
+
+
+async def build_message(
+    spec: Spec, q: Query, v: Variant
+) -> tuple[Any, dict, list[dict], Enrichment]:
+    """Production's user message for one query under one context envelope.
+
+    Everything here is production's own code, not a copy of it — the
+    `<system_reminder>` body goes through `format_system_reminder`, the blocks
+    through `build_message_content`, and the pre-flight scout through
+    `enrich_context`. That matters more than it sounds: the training row and
+    the production request have to be the same string, and every past drift
+    between them (the `Response language:` / `Response Language:` capital that
+    confounded v4's whole language story) came from a hand-rolled copy of a
+    thing production already did.
+
+    The scout runs for real. It is not simulated and its output is not
+    synthesised: it calls the same `enrich_context` production calls, which
+    issues a live search or lookup, registers the resulting citations in this
+    rollout's registry, and hands back the `<context_enrichment>` body. The
+    alternative — collecting without it — would train an adapter that meets
+    that block for the first time in production, which is the exact failure
+    the `<attached_files>` coverage exists to avoid.
+
+    Precedence matches production: a pinned URL wins, and the scout is skipped
+    entirely for that turn (core/stream.py::_stream_agent). Every collected row
+    is a first turn, which is the only turn the scout runs on at all.
+    """
+    p = v.personalization
+    system_reminder = format_system_reminder(
         Personalization(
-            response_language=p.get("language") or "",
-            user_location=p.get("location") or "Unknown",
-            user_local_datetime=p["datetime"],
+            response_language=(p.get("language") or "") if p else "",
+            user_location=(p.get("location") or "Unknown") if p else None,
+            user_local_datetime=p["datetime"] if p else None,
         )
+        if p is not None
+        else None
     )
 
     kwargs: dict[str, Any] = {}
     attached: list[dict[str, str]] | None = None
-    if q.block == "user_memory":
-        kwargs["user_memory"] = USER_MEMORY_POOL[
-            int(q.id.split("-")[1]) % len(USER_MEMORY_POOL)
-        ]
-    elif q.block == "requested_skill":
-        kwargs["skill"] = REQUESTED_SKILL_BY_CAT.get(q.cat, "web-research")
-    elif q.block == "follow_up_selection":
-        kwargs["follow_up_content"] = q.follow_up or ""
-    elif q.block == "priority_sources":
-        kwargs["source_url"] = list(q.source_url or [])
-    elif q.block == "attached_files":
+    if v.user_memory:
+        kwargs["user_memory"] = v.user_memory
+    if v.skill:
+        kwargs["skill"] = v.skill
+    if v.follow_up:
+        kwargs["follow_up_content"] = v.follow_up
+    if v.source_url:
+        kwargs["source_url"] = list(v.source_url)
+    if v.attach_doc:
         _patch_file_records(q)
         attached = [{f"synthetic-{q.id}": f"{q.id}.md"}]
 
-    return stream_mod.build_message_content(
-        q.text, personalization, attached, thread_id=f"collect-{q.id}", **kwargs
+    enrichment = Enrichment()
+    if not v.source_url:
+        enrichment = await enrich_context(
+            q.text,
+            user_location=(p or {}).get("location"),
+            user_local_datetime=(p or {}).get("datetime"),
+        )
+
+    content, files, doc_sources = stream_mod.build_message_content(
+        q.text, system_reminder, attached, thread_id=f"collect-{q.id}",
+        enrichment_text=enrichment.text, **kwargs,
     )
+    return content, files, doc_sources, enrichment
 
 
-async def rollout(spec: Spec, q: Query, sample: int, cache: ToolCache) -> Rollout:
+async def rollout(spec: Spec, q: Query, v: Variant, cache: ToolCache) -> Rollout:
     from core.llm import gpt_5_6_luna
 
     _register_harness_profiles()
@@ -247,11 +462,15 @@ async def rollout(spec: Spec, q: Query, sample: int, cache: ToolCache) -> Rollou
         ],
     )
 
-    reset_citation_registry(f"collect-{q.id}", 1)
-    content, doc_files, _doc_sources = build_message(spec, q)
+    # Before build_message, not after: the scout inside it registers the
+    # citations its search produced, and those have to land in this rollout's
+    # registry so the agent's own [n] numbering continues from them exactly as
+    # it does in production.
+    reset_citation_registry(f"collect-{q.id}-{v.index}", 1)
+    content, doc_files, _doc_sources, enrichment = await build_message(spec, q, v)
     files = {**SKILL_FILES, **doc_files}
     state = {"messages": [{"role": "user", "content": content}], "files": files}
-    cfg = {"configurable": {"thread_id": f"collect-{q.id}-{sample}-{int(time.time()*1000)}"}}
+    cfg = {"configurable": {"thread_id": f"collect-{q.id}-{v.index}-{int(time.time()*1000)}"}}
 
     turn = TurnTrace(index=0, query=q.text)
     raw_messages: list[dict] = [{"role": "user", "content": content}]
@@ -316,6 +535,19 @@ async def rollout(spec: Spec, q: Query, sample: int, cache: ToolCache) -> Rollou
                     )
 
     turn.latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    # A turn where the search backend was down is not a training example. The
+    # sentinel `web_search` returns in that case ("Search unavailable …", see
+    # core/tools/adapters.py) tells the agent to answer unverified and say so,
+    # and it does — producing a fluent, plausible trajectory that teaches
+    # exactly the habit the whole retrieval prompt exists to prevent. It has to
+    # be caught here rather than left to the rubric, because the rubric is not
+    # gating this round. SearXNG 4xx/5xx are retried inside the client first;
+    # this only fires when all of those attempts failed.
+    unavailable = sum(
+        1 for m in raw_messages
+        if m.get("role") == "tool" and _SEARCH_UNAVAILABLE in (m.get("content") or "")
+    )
     trace = RunTrace(case_id=q.id, model_label="gpt-5-6-luna", status="ok")
     trace.turns.append(turn)
     trace.citations = [dict(c) for c in all_citations()]
@@ -332,15 +564,25 @@ async def rollout(spec: Spec, q: Query, sample: int, cache: ToolCache) -> Rollou
     ]
 
     return Rollout(
-        sample=sample,
-        ok=not failed and bool(turn.text),
-        reason="" if turn.text else "no final answer",
+        sample=v.index,
+        # A rollout is usable if it produced an answer at all and its tools
+        # actually worked. The rubric still runs — `failed` below is recorded
+        # on every row — but it no longer decides acceptance: see the note on
+        # `--gate` in main().
+        ok=bool(turn.text) and not unavailable,
+        reason=(
+            "" if turn.text and not unavailable
+            else "no final answer" if not turn.text
+            else f"search backend unavailable on {unavailable} call(s)"
+        ),
         n_tool_calls=len(turn.tool_calls),
         latency_ms=turn.latency_ms,
         system_prompt=cap.system,
         messages=raw_messages,
         failed_checks=failed,
         blocked_calls=blocked,
+        variant=v,
+        enrichment=enrichment,
     )
 
 
@@ -382,7 +624,12 @@ def trim_blocked_retries(messages: list[dict]) -> tuple[list[dict], int]:
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--samples", type=int, default=3)
+    ap.add_argument("--variants", type=int, default=2,
+                    help="context envelopes per query; variant 0 is the authored one")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seeds the randomised envelopes; same seed reproduces a run")
+    ap.add_argument("--gate", action="store_true",
+                    help="drop rows that fail the rubric instead of only recording it")
     ap.add_argument("--only", nargs="*", default=None, help="query ids")
     ap.add_argument("--cat", nargs="*", default=None, help="categories")
     ap.add_argument("--out", default=str(DATA))
@@ -410,26 +657,38 @@ async def main() -> int:
     accepted_f = (out_dir / "traces.jsonl").open("a", encoding="utf-8")
     rejected_f = (out_dir / "rejected.jsonl").open("a", encoding="utf-8")
     cache = ToolCache(DEFAULT_CACHE_DIR, enabled=True)
+    _cache_scout_tools(cache)
 
     n_ok = 0
-    for i, q in enumerate(queries, 1):
-        rolls: list[Rollout] = []
-        for s in range(args.samples):
+    n_gate_fail = 0
+    total = len(queries) * args.variants
+    i = 0
+    for q in queries:
+        for v in variants_for(spec, q, args.variants, args.seed):
+            i += 1
             try:
-                rolls.append(await rollout(spec, q, s, cache))
+                r = await rollout(spec, q, v, cache)
             except Exception as e:
-                rolls.append(Rollout(sample=s, ok=False, reason=f"{type(e).__name__}: {e}"))
+                r = Rollout(sample=v.index, ok=False,
+                            reason=f"{type(e).__name__}: {e}", variant=v)
 
-        good = [r for r in rolls if r.ok]
-        if not good:
-            worst = rolls[0]
-            print(f"[{i:>3}/{len(queries)}] {q.id:<8} {q.cat:<17} REJECTED  "
-                  f"{(worst.failed_checks or [worst.reason])[:1]}")
-            rejected_f.write(json.dumps({
-                "id": q.id, "cat": q.cat, "text": q.text,
-                "attempts": [{
-                    "sample": r.sample, "reason": r.reason,
-                    "failed": r.failed_checks,
+            # Two different reasons to drop a rollout, and only one of them is
+            # about quality. "No answer" means there is no training target at
+            # all, so it is always dropped. A rubric failure is dropped only
+            # under --gate; by default it is recorded on the row and left for
+            # build_dataset.py to filter or not. The rubric was written against
+            # an older prompt, and the contracts it grades (the ```text fence,
+            # the draft-email skill, citations carrying `n`) changed under it —
+            # so a failure here is currently as likely to be a stale check as a
+            # bad trace, and throwing the trace away destroys the evidence
+            # needed to tell which.
+            gate_failed = bool(r.failed_checks)
+            if not r.ok or (args.gate and gate_failed):
+                print(f"[{i:>3}/{total}] {q.id:<8} v{v.index} {q.cat:<17} REJECTED  "
+                      f"{(r.failed_checks or [r.reason])[:1]}")
+                rejected_f.write(json.dumps({
+                    "id": q.id, "cat": q.cat, "variant": v.index, "text": q.text,
+                    "reason": r.reason, "failed": r.failed_checks,
                     "n_tool_calls": r.n_tool_calls,
                     # The answer, not just the verdict. A rejection is as often
                     # a wrong threshold as a bad trace, and the two are only
@@ -440,37 +699,57 @@ async def main() -> int:
                         (m.get("content", "")[:4000] for m in reversed(r.messages)
                          if m.get("role") == "assistant" and m.get("content")), ""
                     ),
-                } for r in rolls],
-            }, ensure_ascii=False) + "\n")
-            rejected_f.flush()
-            continue
+                }, ensure_ascii=False) + "\n")
+                rejected_f.flush()
+                continue
 
-        pick = min(good, key=lambda r: r.n_tool_calls)
-        messages, dropped = (
-            trim_blocked_retries(pick.messages)
-            if q.cat == "budget-exhausted" else (pick.messages, 0)
-        )
-        accepted_f.write(json.dumps({
-            "id": q.id, "cat": q.cat, "lang": q.lang, "block": q.block,
-            "text": q.text,
-            "run_limit": spec.run_limit_for(q),
-            "n_tool_calls": pick.n_tool_calls,
-            "blocked_calls": pick.blocked_calls,
-            "trimmed_blocked": dropped,
-            "chose_sample": pick.sample,
-            "n_candidates_passing": len(good),
-            "system_prompt": pick.system_prompt,
-            "messages": messages,
-        }, ensure_ascii=False) + "\n")
-        accepted_f.flush()
-        n_ok += 1
-        trim = f" trim-{dropped}" if dropped else ""
-        print(f"[{i:>3}/{len(queries)}] {q.id:<8} {q.cat:<17} ok  "
-              f"tools={pick.n_tool_calls:<3} best-of={len(good)}/{args.samples}{trim}")
+            messages, dropped = (
+                trim_blocked_retries(r.messages)
+                if q.cat == "budget-exhausted" else (r.messages, 0)
+            )
+            e = r.enrichment or Enrichment()
+            accepted_f.write(json.dumps({
+                "id": q.id, "cat": q.cat, "lang": q.lang,
+                "variant": v.index,
+                # The envelope this row was produced under. Recorded rather than
+                # recomputed: `variants_for` is seeded and reproducible today,
+                # but a row has to stay readable after the pools change.
+                "context": {
+                    "blocks": v.blocks,
+                    "personalization": v.personalization,
+                    "user_memory": v.user_memory,
+                    "skill": v.skill,
+                    "source_url": v.source_url,
+                    "attached": v.attach_doc,
+                },
+                "enrichment": {
+                    "action": e.action,
+                    "tool": (e.events[0]["tool"] if e.events else None),
+                    "n_sources": len(e.sources),
+                },
+                "text": q.text,
+                "run_limit": spec.run_limit_for(q),
+                "n_tool_calls": r.n_tool_calls,
+                "blocked_calls": r.blocked_calls,
+                "trimmed_blocked": dropped,
+                # Recorded, not enforced — see the note above.
+                "gate": {"passed": not gate_failed, "failed": r.failed_checks},
+                "system_prompt": r.system_prompt,
+                "messages": messages,
+            }, ensure_ascii=False) + "\n")
+            accepted_f.flush()
+            n_ok += 1
+            n_gate_fail += int(gate_failed)
+            trim = f" trim-{dropped}" if dropped else ""
+            gate = " gate-FAIL" if gate_failed else ""
+            scout = f" scout={e.action}" if e.action != "direct_response" else ""
+            print(f"[{i:>3}/{total}] {q.id:<8} v{v.index} {q.cat:<17} ok  "
+                  f"tools={r.n_tool_calls:<3}{scout}{trim}{gate}")
 
     accepted_f.close()
     rejected_f.close()
-    print(f"\naccepted {n_ok}/{len(queries)}  ->  {out_dir/'traces.jsonl'}")
+    print(f"\n{n_ok}/{total} rows written to {out_dir/'traces.jsonl'}"
+          f"  ({n_gate_fail} of them fail the rubric)")
     return 0
 
 

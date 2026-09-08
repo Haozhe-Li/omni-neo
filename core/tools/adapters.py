@@ -22,7 +22,7 @@ import json
 import os
 from typing import Any, Callable
 
-from core.tools import coding_sandbox, currency_tool, searxng, tavily
+from core.tools import coding_sandbox, currency_tool, exa, searxng, tavily
 from core.tools import stock_data_retriever, weather_tool, web_page_reader
 from core.utils.citations import register_citation
 from core.utils.redis_cache import l1cache
@@ -31,7 +31,12 @@ from core.utils.source_credibility import classify_sources
 # capability -> {provider name: implementation}. The first entry of each is
 # the default, so the common case needs no configuration at all.
 PROVIDERS: dict[str, dict[str, Callable]] = {
+    # Order is the fallback chain, first entry is the default — see
+    # `_provider_chain`. exa first (own index, fast, and the only one of the
+    # three that answered Chinese queries with real sources), then the
+    # self-hosted instance, then the second paid API.
     "web_search": {
+        "exa": exa.search_web,
         "searxng": searxng.search_web,
         "tavily": tavily.search_web,
     },
@@ -148,15 +153,39 @@ _UNAVAILABLE = [
 ]
 
 
+def _provider_chain(primary: str) -> list[str]:
+    """`primary`, then every other web_search provider in declaration order.
+
+    Three independent backends is not belt-and-braces: on 2026-09-07 the
+    self-hosted SearXNG lost every engine it fans out to at once — rate limits
+    and CAPTCHAs, all four within the same hour — and with a single provider
+    the product simply had no search. Each of these fails for unrelated
+    reasons, so the chain has to be walked on failure rather than configured
+    to one name.
+
+    Only *failures* advance the chain, never a genuinely empty result: a query
+    that legitimately matches nothing would otherwise be re-run against two
+    paid APIs to hear the same answer three times.
+    """
+    return [primary] + [n for n in PROVIDERS["web_search"] if n != primary]
+
+
 def _cached_search(query: str, k: int, time_range: str | None) -> list[dict]:
     """Run the configured search provider, Redis-cached with a TTL that follows
     `time_range`. Kept out of `web_search` below because citation numbers must
     be assigned fresh on every call, including on a cache hit."""
     name = provider_name("web_search")
-    # Cache under the provider's own name: two providers answering the same
-    # query are two different answers, and switching between them should not
-    # serve the other one's results.
-    cache_key = l1cache._build_cache_key(_cached_search, (name, query, k, time_range), {})
+    # Cache under the provider's own name *and its engine selection*: two
+    # providers answering the same query are two different answers, and so are
+    # two engine lists. Without the second half, changing `SEARXNG_ENGINES` to
+    # fix bad results keeps serving the bad ones for the rest of their three-day
+    # TTL — which is exactly what happened while diagnosing this: a query
+    # re-run under a corrected engine list came back in 0.1s with the junk from
+    # the old one, and looked like the fix had failed.
+    engines = searxng.SEARXNG_ENGINES if name == "searxng" else ""
+    cache_key = l1cache._build_cache_key(
+        _cached_search, (name, engines, query, k, time_range), {}
+    )
     cached = l1cache.redis.get(cache_key)
     if cached is not None:
         try:
@@ -164,14 +193,29 @@ def _cached_search(query: str, k: int, time_range: str | None) -> list[dict]:
         except json.JSONDecodeError:
             l1cache.redis.delete(cache_key)
 
-    try:
-        results = PROVIDERS["web_search"][name](query, k=k, time_range=time_range) or _NO_RESULTS
-    except Exception as exc:
-        # One provider is one point of failure for every search in the turn.
-        # Degrade to something the agent can read and work around rather than
-        # raising mid-answer — and never cache the failure.
-        print(f"[web_search] provider {name!r} failed for {query!r}: {exc}")
+    results: list[dict] | None = None
+    for attempt, provider in enumerate(_provider_chain(name)):
+        try:
+            results = PROVIDERS["web_search"][provider](query, k=k, time_range=time_range)
+        except Exception as exc:
+            print(f"[web_search] provider {provider!r} failed for {query!r}: {exc}")
+            continue
+        if attempt:
+            print(f"[web_search] fell back to {provider!r}: {len(results or [])} result(s)")
+        break
+    else:
+        # Every backend is down. Degrade to something the agent can read and
+        # work around rather than raising mid-answer, and never cache it.
         return _UNAVAILABLE
+
+    if not results:
+        # Deliberately not cached. An empty result is far more often a bad
+        # minute upstream than a property of the query, and the default TTL is
+        # three days — long enough that one rate-limited spell would keep
+        # answering "no results found, please change your query" for every
+        # query asked during it, long after the provider recovered. Re-asking
+        # costs one upstream call; caching the emptiness costs three days.
+        return _NO_RESULTS
 
     ttl = _SEARCH_TTL.get(time_range, _DEFAULT_SEARCH_TTL)
     l1cache.redis.setex(cache_key, ttl, json.dumps(results, default=str, ensure_ascii=False))

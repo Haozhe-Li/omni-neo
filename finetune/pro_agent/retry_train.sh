@@ -1,5 +1,7 @@
 #!/bin/bash
-# Retry the v4 SFT run until W&B Serverless Training starts executing jobs again.
+# Retry the SFT run until W&B Serverless Training starts executing jobs again.
+# Run/file/epochs are set by RUN_PREFIX / FULL / EPOCHS; defaults stay at v4 so an
+# old invocation still means what it meant.
 #
 # Why this exists: on 2026-08-13 the backend accepted jobs and then never ran
 # them. Registration succeeded, the data artifact uploaded, "Starting SFT
@@ -59,14 +61,14 @@ for ((a=1; a<=ATTEMPTS; a++)); do
       --name "probe-$ts" > "$SCRATCH/probe_$ts.log" 2>&1 &
   ppid=$!
   if wait_for "$SCRATCH/probe_$ts.log" "$PROBE_WAIT" "$ppid"; then
-    echo "[$(date +%H:%M)] probe OK — backend is executing jobs; starting full v4"
+    echo "[$(date +%H:%M)] probe OK — backend is executing jobs; starting full $RUN_PREFIX"
     kill $ppid 2>/dev/null
     $PY -u finetune/pro_agent/train.py --file "$FULL" --epochs "$EPOCHS" \
-        --name "$RUN_PREFIX-$ts" > "$SCRATCH/train_v4_$ts.log" 2>&1 &
+        --name "$RUN_PREFIX-$ts" > "$SCRATCH/train_${RUN_PREFIX}_$ts.log" 2>&1 &
     fpid=$!
-    if wait_for "$SCRATCH/train_v4_$ts.log" "$FULL_WAIT" "$fpid"; then
+    if wait_for "$SCRATCH/train_${RUN_PREFIX}_$ts.log" "$FULL_WAIT" "$fpid"; then
       echo "[$(date +%H:%M)] TRAINED — $RUN_PREFIX-$ts"
-      grep -E "trained in|inference name|Artifact URL" "$SCRATCH/train_v4_$ts.log"
+      grep -E "trained in|inference name|Artifact URL" "$SCRATCH/train_${RUN_PREFIX}_$ts.log"
       exit 0
     fi
     echo "[$(date +%H:%M)] full run hung after a passing probe — backend degraded mid-run"
