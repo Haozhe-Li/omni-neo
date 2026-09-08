@@ -350,43 +350,119 @@ _ACTIONS: dict[str, _Action] = {
 # ── Result ──────────────────────────────────────────────────────────────────
 
 # ── Deterministic shortcut ──────────────────────────────────────────────────
-# A short "what is X" is the one query shape whose routing needs no judgement:
-# it is a lookup, the search query is the question itself, and the scout model
-# has never decided otherwise on one. Skipping the classification call takes
-# ~0.4s off the front of the turn — and this sits on the critical path, so that
-# is 0.4s the user spends watching an empty screen.
+# A short question is the one query shape whose routing needs no judgement: it
+# is a lookup, the search query is the question itself, and the scout model has
+# never decided otherwise on one. Skipping the classification call takes ~0.4s
+# off the front of the turn — and this sits on the critical path, so that is
+# 0.4s the user spends watching an empty screen.
 #
-# Everything else still goes through the model. The shape of a weather, stock,
-# FX or direct-response request is not reliably decidable by pattern, and a
-# wrong deterministic answer is worse than a slower right one.
+# The phrase lists below are deliberately broad. A false positive costs one
+# search on a query that did not need one; a miss costs every user asking that
+# phrasing the full classification latency, forever. The two are not
+# symmetric, so the lists are tuned for recall and the blockers below carry the
+# precision.
+#
+# What still goes through the model: anything the blockers catch, and anything
+# no phrase matches. The shape of a weather, stock or FX request is not safely
+# decidable by pattern *for argument extraction*, and a wrong deterministic
+# answer there is worse than a slower right one.
 
 _ASK_PATTERNS = re.compile(
     r"""(?ix)
     (?: ^|\b )
-    (?: what\s+(?:is|are|was|were)\b | what's\b | who\s+(?:is|are)\b
-      | tell\s+me\b | explain\b | define\b
-      | how\s+(?:does|do)\b | meaning\s+of\b )
+    (?:
+    # ── wh- questions ──
+      what \s+ (?:is|are|was|were|does|do|did|happened|kind|type|sort)\b
+    | what's\b | whats\b
+    | who \s+ (?:is|are|was|were|invented|founded|created|made|wrote|owns|won)\b
+    | who's\b | whose\b
+    | when \s+ (?:is|are|was|were|does|do|did|will)\b
+    | where \s+ (?:is|are|was|were|does|do|did|can|to)\b
+    | why \s+ (?:is|are|was|were|does|do|did|would|can't|cant|doesn't)\b
+    | which \s+ (?:is|are|one|of)\b
+    | how \s+ (?:is|are|does|do|did|to|can|could|should|much|many
+               |long|old|far|big|tall|fast|often)\b
+    # ── imperative lookups ──
+    | tell \s+ me\b | explain\b | define\b | describe\b
+    | meaning \s+ of\b | definition \s+ of\b
+    | list \s+ of\b | examples? \s+ of\b | alternatives? \s+ to\b
+    | overview \s+ of\b | summary \s+ of\b | guide \s+ to\b
+    # ── comparison / evaluation ──
+    | difference \s+ between\b | compare\b | comparison\b
+    | vs\.? \b | versus\b
+    | pros \s+ and \s+ cons\b | better \s+ than\b
+    | worth \s+ (?:it|buying|reading|watching)\b
+    | review \s+ of\b | reviews? \s+ for\b
+    | best\b | top \s+ \d+\b
+    # ── discovery / currency of information ──
+    | latest\b | recent\b | news \s+ (?:about|on)\b
+    | price \s+ of\b | cost \s+ of\b
+    | is \s+ there\b | are \s+ there\b
+    | does \s+ (?:anyone|anybody)\b
+    | can \s+ (?:i|you|we) \s+ (?:use|get|buy|run|install)\b
+    | should \s+ i \s+ (?:use|get|buy|learn)\b
+    )
     """
 )
 # Chinese has no word boundaries for \b to hang on, so these are plain
 # substrings — which is also why they are written as whole phrases rather than
-# fragments like "解释".
+# fragments like "解释". Traditional variants are listed separately rather than
+# normalised at match time: the list is short enough that a lookup table is
+# cheaper than running every query through a converter.
 _ASK_PATTERNS_ZH = (
-    "什么是", "是什么", "什么叫", "何为", "是啥", "啥是",
-    "介绍一下", "解释一下", "讲讲", "说说", "科普", "告诉我", "的意思","多少"
+    # 定义 / 解释
+    "什么是", "是什么", "什么叫", "叫什么", "何为", "是啥", "啥是", "啥叫",
+    "介绍一下", "介绍下", "解释一下", "解释下", "讲讲", "讲一下", "说说",
+    "说一下", "科普", "告诉我", "的意思", "什么意思", "指的是",
+    # 人 / 物
+    "谁是", "是谁", "是干什么的", "干嘛用", "有什么用", "用来做什么",
+    # 疑问词
+    "为什么", "为何", "怎么", "怎样", "如何", "哪个", "哪些", "有哪些",
+    "哪里", "在哪", "什么时候", "何时", "多久", "多大", "多高", "多远", "多少",
+    "是不是", "有没有", "能不能", "可不可以", "会不会", "该不该",
+    # 比较 / 评价
+    "区别", "对比", "相比", "怎么样", "咋样", "好不好", "值不值", "值得吗",
+    "优缺点", "评测", "测评", "排名", "排行", "哪个好", "哪家好", "值得",
+    # 发现 / 时效
+    "推荐", "有什么", "最新", "新闻", "近况", "进展", "教程", "攻略", "原理",
+    "怎么用", "如何使用", "怎么办", "怎么做",
+    # 繁体常见变体
+    "什麼是", "為什麼", "為何", "怎麼", "哪個", "誰是", "介紹一下", "解釋一下",
+    "什麼意思", "教學",
 )
+
+# A question ending is a lookup signal on its own and catches the phrasings no
+# list will ever cover ("langgraph checkpointer 配置?"). The Chinese sentence-
+# final particles are here rather than in the phrase list above because they
+# are only interrogative in final position — "吗" mid-sentence is not a
+# question. Only applies to queries that already passed the length gate and the
+# blockers. Kept as its own constant so it is one line to remove.
+_QUESTION_ENDINGS = ("?", "？", "吗", "呢", "嘛", "麼", "么")
 
 # Queries that match the ask patterns but must still go to the model. Every one
 # of these has a dedicated tool whose result the frontend renders as a live
 # card, and "what is the weather in Tokyo" matches "what is" perfectly — routed
 # to web_search it would silently cost the user the weather widget, which is a
 # visible product regression rather than a slower answer.
+#
+# These are checked *before* the ask patterns and are deliberately over-broad:
+# a false block costs one classification call, which the model then answers
+# with web_search anyway. A miss costs a widget.
 _SHORTCUT_BLOCKERS = (
-    "weather", "temperature", "forecast", "raining", "rain today",
-    "天气", "气温", "下雨", "温度",
-    "stock", "share price", "ticker", "earnings", "market cap",
-    "股价", "股票", "市值", "财报",
-    "exchange rate", "convert", "汇率", "兑换", "换算",
+    # weather → weather_forecast widget
+    "weather", "temperature", "forecast", "raining", "rain today", "snow",
+    "humidity", "wind speed", "umbrella", "how hot", "how cold", "uv index",
+    "天气", "气温", "下雨", "温度", "下雪", "阴天", "台风", "雾霾",
+    "空气质量", "紫外线", "带伞", "冷不冷", "热不热",
+    # stocks → stock_search widget
+    "stock", "share price", "stock price", "shares of", "ticker",
+    "earnings", "market cap", "nasdaq", "s&p", "dow jones",
+    "股价", "股票", "市值", "财报", "美股", "港股", "a股", "纳斯达克",
+    "标普", "上证", "恒生", "涨了", "跌了", "涨幅", "跌幅",
+    # currency → currency_convert widget
+    "exchange rate", "conversion rate", "convert", "usd to", "eur to",
+    "汇率", "兑换", "换算", "等于多少", "兑",
+    "美元", "日元", "欧元", "英镑", "人民币", "港币", "韩元",
 )
 
 # Words, not characters: `word_count` counts each CJK character as one and
@@ -409,7 +485,11 @@ def shortcut_decision(query: str) -> EnrichmentDecision | None:
     lowered = q.lower()
     if any(b in lowered for b in _SHORTCUT_BLOCKERS):
         return None
-    if not (_ASK_PATTERNS.search(q) or any(p in q for p in _ASK_PATTERNS_ZH)):
+    if not (
+        _ASK_PATTERNS.search(q)
+        or any(p in q for p in _ASK_PATTERNS_ZH)
+        or q.endswith(_QUESTION_ENDINGS)
+    ):
         return None
     return EnrichmentDecision(action="web_search", search_query=q)
 
