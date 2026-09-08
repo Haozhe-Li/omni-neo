@@ -23,7 +23,9 @@ import logging
 import time
 from typing import Any
 
-from upstash_redis.asyncio import Redis as AsyncRedis
+import redis.asyncio as aioredis
+
+from core.utils.redis_client import get_async_redis
 
 from core.database.supabase_client import get_async_supabase
 from core.utils.redis_cache import l1cache
@@ -52,14 +54,8 @@ _EPOCH_MEMO_SECONDS = 30
 _epoch_value: int = 0
 _epoch_read_at: float = 0.0
 
-_async_redis: AsyncRedis | None = None
-
-
-def _redis() -> AsyncRedis:
-    global _async_redis
-    if _async_redis is None:
-        _async_redis = AsyncRedis.from_env()
-    return _async_redis
+def _redis() -> aioredis.Redis:
+    return get_async_redis()
 
 
 async def cache_epoch() -> int:

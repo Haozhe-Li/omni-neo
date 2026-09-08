@@ -14,31 +14,22 @@ from __future__ import annotations
 
 import json
 
-from upstash_redis import Redis
-from upstash_redis.asyncio import Redis as AsyncRedis
+import redis
+import redis.asyncio as aioredis
+
+from core.utils.redis_client import get_async_redis, get_redis
 
 # 90 days matches the longest thread retention window (logged-in users, see
 # db_threads_control.py). Explicit deletion on thread delete handles the rest;
 # this TTL is only a safety net against orphaned keys.
 _SOURCE_TTL = 3600 * 24 * 90
 
-_client: Redis | None = None
-_async_client: AsyncRedis | None = None
+def _get_redis() -> redis.Redis:
+    return get_redis()
 
 
-def _get_redis() -> Redis:
-    global _client
-    if _client is None:
-        # HTTP REST client (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).
-        _client = Redis.from_env()
-    return _client
-
-
-def _get_async_redis() -> AsyncRedis:
-    global _async_client
-    if _async_client is None:
-        _async_client = AsyncRedis.from_env()
-    return _async_client
+def _get_async_redis() -> aioredis.Redis:
+    return get_async_redis()
 
 
 def _citation_key(thread_id: str) -> str:
@@ -86,7 +77,7 @@ def persist_citation(thread_id: str, record: dict) -> None:
     if record.get("url"):
         pipe.hset(_index_key(thread_id), record["url"], record["n"])
         pipe.expire(_index_key(thread_id), _SOURCE_TTL)
-    pipe.exec()
+    pipe.execute()
 
 
 def delete_thread_sources(thread_id: str) -> None:

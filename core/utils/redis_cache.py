@@ -5,15 +5,17 @@ import inspect
 from typing import Callable, Any, Optional
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import re
-from upstash_redis import Redis
-from upstash_redis.asyncio import Redis as AsyncRedis
+import redis
+import redis.asyncio as aioredis
+
+from core.utils.redis_client import get_async_redis, get_redis
 
 class L1Cache:
-    def __init__(self, redis_client: Redis, prefix: str = "l1cache:", ttl: Optional[int] = None):
+    def __init__(self, redis_client: redis.Redis, prefix: str = "l1cache:", ttl: Optional[int] = None):
         """
         L1Cache 类，用于 Redis L1 缓存，支持 decorator 包装函数。
 
-        :param redis_client: 已初始化的 upstash_redis.Redis 实例（HTTP REST）
+        :param redis_client: 已初始化的 redis.Redis 实例（TCP）
         :param prefix: 缓存 key 前缀，默认 "l1cache:"
         :param ttl: 默认过期时间（秒），None 表示不设置
         """
@@ -24,11 +26,11 @@ class L1Cache:
         # loop for a full round-trip on every get/set — fine for sync callers
         # (they run in a threadpool), but the async_wrapper below serves async
         # tools that run directly on the loop, so those use the async client.
-        self._async_redis: Optional[AsyncRedis] = None
+        self._async_redis: Optional[aioredis.Redis] = None
 
-    def _aredis(self) -> AsyncRedis:
+    def _aredis(self) -> aioredis.Redis:
         if self._async_redis is None:
-            self._async_redis = AsyncRedis.from_env()
+            self._async_redis = get_async_redis()
         return self._async_redis
 
     def __call__(self, ttl: Optional[int] = None) -> Callable:
@@ -223,8 +225,9 @@ class L1Cache:
         
         return decorator
 
-# HTTP REST client (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN). Each
-# get/set is an independent HTTPS request — no long-lived socket to go stale.
-r = Redis.from_env()
+# Shared TCP client (REDIS_URL). Note this is the application's own Redis —
+# the frontend's Upstash database is reached through
+# core/utils/frontend_redis.py instead.
+r = get_redis()
 
 l1cache = L1Cache(r, prefix="app:", ttl=3600 * 24)

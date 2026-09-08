@@ -9,7 +9,9 @@ search result page with one round trip instead of one per source.
 """
 from __future__ import annotations
 
-from upstash_redis.asyncio import Redis
+import redis.asyncio as aioredis
+
+from core.utils.redis_client import get_async_redis
 
 _PREFIX = "omni:credibility:domain:"
 
@@ -22,13 +24,9 @@ TTL_TRUSTED = 3600 * 24 * 365
 class CredibilityRedis:
     def __init__(self, prefix: str = _PREFIX):
         self._prefix = prefix
-        self._client: Redis | None = None
 
-    def _get_client(self) -> Redis:
-        if self._client is None:
-            # Upstash HTTP REST (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN).
-            self._client = Redis.from_env()
-        return self._client
+    def _get_client(self) -> aioredis.Redis:
+        return get_async_redis()
 
     def _key(self, domain: str) -> str:
         return f"{self._prefix}{domain}"
@@ -38,7 +36,7 @@ class CredibilityRedis:
         if not domains:
             return {}
         keys = [self._key(d) for d in domains]
-        values = await self._get_client().mget(*keys)
+        values = await self._get_client().mget(keys)
         return {domain: value for domain, value in zip(domains, values) if value}
 
     async def set_many(self, entries: dict[str, str], ttl: int) -> None:
@@ -48,7 +46,7 @@ class CredibilityRedis:
         pipe = self._get_client().pipeline()
         for domain, label in entries.items():
             pipe.set(self._key(domain), label, ex=ttl)
-        await pipe.exec()
+        await pipe.execute()
 
 
 credibility_redis = CredibilityRedis()

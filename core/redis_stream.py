@@ -4,46 +4,37 @@ Events are stored in a Redis Stream keyed by thread_id. A separate status key
 tracks whether generation is in progress, done, or errored. Consumers start from
 position 0 to replay the full history, then continue live until "done".
 
-Backed by Upstash Redis over its HTTP REST API (no long-lived TCP connection).
-The REST API has no blocking XREAD, so the live tail in `stream_read` polls with
-a short sleep between non-blocking reads instead of `XREAD ... BLOCK`.
+Backed by the application's own Redis over TCP (see core/utils/redis_client.py).
+That matters here more than anywhere else in the codebase: this is the one
+module that needs a *blocking* XREAD. Over Upstash's HTTP REST API there is no
+BLOCK, so the live tail had to poll, and every event that landed in a quiet gap
+— between tool calls, during reasoning pauses, before the first token — waited
+out the poll interval. An adaptive cadence (50 ms right after activity, backing
+off to 500 ms once idle) got the median down but could not remove it. A
+blocking read removes it entirely: the server pushes the moment XADD lands.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import AsyncGenerator
 
-from upstash_redis.asyncio import Redis
+import redis.asyncio as aioredis
 
-_client: Redis | None = None
+from core.utils.redis_client import get_async_redis, get_blocking_redis
 
 STREAM_TTL_ACTIVE = 7200   # 2-hour cap while generating (orphan guard)
 STREAM_TTL_DONE   = 600    # 10 minutes after completion
 
-# Upstash's REST API has no blocking XREAD, so `stream_read` tails by polling.
-# The cadence is adaptive: poll fast right after an event so the next burst of
-# tokens is delivered near-instantly (a fixed 0.5 s poll added up to 0.5 s of
-# latency to every token that landed in a quiet gap — between tool calls,
-# reasoning pauses, etc. — which compounded to several seconds over a turn),
-# then back off once the stream has been quiet for a while (e.g. a long tool
-# call produces nothing to deliver anyway) to avoid hammering the REST endpoint.
-_POLL_FAST = 0.05          # cadence just after activity (catches the next burst)
-_POLL_SLOW = 0.5           # cadence once the stream has gone sustainedly idle
-_FAST_POLLS = 20           # keep polling fast for ~1 s (20 × 50 ms) after an event
-_STATUS_INTERVAL = 0.5     # min seconds between terminal-status checks while idle
+# How long one XREAD parks waiting for the next event. This is not a latency
+# knob — an event arriving mid-block wakes the read immediately — it only
+# bounds how often an *idle* reader loops round to re-check terminal status and
+# the orphan deadline.
+_BLOCK_MS = 500
 _ORPHAN_TIMEOUT = 60.0     # give up on a stream idle this long (backend restart)
 
 
-def _get_redis() -> Redis:
-    global _client
-    if _client is None:
-        # Reads UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN. Each call is
-        # an independent HTTPS request, so there's no socket to keep alive or
-        # retry — a transient blip fails one request and the caller's own
-        # retry/idle loop rides over it.
-        _client = Redis.from_env()
-    return _client
+def _get_redis() -> aioredis.Redis:
+    return get_async_redis()
 
 
 def _sk(thread_id: str) -> str:
@@ -54,23 +45,10 @@ def _stk(thread_id: str) -> str:
     return f"omni:stream:{thread_id}:status"
 
 
-def _entry_data(fields: list) -> str | None:
-    """Pull the "data" value out of an Upstash XREAD entry's flat field list.
-
-    Upstash returns each entry's fields as a flat ``[field, value, ...]`` list
-    (Redis wire format), not the dict redis-py builds. We only ever write a
-    single "data" field, so map it back here.
-    """
-    for i in range(0, len(fields) - 1, 2):
-        if fields[i] == "data":
-            return fields[i + 1]
-    return None
-
-
 async def stream_write_batch(thread_id: str, events: list[str]) -> None:
-    """Write multiple SSE events to the Redis Stream in a single pipeline round-trip.
+    """Write multiple SSE events to the Redis Stream in a single round trip.
 
-    Combines all xadd calls plus one expire into one HTTP request, eliminating the
+    Combines all xadd calls plus one expire into one pipeline, eliminating the
     per-event RTT that would otherwise throttle fast models like Cerebras.
     """
     if not events:
@@ -79,9 +57,9 @@ async def stream_write_batch(thread_id: str, events: list[str]) -> None:
     key = _sk(thread_id)
     pipe = r.pipeline()
     for event in events:
-        pipe.xadd(key, "*", {"data": event}, maxlen=10000)
+        pipe.xadd(key, {"data": event}, maxlen=10000, approximate=True)
     pipe.expire(key, STREAM_TTL_ACTIVE)
-    await pipe.exec()
+    await pipe.execute()
 
 
 async def stream_write(thread_id: str, event: str) -> None:
@@ -101,9 +79,10 @@ async def stream_is_generating(thread_id: str) -> bool:
 
 
 async def stream_expire(thread_id: str) -> None:
-    r = _get_redis()
-    await r.expire(_sk(thread_id), STREAM_TTL_DONE)
-    await r.expire(_stk(thread_id), STREAM_TTL_DONE)
+    pipe = _get_redis().pipeline()
+    pipe.expire(_sk(thread_id), STREAM_TTL_DONE)
+    pipe.expire(_stk(thread_id), STREAM_TTL_DONE)
+    await pipe.execute()
 
 
 async def stream_reset(thread_id: str) -> None:
@@ -114,76 +93,72 @@ async def stream_reset(thread_id: str) -> None:
     turn's events (including its terminal `done`), and the client renders the
     old answer instead of the new one.
     """
-    r = _get_redis()
-    await r.delete(_sk(thread_id), _stk(thread_id))
+    await _get_redis().delete(_sk(thread_id), _stk(thread_id))
 
 
 async def stream_begin(thread_id: str) -> None:
     """Start a fresh turn in one round trip: drop the previous turn's buffered
     events + status, then mark this turn generating.
 
-    Pipelines the DEL and the SET into a single HTTP request (executed in order
-    server-side, so the delete can't clobber the status we set right after),
-    replacing the separate stream_reset + stream_set_status round trips.
+    Pipelines the DEL and the SET together (executed in order server-side, so
+    the delete can't clobber the status we set right after), replacing the
+    separate stream_reset + stream_set_status round trips.
     """
     r = _get_redis()
     pipe = r.pipeline()
     pipe.delete(_sk(thread_id), _stk(thread_id))
     pipe.set(_stk(thread_id), "generating", ex=STREAM_TTL_ACTIVE)
-    await pipe.exec()
+    await pipe.execute()
 
 
 async def stream_read(thread_id: str) -> AsyncGenerator[str, None]:
     """Yield all buffered SSE strings then live events until generation ends.
 
-    Safe for reconnect: starts from position 0, replays the full buffered history.
-    Handles orphaned streams (e.g. backend restart) by timing out after 60 s idle.
+    Safe for reconnect: starts from position 0, replays the full buffered
+    history. Handles orphaned streams (e.g. backend restart) by timing out
+    after 60 s idle.
 
-    Upstash's REST API has no blocking XREAD, so this tails by adaptive polling
-    (see the cadence constants above): a tight loop while events are flowing,
-    fast polling for ~1 s after the last event so the next burst is picked up
-    near-instantly, then a slow poll once sustainedly idle. Terminal status is
-    checked at most every `_STATUS_INTERVAL`, not on every fast poll.
+    The first read is non-blocking so an already-finished stream replays its
+    history and terminates without waiting out a block; every read after that
+    blocks, so a live event is delivered the instant it is written.
+
+    The XREADs run on the dedicated blocking pool — one connection per
+    concurrent reader, held for the length of the block — while the status
+    checks stay on the ordinary pool (see core/utils/redis_client.py).
     """
-    r = _get_redis()
+    r = get_blocking_redis()
     key = _sk(thread_id)
     last_id = "0-0"
-    empty_polls = 0
-    now = time.monotonic()
-    idle_deadline = now + _ORPHAN_TIMEOUT
-    last_status_check = 0.0
+    idle_deadline = time.monotonic() + _ORPHAN_TIMEOUT
+    blocking = False
 
     while True:
-        entries = await r.xread({key: last_id}, count=50)
+        entries = await r.xread(
+            {key: last_id}, count=500, block=_BLOCK_MS if blocking else None
+        )
+        blocking = True
         if entries:
-            empty_polls = 0
             idle_deadline = time.monotonic() + _ORPHAN_TIMEOUT
             for _, messages in entries:
                 for msg_id, fields in messages:
-                    data = _entry_data(fields)
+                    data = fields.get("data")
                     if data is not None:
                         yield data
                     last_id = msg_id
             continue  # read again immediately while the stream is producing
 
-        empty_polls += 1
-        now = time.monotonic()
-        # Check for terminal status on the first empty poll (fast-path a stream
-        # that's already done — e.g. a reconnect after completion) and at most
-        # every _STATUS_INTERVAL thereafter.
-        if empty_polls == 1 or now - last_status_check >= _STATUS_INTERVAL:
-            last_status_check = now
-            status = await stream_get_status(thread_id)
-            if status in ("done", "error", None):
-                # Drain anything written between our last read and the status check.
-                tail = await r.xread({key: last_id}, count=1000)
-                if tail:
-                    for _, messages in tail:
-                        for msg_id, fields in messages:
-                            data = _entry_data(fields)
-                            if data is not None:
-                                yield data
-                break
-        if now >= idle_deadline:
+        # Nothing arrived within the block — the only two reasons to stop.
+        status = await stream_get_status(thread_id)
+        if status in ("done", "error", None):
+            # Drain anything written between our last read and the status check.
+            tail = await r.xread({key: last_id}, count=1000)
+            if tail:
+                for _, messages in tail:
+                    for msg_id, fields in messages:
+                        data = fields.get("data")
+                        if data is not None:
+                            yield data
+                        last_id = msg_id
             break
-        await asyncio.sleep(_POLL_FAST if empty_polls <= _FAST_POLLS else _POLL_SLOW)
+        if time.monotonic() >= idle_deadline:
+            break

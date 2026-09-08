@@ -20,6 +20,7 @@ from core.database.checkpointer import (
     backfill_rewind_point,
     _rewind_points_key,
 )
+from core.utils.redis_client import get_async_redis
 from core.redis_stream import (
     stream_write_batch,
     stream_set_status,
@@ -626,7 +627,7 @@ async def _find_rewind_target(agent, thread_id: str, target_turn: int | None):
     ``(state, turn)`` or ``(None, None)``.
 
     Prefers the O(1) rewind_points map the checkpointer maintains on every
-    write (core/database/checkpointer.py) — a single Upstash round trip
+    write (core/database/checkpointer.py) — a single Redis round trip
     either way — and only falls back to the old O(checkpoints-in-thread)
     backward scan for threads/turns the map doesn't know about yet (written
     before this feature existed, or an expired/evicted entry). The fallback
@@ -643,7 +644,7 @@ async def _find_rewind_target(agent, thread_id: str, target_turn: int | None):
     elif checkpointer_module.checkpointer is not None:
         # "Most recent" — the map's largest turn key, one HGETALL away
         # instead of a scan.
-        entries = await checkpointer_module.checkpointer.client.hgetall(_rewind_points_key(thread_id))
+        entries = await get_async_redis().hgetall(_rewind_points_key(thread_id))
         if entries:
             latest_turn = max(int(k) for k in entries)
             state = await _resolve_checkpoint_state(agent, thread_id, entries[str(latest_turn)])
@@ -691,7 +692,7 @@ async def _strip_trailing_messages(agent, cfg: dict, boundary_message_id: str) -
 
     Forking from a historical checkpoint can silently fold in writes the
     *original* run had already computed for it but not yet applied — the
-    Upstash saver (like other checkpointers) keeps a task's completed output
+    Redis saver (like other checkpointers) keeps a task's completed output
     as a "pending write" tied to its checkpoint_id until the next checkpoint
     applies it, and both a plain regenerate (astream from that checkpoint's
     config as-is) and an edit (aupdate_state on it) were confirmed via direct

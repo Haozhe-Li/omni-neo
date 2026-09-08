@@ -14,8 +14,8 @@ Retention policy:
     - logged-in user:                            90 days
     - pinned threads:                            never auto-deleted
 
-LangGraph checkpoint state now lives in Upstash Redis (see checkpointer.py),
-not Postgres tables, so thread deletion clears it via the sync Upstash saver's
+LangGraph checkpoint state now lives in the application's Redis (see checkpointer.py),
+not Postgres tables, so thread deletion clears it via the sync Redis saver's
 `delete_thread` instead of `DELETE FROM checkpoints`.
 """
 
@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
-from core.database.checkpointer import sync_checkpointer, delete_rewind_points
+from core.database.checkpointer import get_sync_checkpointer, delete_rewind_points
 from core.utils import redis_sources, vector_sources
 
 logger = logging.getLogger(__name__)
@@ -289,9 +289,9 @@ def get_thread_ids_owned_by_user(user_id: str) -> list[str]:
 
 
 def _delete_checkpoint_state(thread_id: str) -> None:
-    """Clear a thread's LangGraph checkpoint state from Upstash Redis."""
+    """Clear a thread's LangGraph checkpoint state from Redis."""
     try:
-        sync_checkpointer.delete_thread(thread_id)
+        get_sync_checkpointer().delete_thread(thread_id)
     except Exception as e:
         logger.error(f"[db_threads_control] checkpoint cleanup error for {thread_id}: {e}")
     try:

@@ -5,7 +5,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-from core.utils.redis_cache import r as _redis
+from core.utils.frontend_redis import get_frontend_redis
 
 # from core.utils.redis_cache import l1cache
 
@@ -19,10 +19,10 @@ _TIMEOUT_RESULT = {
 # Cloudflare sits in front of omniknows.xyz and blocks Spider outright — a
 # direct fetch from here would fare no better, since it gates the inbound
 # request itself, not which client makes it. So first-party content is never
-# fetched over the network at all: the frontend pushes it straight into the
-# same Upstash Redis database this backend already talks to (same
-# UPSTASH_REDIS_REST_URL/TOKEN on both sides — see core/utils/redis_cache.py),
-# and we just read it back out here.
+# fetched over the network at all: the frontend pushes it straight into its own
+# Upstash Redis, and we read it back out here through the dedicated client in
+# core/utils/frontend_redis.py — which is *not* the application's own Redis
+# (that one is Railway over TCP now, and has none of these keys).
 _FIRST_PARTY_HOST = "omniknows.xyz"
 # Written by the frontend's lib/llms-txt.ts, refreshed on demand (the
 # benchmark page's "Ask Omni" link and its Refresh button) rather than on a
@@ -49,7 +49,7 @@ def first_party_redis_shortcut(url: str) -> dict | None:
     path = parsed.path.rstrip("/") or "/"
 
     if path == "/benchmark/llms.txt":
-        raw = _redis.get(_LLMS_TXT_REDIS_KEY)
+        raw = get_frontend_redis().get(_LLMS_TXT_REDIS_KEY)
         data = _decode_redis_json(raw)
         if data is None:
             return None
@@ -61,7 +61,7 @@ def first_party_redis_shortcut(url: str) -> dict | None:
 
     match = _PAGE_ID_RE.match(path)
     if match:
-        raw = _redis.get(f"publish:{match.group(1)}")
+        raw = get_frontend_redis().get(f"publish:{match.group(1)}")
         data = _decode_redis_json(raw)
         if data is None:
             return None

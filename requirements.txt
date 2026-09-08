@@ -27,9 +27,10 @@ langchain-openai
 langchain-google-genai
 langchain-cerebras
 
-# For persisting agent state — LangGraph checkpoints in Upstash Redis (HTTP REST),
+# For persisting agent state — LangGraph checkpoints in Redis (TCP, needs
+# RedisJSON + RediSearch: Redis 8.0+ or Redis Stack),
 # app data in Supabase over PostgREST (HTTP). No direct Postgres/TCP anymore.
-langgraph-checkpoint-upstash-redis
+langgraph-checkpoint-redis
 supabase
 
 # For fetching data
@@ -75,7 +76,10 @@ pandas
 matplotlib
 boto3
 
-# cache + stream buffer + checkpoints (Upstash Redis over HTTP REST)
+# cache + stream buffer + checkpoints + citations (Railway Redis over TCP)
+redis
+# still needed for the frontend's Upstash database, which holds the published
+# Omni Pages this backend reads (core/utils/frontend_redis.py)
 upstash-redis
 
 # RAG
