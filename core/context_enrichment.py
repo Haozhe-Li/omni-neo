@@ -511,26 +511,23 @@ class Enrichment:
     sources: list[dict] = field(default_factory=list)
 
 
-_PREAMBLE = (
-    "A fast pre-flight scout ran ONE retrieval for this turn before you "
-    "started, to save you a round trip. It is a broad first sweep, not "
-    "research: it may be shallow, partial, or beside the point. Read it "
-    "first, then go deeper with your own tools whenever the question needs "
-    "more — and ignore it entirely if it missed. You do not need to run this "
-    "same lookup again."
+# The tool call is folded into the first line rather than printed under its own
+# `Tool called:` header — the header only restated what the sentence already
+# says, and this block sits in the prompt of every enriched turn.
+_PREAMBLE = "We ran {call} for you before this turn."
+
+# Appended depending on what the run actually registered. The distinction is
+# load-bearing: told unconditionally that "every [n] below is a real citation
+# number", the model would emit a [1] for a result that carried no citation at
+# all, and the frontend would render a marker linking nowhere.
+_PREAMBLE_CITED = " Cite it as normal — every [n] below is a real citation number."
+_PREAMBLE_UNCITED = (
+    " It carries no citation number — use the figures, but attach no [n] marker."
 )
 
-# Appended to the preamble depending on what the run actually registered. The
-# distinction is load-bearing: told unconditionally that "every [n] below is a
-# real citation number", the model would emit a [1] for a result that carried
-# no citation at all, and the frontend would render a marker linking nowhere.
-_PREAMBLE_CITED = (
-    " Every [n] below is a real citation number you can cite exactly as if you "
-    "had run the tool yourself."
-)
-_PREAMBLE_UNCITED = (
-    " This result carries no citation number — use the figures in it, but do "
-    "not attach any [n] marker to them."
+_PREAMBLE_TAIL = (
+    " If it answers the question, answer from it and do not repeat this lookup; "
+    "otherwise go deeper with your own tools."
 )
 
 
@@ -627,8 +624,12 @@ async def enrich_context(
     ]
 
     call_line = ", ".join(f'{k}="{v}"' for k, v in args.items())
-    preamble = _PREAMBLE + (_PREAMBLE_CITED if sources else _PREAMBLE_UNCITED)
-    text = f"{preamble}\n\nTool called: {action.tool}({call_line})\n\n{body}"
+    preamble = (
+        _PREAMBLE.format(call=f"{action.tool}({call_line})")
+        + (_PREAMBLE_CITED if sources else _PREAMBLE_UNCITED)
+        + _PREAMBLE_TAIL
+    )
+    text = f"{preamble}\n\n{body}"
 
     events: list[dict] = [{"type": "tool_call", "tool": action.tool, "args": args}]
     if widget:
