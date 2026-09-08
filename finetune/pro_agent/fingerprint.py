@@ -52,7 +52,7 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from core.agent import (  # noqa: E402
     SYSTEM_PROMPT,
     SKILL_FILES,
-    RETRIEVAL_TOOLS,
+    AGENT_TOOLS,
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
@@ -117,7 +117,7 @@ def capture() -> tuple[str, list[dict]]:
     agent = create_deep_agent(
         name="omni-eval-pro",
         model=chat_llm,
-        tools=RETRIEVAL_TOOLS,
+        tools=AGENT_TOOLS,
         system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE],
         checkpointer=InMemorySaver(),

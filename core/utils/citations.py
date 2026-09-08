@@ -28,7 +28,7 @@ from contextvars import ContextVar
 from core.utils import redis_sources, vector_sources
 
 # redis_sources.persist_citation is a synchronous (blocking) Redis call, but
-# _register runs inline inside `google_search`/`load_web_page` — both `async
+# _register runs inline inside `web_search`/`fetch_url` — both `async
 # def` tools that the agent awaits directly on the event loop, unlike sync
 # tools, which LangChain itself already dispatches to a worker thread. A
 # blocking call here would freeze that request's event loop for its
@@ -169,7 +169,7 @@ def _register(
                     pass
             _persist_executor.submit(_persist)
             # Junk is never indexed: the agent never sees junk content (see
-            # google_search/load_web_page), so no claim in the answer can
+            # web_search/fetch_url), so no claim in the answer can
             # legitimately be "supported by" it — indexing it anyway would
             # just be wasted storage, and worst case lets `/check_source`
             # spuriously match a claim against junk text that merely looks

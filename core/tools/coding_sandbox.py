@@ -10,7 +10,6 @@ import logging
 import os
 
 from e2b_code_interpreter import Sandbox
-from langchain_core.tools import tool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,8 +25,7 @@ os.environ["DISPLAY"] = ""
 """
 
 
-@tool
-def run_python(filename: str, code: str) -> str:
+def run_python_e2b(filename: str, code: str) -> str:
     """Execute Python code and return stdout, the final expression value, and any errors.
 
     Use this for computation, data analysis, math, simulations, string processing,

@@ -333,7 +333,7 @@ GROUP BY r.run_id, r.label, r.model_label, r.started_at, r.status, cs.suite;
 -- `word_count` once per min/max pair — leaving several partial rows where none
 -- of them answers "how often does this check fail". `key` is the stable
 -- identity: config.py already folds the discriminating argument into it where
--- that matters (`skill_loaded:charting`, `tool_called:google_search`), so
+-- that matters (`skill_loaded:charting`, `tool_called:web_search`), so
 -- collapsing on it merges thresholds without merging different checks.
 -- `label` is kept as a representative sample, purely so the view's column list
 -- is unchanged and CREATE OR REPLACE still applies over the old definition.

@@ -4,6 +4,7 @@ import json
 import numpy as np
 from typing import Dict, Any, Optional
 from core.utils.redis_cache import l1cache
+from core.utils.citations import register_citation
 
 
 # @l1cache(ttl=3600 * 24 * 3)
@@ -162,17 +163,57 @@ def _get_stock_data_cached(symbol: str) -> Dict[str, Any]:
         }
 
 
+def _quote_summary_text(data: Dict[str, Any]) -> str:
+    """One-line human-readable quote, used as the citation's content."""
+    parts = [f"{data.get('companyName') or data['symbol']} ({data['symbol']})"]
+    price = data.get("currentPrice")
+    if price is not None:
+        parts.append(f"{price} {data.get('currency', '')}".strip())
+    change = data.get("changePercent")
+    if change is not None:
+        parts.append(f"{change:+.2f}% on the day")
+    cap = data.get("marketCap")
+    if cap:
+        parts.append(f"market cap {cap:,}")
+    return ", ".join(parts) + "."
+
+
 def get_stock_data(
     symbol: str,
 ) -> Dict[str, Any]:
     """Get latest stock snapshot data for a symbol.
 
+    Registers a citation for the quote — same contract as the weather tools,
+    and the reason is the same: the agent is told to cite anything a tool gave
+    it, so a payload with no `n` leaves it choosing between citing a number
+    that does not exist and stating a live market figure with no source at all.
+    It reliably picked the first, and the frontend rendered a [1] that linked
+    nowhere.
+
     Args:
         symbol: Stock ticker symbol (e.g., "TSLA").
     Returns:
-        Stock snapshot payload including key metrics.
+        Stock snapshot payload including key metrics, plus an `n` citation
+        number when the quote came back.
     """
-    return _get_stock_data_cached(symbol)
+    result = _get_stock_data_cached(symbol)
+    data = result.get("data") if result.get("success") else None
+    # A price is what makes the quote real. yfinance answers an unknown ticker
+    # with success=True and a near-empty payload (companyName "N/A", no price),
+    # which would otherwise register a citation titled "N/A" pointing at a
+    # Yahoo page that 404s.
+    if data and data.get("currentPrice") is not None:
+        ticker = data.get("symbol", symbol)
+        n = register_citation(
+            title=f"{data.get('companyName') or ticker} ({ticker}) stock quote",
+            # Deduped on url, so it is per-ticker: two quotes in one thread stay
+            # two citations, and re-quoting the same ticker reuses its number.
+            url=f"https://finance.yahoo.com/quote/{ticker}",
+            content=_quote_summary_text(data),
+        )
+        if n is not None:
+            result["n"] = n
+    return result
 
 
 # if __name__ == "__main__":

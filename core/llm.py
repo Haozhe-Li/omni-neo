@@ -99,6 +99,9 @@ gpt_oss_120b_medium_groq = ChatGroq(
     model="openai/gpt-oss-120b", temperature=0.2, reasoning_effort="medium", reasoning_format="parsed"
 )
 gpt_oss_20b = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1)
+gpt_oss_20b_low = ChatGroq(
+    model="openai/gpt-oss-20b", temperature=0.1, reasoning_effort="low"
+)
 qwen_3_6_27b = ChatGroq(model="qwen/qwen3.6-27b", temperature=0.2, max_completion_tokens=16384)
 gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-latest")
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
@@ -210,33 +213,70 @@ qwen3_30b_a3b = ChatWandb(
 # under the old field spelling. See `evals/backfill_cases.py`.
 #
 # temperature 0.2, unchanged from v3/v4 so the comparison stays clean.
-rix_30b_a3b_v5 = ChatWandb(
+# Offline as of the tool adapter layer: v5 was trained on the pre-adapter tool
+# names (`google_search`, `load_web_page`, `run_python`, …), none of which the
+# agent exposes any more, so it would spend every turn calling tools that no
+# longer exist. Retrain against the current schema before serving it again.
+# rix_30b_a3b_v5 = ChatWandb(
+#     model=(
+#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+#         "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
+#     ),
+#     temperature=0.2,
+#     max_tokens=8192,
+# )
+
+# v6: 360 rows, 3 epochs, 1080 steps, run-level train/loss 0.613 (per-epoch
+# means 0.926 -> 0.561 -> 0.352). Serves `rix`.
+#
+# The first adapter trained on the current harness, which is why v5 had to go
+# offline rather than simply be superseded: v5 knew the pre-adapter tool names
+# (`google_search`, `load_web_page`, `run_python`), none of which the agent
+# exposes any more. What v6 additionally sees, all of it absent from every
+# earlier version:
+#
+#   - `<context_enrichment>` on 194 of 360 rows. Production now runs a
+#     pre-flight scout before the agent (core/context_enrichment.py) and hands
+#     it a search, weather, stock or FX result inside the user message. Every
+#     earlier adapter would meet that block for the first time in production.
+#   - `<system_reminder>` in place of `<personalization>`, identity line
+#     included.
+#   - The ```text writing contract and the draft-email skill: 36 rows deliver
+#     prose in a fence, 16 load draft-email and deliver `<textblock
+#     type="email">`, and no row mixes the two.
+#   - Randomised context envelopes — 25 rows carry no personalization at all,
+#     89 carry a memory block, and the response language is production's
+#     `Follow User's Query Language` default on a third of them. Earlier
+#     versions pinned a language and a two-week datetime window on every row,
+#     so those values were as much a part of each example as the task.
+#
+# Loss is above v4's 0.422 and v5's 0.431 on the same run-level statistic, and
+# that is the epoch count, not a regression: those ran 6 epochs, this one 3.
+# v6's third epoch alone averages 0.352, below both. Whether the extra data is
+# worth the shallower training is a benchmark question, not a loss question.
+#
+# temperature 0.2, unchanged from v3/v4/v5 so the comparison stays clean.
+rix_30b_a3b_v6 = ChatWandb(
     model=(
         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
+        "/omni-pro-agent/omni-pro-v6-0907-1712:v1"
     ),
     temperature=0.2,
     max_tokens=8192,
 )
 
-omni_widget_predictor_14b = ChatOpenAI(
-    model=(
-        os.environ["WIDGET_PREDICTOR_14B_MODEL"]
-    ),
-    base_url="https://api.inference.wandb.ai/v1",
-    api_key=os.environ["WANDB_API_KEY"],
-    temperature=0,
-    max_tokens=128,
-)
-
-# For chat
-chat_llm = gpt_oss_120b_low
-vision_llm = gemma_4_31b
+# For chat. `best` is these two: the fine-tune serves text, and
+# VisionModelMiddleware swaps to `vision_llm` the moment an image appears
+# anywhere in the conversation (core/agent.py) — the adapter is served by W&B
+# Inference without vision, so an image turn on it would 400.
+chat_llm = rix_30b_a3b_v6
+vision_llm = gpt_5_6_luna
 
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
 update_memories_llm = gpt_oss_20b
-widget_predictor_llm = omni_widget_predictor_14b
+# One structured-output call in front of every turn — see core/context_enrichment.py.
+context_enrich_llm = gpt_oss_20b_low
 credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
 research_schedule_llm = gpt_oss_120b_low

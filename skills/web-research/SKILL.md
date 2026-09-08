@@ -29,13 +29,13 @@ Feel free to use `write_todos` to lay this out and track progress as you go — 
 ## Step 2 — Gather
 
 **Searching:**
-- One targeted `google_search` per sub-topic. `load_web_page` only on clearly relevant, non-paywalled results.
+- One targeted `web_search` per sub-topic. `fetch_url` only on clearly relevant, non-paywalled results.
 - Read 2–4 pages per sub-topic. Stop when two consecutive pages add nothing new.
 - **Hard cap: 2 searches per sub-topic** (initial + one reformulation). Never a third — move on.
 - Roughly 5 tool calls max per sub-topic overall (e.g., 2 searches + 1–2 page loads + 1 compute) — if you hit that with no result, move on rather than linger.
 
 **Computing:**
-- For numbers, comparisons, or quantitative verification, use `run_python` — don't approximate in prose.
+- For numbers, comparisons, or quantitative verification, use `python_exec` — don't approximate in prose.
 
 **Sources:**
 - Prefer primary sources and established outlets over aggregator summaries.

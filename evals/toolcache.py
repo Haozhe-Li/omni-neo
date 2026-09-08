@@ -1,6 +1,6 @@
 """Disk-backed memoisation of retrieval tools, for cross-model comparability.
 
-`google_search` hits the live web. Run the same case against two models and
+`web_search` hits the live web. Run the same case against two models and
 they see different pages, so part of the score gap is search luck rather than
 model behaviour. With the cache on, the first model to run a given
 `(tool, args)` pair populates it and every later model sees byte-identical
@@ -50,7 +50,7 @@ DEFAULT_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".toolcache")
 
 # Tools whose results are deterministic-by-construction or purely local; there
 # is nothing to freeze and caching them only risks staleness bugs.
-_NEVER_CACHE = {"run_python", "write_todos", "read_file", "write_file", "ls", "grep", "edit_file"}
+_NEVER_CACHE = {"python_exec", "write_todos", "read_file", "write_file", "ls", "grep", "edit_file"}
 
 
 @dataclass
@@ -145,7 +145,7 @@ class ToolCache:
         """Rewrite every `n` field through the map, recursively.
 
         `n` is always a dedicated dict field in these tools' payloads (verified
-        across google_search / load_web_page / get_weather / get_weather_forecast)
+        across web_search / fetch_url / weather_current / weather_forecast)
         rather than interpolated into prose, which is what makes a structural
         rewrite safe. An `n` with no mapping is dropped rather than left stale:
         a citation the model can't legitimately use should not be offered to it.
@@ -192,9 +192,9 @@ class ToolCache:
 def wrap_tools(tools: list[Any], cache: ToolCache) -> list[Any]:
     """Return `tools` with every cacheable one memoised through `cache`.
 
-    Handles both shapes `core.agent.RETRIEVAL_TOOLS` actually contains: most
+    Handles both shapes `core.agent.AGENT_TOOLS` actually contains: most
     entries are plain functions that LangChain converts to tools itself by
-    reading their signature and docstring, and only `run_python` arrives as a
+    reading their signature and docstring, and only `python_exec` arrives as a
     `BaseTool`. Wrapping a bare function has to preserve that signature — the
     tool schema the model sees is derived from it — which `functools.wraps`
     does by leaving `__wrapped__` for `inspect.signature` to follow.
@@ -284,8 +284,8 @@ def _key_args(fn: Callable, args: tuple, kwargs: dict) -> dict[str, Any]:
 
     Binding through the signature (rather than keying on the raw args tuple)
     means a positional and a keyword call of the same arguments produce the same
-    cache key, and defaults are filled in — so `google_search("x")` and
-    `google_search(query="x", k=5)` hit the same entry instead of searching
+    cache key, and defaults are filled in — so `web_search("x")` and
+    `web_search(query="x", k=5)` hit the same entry instead of searching
     twice.
     """
     import inspect

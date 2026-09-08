@@ -44,16 +44,25 @@ def doc_path(q: "Query") -> Path:
 OPTIONAL_BLOCKS = {
     "user_memory": 12,
     "attached_files": 8,
+    # The label a query uses to say "the user pinned a URL for this turn". The
+    # tag it produces is `<context_enrichment>` since the 2026-09 rename (the
+    # same block the pre-flight scout fills when no URL is pinned), but the
+    # label is the *input* knob — `source_url` — and renaming it would only
+    # invalidate the queries already carrying it.
     "priority_sources": 6,
     "follow_up_selection": 6,
     "requested_skill": 6,
 }
 
+# Blocks whose payload is a pinned URL list. One name today; a second spelling
+# would go here rather than in every `q.block ==` test.
+SOURCE_URL_BLOCKS = {"priority_sources"}
+
 DEFAULT_RUN_LIMIT = 30
 
 # What production puts in `Response Language:` when the user has set no
 # preference — an instruction, not a language name. Read off the model rather
-# than retyped: `core/utils/utils.py::format_personalization` renders whatever
+# than retyped: `core/utils/utils.py::format_system_reminder` renders whatever
 # this default holds, so a copy here would silently drift the day it changes.
 #
 # It appeared in 0 of the first 147 trajectories (every one pinned 简体中文 or
@@ -80,7 +89,7 @@ class Query:
     personalization: dict[str, str] = field(default_factory=dict)
     # Payloads for the two blocks whose content cannot be derived. A
     # `<follow_up_selection>` is a passage from the *previous* answer, and
-    # `<priority_sources>` is a URL the user pinned — neither follows from the
+    # a pinned URL fills `<context_enrichment>` — neither follows from the
     # query, so both are authored per query and validated below.
     follow_up: str = ""
     source_url: list[str] = field(default_factory=list)
@@ -287,11 +296,11 @@ def load() -> Spec:
             problems.append(f"{q.id}: block is attached_files but {doc_path(q).name} is missing")
         if q.block == "follow_up_selection" and not q.follow_up:
             problems.append(f"{q.id}: block is follow_up_selection but follow_up: is empty")
-        if q.block == "priority_sources" and not q.source_url:
-            problems.append(f"{q.id}: block is priority_sources but source_url: is empty")
+        if q.block in SOURCE_URL_BLOCKS and not q.source_url:
+            problems.append(f"{q.id}: block is {q.block} but source_url: is empty")
         if q.follow_up and q.block != "follow_up_selection":
             problems.append(f"{q.id}: has follow_up: but block is {q.block!r}")
-        if q.source_url and q.block != "priority_sources":
+        if q.source_url and q.block not in SOURCE_URL_BLOCKS:
             problems.append(f"{q.id}: has source_url: but block is {q.block!r}")
 
     if problems:

@@ -63,7 +63,7 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 # Interactive turns are keyed by **model id** now (see core/chat_models.py) —
 # `rix` and a plain `best` turn are 1 credit, every other model is 3, and
 # `best-vision` is what the chat router passes when this turn carries an image
-# and will therefore be re-routed to gemma. The old `fast`/`pro` keys are kept
+# and will therefore be re-routed to luna. The old `fast`/`pro` keys are kept
 # because a client on a stale bundle, or a rewind of a thread created before
 # this change, still sends them; both bill as `best` did.
 #

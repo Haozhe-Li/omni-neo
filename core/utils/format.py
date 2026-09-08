@@ -19,6 +19,62 @@ def _attach_assets(payload: dict) -> dict:
     return merged
 
 
+# What each tool's output becomes in the SSE payload. Tool names are the
+# adapter-layer ones (see core/tools/adapters.py); the retired names below
+# them are kept as aliases so threads already stored in the DB still render.
+_PAYLOAD_KIND = {
+    "web_search": "sources",
+    "fetch_url": "page",
+    "stock_search": "stock",
+    "weather_current": "weather",
+    "weather_forecast": "weather",
+    "currency_convert": "currency",
+    "draw_graph": "assets",
+    # Retired: pre-adapter-layer, pre-SearXNG, and the never-shipped `_light`
+    # variants. `map` has no live producer at all — place search was dropped
+    # when web search replaced it.
+    "google_search": "sources",
+    "google_search_light": "sources",
+    "web_search_light": "sources",
+    "tavily_search": "sources",
+    "load_web_page": "page",
+    "load_web_page_light": "page",
+    "google_search_places": "map",
+    "google_search_places_light": "map",
+    "search_place": "map",
+    "get_stock_data": "stock",
+    "get_stock_data_light": "stock_wrapped",
+    "get_weather": "weather",
+    "get_weather_light": "weather",
+    "get_weather_forecast": "weather",
+    "get_realtime_currency_rate": "currency",
+    "get_realtime_currency_rate_light": "currency",
+}
+
+
+def _as_items(payload: Any) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return payload.get("results", [])
+    return []
+
+
+def _as_source(item: dict, truncate: int | None = None) -> dict | None:
+    title = str(item.get("title") or item.get("name") or "").strip()
+    url = str(item.get("url") or item.get("link") or "").strip()
+    content = str(item.get("content") or item.get("snippet") or "").strip()
+    if not (title or url or content):
+        return None
+    if truncate and len(content) > truncate:
+        content = content[:truncate] + "..."
+    src = {"title": title, "url": url, "content": content}
+    for field in ("n", "credibility"):
+        if item.get(field) is not None:
+            src[field] = item[field]
+    return src
+
+
 def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     """
     Extract sources, map, stock, weather metadata from tool output.
@@ -38,123 +94,59 @@ def _extract_domain_metadata(tool_name: str, tool_output: Any) -> dict:
     if not parsed_payload:
         return {}
 
-    sources = []
-    map_results = []
-    stock_payload = {}
-    weather_payload = {}
-    currency_payload = {}
-    assets_payload = []
+    kind = _PAYLOAD_KIND.get(tool_name)
+    res: dict[str, Any] = {}
 
-    # Handle search results
-    if tool_name in ["google_search", "google_search_light", "tavily_search"]:
-        items = (
-            parsed_payload
-            if isinstance(parsed_payload, list)
-            else parsed_payload.get("results", [])
-            if isinstance(parsed_payload, dict)
-            else []
-        )
-        for item in items:
-            if isinstance(item, dict):
-                title = str(item.get("title") or item.get("name") or "").strip()
-                url = str(item.get("url") or item.get("link") or "").strip()
-                content = str(item.get("content") or item.get("snippet") or "").strip()
-                if title or url or content:
-                    src = {"title": title, "url": url, "content": content}
-                    if item.get("n") is not None:
-                        src["n"] = item["n"]
-                    if item.get("credibility") is not None:
-                        src["credibility"] = item["credibility"]
-                    sources.append(src)
+    if kind == "sources":
+        sources = [s for s in (_as_source(i) for i in _as_items(parsed_payload) if isinstance(i, dict)) if s]
+        if sources:
+            res["sources"] = sources
 
-    # Handle direct page loads
-    elif tool_name in ["load_web_page", "load_web_page_light"]:
-        if isinstance(parsed_payload, dict):
-            title = str(
-                parsed_payload.get("title") or parsed_payload.get("name") or ""
-            ).strip()
-            url = str(
-                parsed_payload.get("url") or parsed_payload.get("link") or ""
-            ).strip()
-            content = str(
-                parsed_payload.get("content") or parsed_payload.get("snippet") or ""
-            ).strip()
-            if len(content) > 100:
-                content = content[:100] + "..."
-            if title or url or content:
-                src = {"title": title, "url": url, "content": content}
-                if parsed_payload.get("n") is not None:
-                    src["n"] = parsed_payload["n"]
-                if parsed_payload.get("credibility") is not None:
-                    src["credibility"] = parsed_payload["credibility"]
-                sources.append(src)
+    elif kind == "page" and isinstance(parsed_payload, dict):
+        source = _as_source(parsed_payload, truncate=100)
+        if source:
+            res["sources"] = [source]
 
-    # Handle map results
-    elif tool_name in ["google_search_places", "google_search_places_light"]:
-        items = (
-            parsed_payload
-            if isinstance(parsed_payload, list)
-            else parsed_payload.get("results", [])
-            if isinstance(parsed_payload, dict)
-            else []
-        )
-        for item in items:
-            if isinstance(item, dict):
-                map_results.append(item)
+    elif kind == "map":
+        map_results = [i for i in _as_items(parsed_payload) if isinstance(i, dict)]
+        if map_results:
+            res["map"] = map_results
 
-    # Handle stock data
-    elif tool_name in ["get_stock_data"]:
-        stock_payload = parsed_payload
-    elif tool_name in ["get_stock_data_light"]:
-        candidate = (
-            parsed_payload.get("stock") if isinstance(parsed_payload, dict) else None
-        )
-        if isinstance(candidate, dict):
-            stock_payload = candidate
+    elif kind == "stock":
+        if parsed_payload:
+            res["stock"] = parsed_payload
 
-    # Handle weather data
-    elif tool_name in ["get_weather", "get_weather_light"]:
-        weather_payload = parsed_payload
+    elif kind == "stock_wrapped":
+        candidate = parsed_payload.get("stock") if isinstance(parsed_payload, dict) else None
+        if isinstance(candidate, dict) and candidate:
+            res["stock"] = candidate
 
-    # Handle currency data
-    elif tool_name in [
-        "get_realtime_currency_rate",
-        "get_realtime_currency_rate_light",
-    ]:
-        currency_payload = parsed_payload
+    elif kind == "weather":
+        if parsed_payload:
+            res["weather"] = parsed_payload
 
-    # Handle graph generation
-    elif tool_name == "draw_graph":
-        if isinstance(parsed_payload, dict):
+    elif kind == "currency":
+        if parsed_payload:
+            res["currency"] = parsed_payload
 
-            def _find_urls(obj):
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, str) and (
-                            v.startswith("http") or v.startswith("s3")
-                        ):
-                            assets_payload.append({"title": k, "url": v})
-                        elif isinstance(v, (dict, list)):
-                            _find_urls(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        _find_urls(item)
+    elif kind == "assets" and isinstance(parsed_payload, dict):
+        assets: list[dict] = []
 
-            _find_urls(parsed_payload)
+        def _find_urls(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(v, str) and (v.startswith("http") or v.startswith("s3")):
+                        assets.append({"title": k, "url": v})
+                    elif isinstance(v, (dict, list)):
+                        _find_urls(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _find_urls(item)
 
-    res = {}
-    if sources:
-        res["sources"] = sources
-    if map_results:
-        res["map"] = map_results
-    if stock_payload:
-        res["stock"] = stock_payload
-    if weather_payload:
-        res["weather"] = weather_payload
-    if currency_payload:
-        res["currency"] = currency_payload
-    if assets_payload:
-        res["assets"] = assets_payload
+        _find_urls(parsed_payload)
+        if assets:
+            res["assets"] = assets
+
     return res
 
 

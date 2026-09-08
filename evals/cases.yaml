@@ -19,8 +19,8 @@
 #   tool_called          {tool, min, max}   调用次数落在 [min, max]
 #   no_tool_calls        {}                 一次工具都没调
 #   distinct_queries     {tool, min}        去重后的不同查询数(防同一 query 刷次数)
-#   distinct_domains     {min}              load_web_page 命中的不同域名数
-#   search_discipline    {max_per_topic}    同一 sub-topic 的 google_search 上限
+#   distinct_domains     {min}              fetch_url 命中的不同域名数
+#   search_discipline    {max_per_topic}    同一 sub-topic 的 web_search 上限
 # 产物
 #   has_report           {min_words, max_words, require_title}
 #   no_report            {}
@@ -30,9 +30,11 @@
 #   no_map               {}
 #   question_block       {min_q, max_q, must_be_last}
 #   no_question_block    {}
+#   text_fence           {min, max, min_words, max_words}
+#                                           写作类:交付物在 ```text 围栏里
 #   textblock            {min, max, require_type, require_subject,
 #                         min_words, max_words}
-#                                           写作类:交付物在 <textblock> 里
+#                                           邮件:交付物在 <textblock> 里
 #   no_textblock         {}                 反向,用于非写作 case
 #   followup_question    {}                 写作类:结尾一个追问
 # 格式(全部对应 core/agent.py PRO_PROMPT 里的硬约束)
@@ -99,7 +101,7 @@ defaults:
   #
   # 三个新增(citation_coverage / latex_sanity / search_discipline)之前只在
   # 少数 case 里手动加过,但对应的 PRO_PROMPT 规则("工具事实必须引用"、
-  # "LaTeX 只用于真公式"、"每个子话题最多 2 次 google_search")本就是普适的硬
+  # "LaTeX 只用于真公式"、"每个子话题最多 2 次 web_search")本就是普适的硬
   # 约束,三个 check 在不适用时都会安全地判过(见 checks.py 里各自的实现),
   # 提到 common 上不会误伤不涉及检索/数学的 case。
   common_checks:
@@ -137,9 +139,9 @@ cases:
       - {key: skill_loaded,      args: {skill: charting},       weight: 2}
       - {key: skill_loaded,      args: {skill: report-writing}, weight: 2}
       - {key: skill_load_order,  args: {before: web-research, after: report-writing}, weight: 1}
-      - {key: tool_called,       args: {tool: google_search, min: 3, max: 12}, weight: 2}
-      - {key: tool_called,       args: {tool: load_web_page, min: 2, max: 12}, weight: 2}
-      - {key: distinct_queries,  args: {tool: google_search, min: 3}, weight: 2}
+      - {key: tool_called,       args: {tool: web_search, min: 3, max: 12}, weight: 2}
+      - {key: tool_called,       args: {tool: fetch_url, min: 2, max: 12}, weight: 2}
+      - {key: distinct_queries,  args: {tool: web_search, min: 3}, weight: 2}
       - {key: distinct_domains,  args: {min: 3}}
       - {key: has_report,        args: {min_words: 800, require_title: true}, weight: 3}
       - {key: chart_count,       args: {min: 2}, weight: 3}
@@ -175,7 +177,7 @@ cases:
     checks:
       - {key: skill_loaded,     args: {skill: web-research}, weight: 3}
       - {key: skill_loaded,     args: {skill: report-writing}, weight: 2}
-      - {key: tool_called,      args: {tool: google_search, min: 3, max: 12}, weight: 2}
+      - {key: tool_called,      args: {tool: web_search, min: 3, max: 12}, weight: 2}
       - {key: distinct_domains, args: {min: 3}}
       - {key: has_report,       args: {min_words: 900, require_title: true}, weight: 3}
       - {key: chart_count,      args: {min: 1}, weight: 2}
@@ -207,7 +209,7 @@ cases:
       - {key: question_block, args: {min_q: 1, max_q: 5, must_be_last: true}, weight: 3}
       - {key: skill_loaded,   args: {skill: ask-question}, weight: 2}
       - {key: no_report,      weight: 3}
-      - {key: tool_called,    args: {tool: google_search, min: 0, max: 1}, weight: 2}
+      - {key: tool_called,    args: {tool: web_search, min: 0, max: 1}, weight: 2}
     judge:
       - key: asks_right_thing
         weight: 3
@@ -226,7 +228,7 @@ cases:
     checks:
       - {key: skill_loaded, args: {skill: report-writing}, weight: 3}
       - {key: has_report,   args: {min_words: 600, require_title: true}, weight: 3}
-      - {key: tool_called,  args: {tool: google_search, min: 2, max: 10}, weight: 2}
+      - {key: tool_called,  args: {tool: web_search, min: 2, max: 10}, weight: 2}
       - {key: citation_count, args: {min: 4}, weight: 2}
     judge:
       - key: structure
@@ -278,7 +280,7 @@ cases:
       - {key: chart_count,   args: {min: 1}, weight: 3}
       - {key: charts_valid,  args: {require_palette: true, min_series: 2}, weight: 3}
       - {key: no_ascii_art,  weight: 3}
-      - {key: tool_called,   args: {tool: google_search, min: 1, max: 6}, weight: 2}
+      - {key: tool_called,   args: {tool: web_search, min: 1, max: 6}, weight: 2}
       - {key: citation_count, args: {min: 2}, weight: 2}
       - {key: word_count,    args: {min: 100, max: 800}}
     judge:
@@ -321,18 +323,20 @@ cases:
       - text: Recommend five great ramen spots in downtown Chicago.
     checks:
       - {key: skill_loaded, args: {skill: mapping}, weight: 3}
-      - {key: tool_called,  args: {tool: google_search_places, min: 1, max: 5}, weight: 3}
+      - {key: tool_called,  args: {tool: web_search, min: 1, max: 5}, weight: 3}
       - {key: map_fence,    args: {min: 1, max_pins: 8}, weight: 3}
       - {key: word_count,   args: {min: 100, max: 700}}
       - {key: no_report,    weight: 2}
     # `places_real` used to sit here ("any name absent from the tool output is
     # fabricated — score 0") and no model ever passed it, frontier included.
     # The case is what made that impossible: the query asks for *five* spots
-    # while `google_search_places` caps k at 5 and in practice returns two or
-    # three, so the model can only under-deliver or get scored 0. Removed
-    # rather than re-tuned — a check every model fails identically is a
-    # constant, not a measurement. `pins_match_text` still catches pins that
-    # disagree with the prose.
+    # while the dedicated place tool of the day capped k at 5 and in practice
+    # returned two or three, so the model could only under-deliver or get
+    # scored 0. There is no place tool at all now — venues come from
+    # `web_search`, which has no such cap — so the check could be revived. It
+    # was removed rather than re-tuned, since a check every model fails
+    # identically is a constant, not a measurement. `pins_match_text` still
+    # catches pins that disagree with the prose.
     judge:
       - key: pins_match_text
         weight: 2
@@ -385,7 +389,7 @@ cases:
       - text: 纽约今天天气怎么样?
     checks:
       - {key: no_question_block, weight: 3}
-      - {key: tool_called,       args: {tool: get_weather, min: 1, max: 2}, weight: 3}
+      - {key: tool_called,       args: {tool: weather_current, min: 1, max: 2}, weight: 3}
       - {key: no_report,         weight: 2}
       - {key: word_count,        args: {min: 20, max: 300}}
 
@@ -472,7 +476,7 @@ cases:
       # 第二轮才是正式产出
       - {key: has_report,     args: {min_words: 1000, require_title: true}, turn: 1, weight: 3}
       - {key: map_fence,      args: {min: 1, max_pins: 8}, turn: 1, weight: 2}
-      - {key: tool_called,    args: {tool: google_search, min: 3, max: 15}, turn: 1, weight: 2}
+      - {key: tool_called,    args: {tool: web_search, min: 3, max: 15}, turn: 1, weight: 2}
       - {key: citation_count, args: {min: 4}, turn: 1, weight: 2}
     judge:
       - key: honors_constraints
@@ -557,7 +561,7 @@ cases:
     turns:
       - text: Will it rain in San Francisco tomorrow?
     checks:
-      - {key: tool_called, args: {tool: get_weather_forecast, min: 1, max: 2}, weight: 3}
+      - {key: tool_called, args: {tool: weather_forecast, min: 1, max: 2}, weight: 3}
       - {key: word_count,  args: {min: 20, max: 300}, weight: 2}
       - {key: no_report,   weight: 2}
       - {key: chart_count, args: {max: 0}}
@@ -573,14 +577,14 @@ cases:
     turns:
       - text: 英伟达现在股价多少?
     checks:
-      - {key: tool_called, args: {tool: get_stock_data, min: 1, max: 2}, weight: 3}
+      - {key: tool_called, args: {tool: stock_search, min: 1, max: 2}, weight: 3}
       - {key: word_count,  args: {min: 15, max: 300}, weight: 2}
       - {key: no_report,   weight: 2}
     judge:
       - key: number_from_tool
         weight: 3
         prompt: >-
-          Does the share price in the answer match what get_stock_data returned? A mismatch means it was fabricated — score 0.
+          Does the share price in the answer match what stock_search returned? A mismatch means it was fabricated — score 0.
 
   - id: general/birthday-paradox
     suite: general
@@ -590,7 +594,7 @@ cases:
     turns:
       - text: In a class of 40 people, what's the probability that at least two share a birthday?
     checks:
-      - {key: tool_called, args: {tool: run_python, min: 1, max: 3}, weight: 3}
+      - {key: tool_called, args: {tool: python_exec, min: 1, max: 3}, weight: 3}
       - {key: latex_sanity, weight: 2}
       - {key: no_report,   weight: 2}
     judge:
@@ -601,26 +605,26 @@ cases:
       - key: no_mental_math
         weight: 3
         prompt: >-
-          Did the number actually come from the run_python output, rather than being computed mentally with a code block added afterwards? Score 0 if the code's output and the prose figure disagree.
+          Did the number actually come from the python_exec output, rather than being computed mentally with a code block added afterwards? Score 0 if the code's output and the prose figure disagree.
 
   - id: general/resignation-email
     suite: general
     title: 写作任务的格式契约
     turns:
       - text: 帮我写一封辞职邮件,语气客气一点
-    # 这个 case 之前用 `has_delimiters`(找 `---` 水平线)判产物,而 PRO_PROMPT
-    # 早就改成 `<textblock type="email" subject="…">`,`_S_FORMATTING_PRO` 还
-    # 明确说「用标题而不是水平线分节」。也就是说:**完全按 prompt 行事的模型
-    # 会在这里丢掉 weight 3 + judge weight 3**。因为这个 case 不在 smoke 集里,
-    # 所有历史测量都没照到它。
+    # 邮件的交付格式现在归 draft-email skill 管(不再写在 SYSTEM_PROMPT 里),
+    # 所以这个 case 同时在测两件事:模型有没有认出该加载那个 skill,以及加载
+    # 之后有没有按它的 `<textblock type="email" subject="…">` 契约交付。
+    # 普通改写/翻译已经换成 ```text 围栏,由 `text_fence` 判,见 textblock suite。
     #
     # `word_count` 现在只量正文之外的评语 —— `prose_only` 会把 textblock 剥掉
     # (和 report 一视同仁),交付物本身的长度由 textblock 的 min/max_words 管。
     checks:
+      - {key: skill_loaded,       args: {skill: draft-email}, weight: 2}
       - {key: textblock,          args: {min: 1, max: 1, require_type: email,
                                          min_words: 60, max_words: 400}, weight: 3}
       - {key: followup_question,  weight: 3}
-      - {key: tool_called,        args: {tool: google_search, min: 0, max: 0}, weight: 2}
+      - {key: tool_called,        args: {tool: web_search, min: 0, max: 0}, weight: 2}
       - {key: no_report,          weight: 2}
       - {key: word_count,         args: {min: 5, max: 80}}
     disable: [citation_exists, citation_format]
@@ -669,7 +673,7 @@ cases:
       - text: 你可以告诉我the current valuation of langchain吗?
     checks:
       - {key: response_language, args: {expect: zh}, weight: 3}
-      - {key: tool_called, args: {tool: google_search, min: 1, max: 4}, weight: 2}
+      - {key: tool_called, args: {tool: web_search, min: 1, max: 4}, weight: 2}
       - {key: no_report, weight: 2}
       - {key: word_count, args: {min: 30, max: 500}}
     judge:
@@ -821,8 +825,10 @@ cases:
 # textblock — 写作/改写/翻译的产出契约
 #
 # `_S_WRITING_FORMAT` 说:写、改写、润色、校对、翻译,成品「而且只有成品」放进
-# `<textblock>`,前面一句短评语,后面一个跟进问题。整个 suite 之前只有
-# general/resignation-email 一个 case 在测这条,而且只测了写邮件这一种形状。
+# 一个 ```text 围栏,前面一句短评语,后面一个跟进问题。围栏带产品的复制按钮,
+# 这才是用户对一段成品文字真正会做的动作。`<textblock>` 现在只留给邮件
+# (draft-email skill),因为前端要靠 type/subject 渲染邮件卡片 ——
+# general/resignation-email 仍然测那一条。
 #
 # 翻译是漏得最狠的一种:v3 在翻译任务上直接用大白话把译文写在正文里,不进 block。
 # 它同时也是 `parsers.conversational_text` 的回归测试 —— 中文指令译成英文时,正文
@@ -831,7 +837,7 @@ cases:
 # ═══════════════════════════════════════════════════════════════════════════
   - id: textblock/translate-zh-to-en
     suite: textblock
-    title: 中文指令翻译成英文 → 正文中文,译文进 textblock
+    title: 中文指令翻译成英文 → 正文中文,译文进 ```text 围栏
     lang: zh
     expect_lang: zh
     turns:
@@ -839,10 +845,10 @@ cases:
           请帮我把下面这段话翻译成英文:
           我们团队决定把发布日期推迟两周,以便有足够时间完成安全审计。给客户的通知会在下周一发出,届时会附上新的时间表。
     checks:
-      - {key: textblock,         args: {min: 1, max: 1, min_words: 20, max_words: 120}, weight: 3}
+      - {key: text_fence,        args: {min: 1, max: 1, min_words: 20, max_words: 120}, weight: 3}
       - {key: followup_question, weight: 2}
       - {key: response_language, args: {expect: zh}, weight: 3}
-      - {key: tool_called,       args: {tool: google_search, min: 0, max: 0}, weight: 2}
+      - {key: tool_called,       args: {tool: web_search, min: 0, max: 0}, weight: 2}
       - {key: no_report,         weight: 2}
       - {key: word_count,        args: {min: 3, max: 60}}
     disable: [citation_exists, citation_format]
@@ -854,11 +860,11 @@ cases:
       - key: separation
         weight: 3
         prompt: >-
-          Is the deliverable cleanly separated — one short line of commentary, the translation alone inside a single <textblock>, then a follow-up question? Score 0 if the English also appears in plain chat text outside the block, or if the block contains the Chinese source, commentary, or markdown decoration.
+          Is the deliverable cleanly separated — one short line of commentary, the translation alone inside a single ```text fence, then a follow-up question? Score 0 if the English also appears in plain chat text outside the fence, or if the fence contains the Chinese source, commentary, or markdown decoration.
 
   - id: textblock/polish-en-paragraph
     suite: textblock
-    title: 英文指令润色段落 → 成品进 textblock
+    title: 英文指令润色段落 → 成品进 ```text 围栏
     lang: en
     expect_lang: en
     personalization: {language: English}
@@ -867,10 +873,10 @@ cases:
           Polish this paragraph for our product launch blog post — keep it warm but professional, and keep it under 120 words:
           our new dashboard is now live. it lets you see all your metrics in one place. we think it is much faster than before and we hope you like it. let us know if you have feedback.
     checks:
-      - {key: textblock,         args: {min: 1, max: 1, min_words: 40, max_words: 160}, weight: 3}
+      - {key: text_fence,        args: {min: 1, max: 1, min_words: 40, max_words: 160}, weight: 3}
       - {key: followup_question, weight: 2}
       - {key: response_language, args: {expect: en}, weight: 3}
-      - {key: tool_called,       args: {tool: google_search, min: 0, max: 0}, weight: 2}
+      - {key: tool_called,       args: {tool: web_search, min: 0, max: 0}, weight: 2}
       - {key: no_report,         weight: 2}
       - {key: word_count,        args: {min: 3, max: 60}}
     disable: [citation_exists, citation_format]
@@ -882,7 +888,7 @@ cases:
       - key: separation
         weight: 3
         prompt: >-
-          Is the deliverable cleanly separated — one short line of commentary, the finished paragraph alone inside a single <textblock>, then a follow-up question? Score 0 if the paragraph also appears outside the block, or if the block carries markdown decoration or notes about what changed.
+          Is the deliverable cleanly separated — one short line of commentary, the finished paragraph alone inside a single ```text fence, then a follow-up question? Score 0 if the paragraph also appears outside the fence, or if the fence carries markdown decoration or notes about what changed.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # adversarial

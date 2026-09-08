@@ -1,4 +1,4 @@
-"""Credibility classification for web sources (`google_search` / `load_web_page`).
+"""Credibility classification for web sources (`web_search` / `fetch_url`).
 
 Every source gets a `credibility` dict — `{"label": ..., "reason": ...}` — not
 just a bare label. `reason` is always a one-sentence, human-readable

@@ -29,7 +29,7 @@
 | **移除 `ModelFallbackMiddleware`** | 否则 Cerebras 挂掉时静默 fallback 到 Gemini,你以为在测 gemma 实际在测 gemini —— 整批数据作废且无感知 |
 | `model` 参数化 | 模型矩阵的前提,`build_agent("pro")` 目前硬编码 `pro_llm` |
 
-其余保持一致:`PRO_PROMPT`、`RETRIEVAL_TOOLS`、`ToolCallLimitMiddleware(run_limit=30)`、`input_state["files"] = PRO_SKILL_FILES`。
+其余保持一致:`PRO_PROMPT`、`AGENT_TOOLS`、`ToolCallLimitMiddleware(run_limit=30)`、`input_state["files"] = PRO_SKILL_FILES`。
 
 `<personalization>` 块固定注入(语言 / 地点 / **写死的日期时间**),否则"今年"、"最近"类问题跨天不可复现。
 
@@ -60,8 +60,8 @@
   # 层 A:确定性检查,Python 判定,0 方差
   checks:
     - {key: skill_loaded,     args: {skill: web-research}, weight: 3}
-    - {key: tool_called,      args: {tool: google_search, min: 3, max: 12}, weight: 2}
-    - {key: distinct_queries, args: {tool: google_search, min: 3}, weight: 2}
+    - {key: tool_called,      args: {tool: web_search, min: 3, max: 12}, weight: 2}
+    - {key: distinct_queries, args: {tool: web_search, min: 3}, weight: 2}
     - {key: has_report,       args: {min_words: 800, require_title: true}, weight: 3}
     - {key: chart_count,      args: {min: 2}, weight: 3}
     - {key: citation_count,   args: {min: 6}, weight: 2}
@@ -116,8 +116,8 @@ case 就不该要求引用)。
 | `tool_called` | 某工具调用次数落在 `[min, max]` |
 | `no_tool_calls` | 一次都没调(闲聊) |
 | `distinct_queries` | **去重后**的不同查询数 —— 防"同一个 query 搜三遍"凑数 |
-| `distinct_domains` | `load_web_page` 命中的不同域名数 —— 防"六个来源全是同一个站" |
-| `search_discipline` | 同一 sub-topic 的 `google_search` ≤ N(PRO_PROMPT 里的硬限制) |
+| `distinct_domains` | `fetch_url` 命中的不同域名数 —— 防"六个来源全是同一个站" |
+| `search_discipline` | 同一 sub-topic 的 `web_search` ≤ N(PRO_PROMPT 里的硬限制) |
 
 `distinct_*` 这两个是有意加的:光看调用次数,一个模型把同一个 query 搜五遍也能拿满分,但那是刷指标不是做研究。
 
@@ -302,9 +302,9 @@ agent 场景下 TTFT 不是一个数,是三个,而且差着一个数量级:
 `research_arc` 是否 orient→dive→compare 而非平铺搜索 / `calibration` 教学是否针对用户自报的水平 / `concept_order` 概念是否按依赖顺序拆解 / `has_interaction` 有无检验理解的环节 / `is_quiz` 出题模式是否真的在出题 / `asks_right_thing` 澄清问题是否问在点上 / `question_quality` `options_sane` 问题与选项质量
 
 **C. 事实性 / 溯源** —— 抓幻觉,这一族最重要
-`factual` 是否与 SKILL.md 一致(about 类)/ `number_from_tool` 数字是否与工具返回一致 / `numeric_correct` 计算结果是否正确 / `no_mental_math` 数值是否真来自 `run_python` 而非心算后补个代码块 / `chart_data_real` 图表数据是否来自检索
+`factual` 是否与 SKILL.md 一致(about 类)/ `number_from_tool` 数字是否与工具返回一致 / `numeric_correct` 计算结果是否正确 / `no_mental_math` 数值是否真来自 `python_exec` 而非心算后补个代码块 / `chart_data_real` 图表数据是否来自检索
 
-`places_real`(推荐的店是否来自 places 工具)和 L4 `citation_grounding` 都已移除,原因见 §3.6 和 `cases.yaml` 里 mapping case 上的注释 —— 两者在所有强模型上的通过率都是 0,是恒定扣分而非区分度。`places_real` 那条尤其是 case 自身的问题:query 要五家店,而 `google_search_places` 的 k 上限就是 5、实测只返回两三家,模型只能少给或被判 0。
+`places_real`(推荐的店是否来自 places 工具)和 L4 `citation_grounding` 都已移除,原因见 §3.6 和 `cases.yaml` 里 mapping case 上的注释 —— 两者在所有强模型上的通过率都是 0,是恒定扣分而非区分度。`places_real` 那条尤其是 case 自身的问题:query 要五家店,而当时的 places 工具(Serper)k 上限就是 5、实测只返回两三家,模型只能少给或被判 0。现在已经没有独立的 places 工具,店名都来自 `web_search`,没有这个上限,这条检查其实可以恢复。
 
 **D. 约束遵守** —— 用户明确说了的,有没有落实
 `honors_constraints` 行程是否落实每一项硬约束 / `obeys_constraint` "用一句话"是否真的一句话 / `right_sized` 篇幅是否与问题匹配 / `scaled_to_trip` 两日行程是否按比例缩减而非套七日模板 / `itinerary_feasible` 地理时间上是否可行 / `budget_realistic` 预算拆分是否合理 / `separation` `tone` 写作类的格式与语气
@@ -345,7 +345,7 @@ C 族里几条(`number_from_tool`、`chart_data_real`、`no_mental_math`)判的�
 
 ## 7. 跨模型可比性 —— 工具缓存
 
-`google_search` 打的是真实 API。同一个 case 在模型 A 和模型 B 上跑,搜到的网页可能不同,**分数差异会被搜索运气污染**。
+`web_search` 打的是真实 API。同一个 case 在模型 A 和模型 B 上跑,搜到的网页可能不同,**分数差异会被搜索运气污染**。
 
 方案:`--tool-cache` 模式,包一层 memoize,按 `(tool_name, canonical_args)` 落盘 JSON。
 

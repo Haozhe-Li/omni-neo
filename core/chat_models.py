@@ -2,32 +2,30 @@
 
 This replaced the fast/pro *mode* switch. A mode was a bundle of prompt, turn
 budget and skill roster; a model is just the weights. Everything else — the
-system prompt, the 15 tools, all 9 skills, the 30-call budget — is now identical
-across every entry here, which is what lets `rix` be served by a LoRA at
-all (see `core/agent.py`'s Prompt sections block: an adapter has exactly one
-compatible prompt).
+system prompt, the tools, all 9 skills, the 30-call budget — is identical
+across every entry here. That uniformity was originally what let `rix` be
+served by a LoRA (an adapter has exactly one compatible prompt); `rix` is
+offline pending a retrain against the tool adapter layer, but keeping the
+entries uniform is what makes serving the next one a one-line change.
 
-Five entries, two of them open to guests:
+Four entries, one of them open to guests:
 
-    best      rix, auto-routed to gemma when the turn has an image
-    rix  the fine-tune, text-only, no routing. Shown as "Rix" in the UI —
-              the id is the wire value and is persisted, so it does not follow
-              the display name.
+    best      the default, auto-routed to gemma when the turn has an image
     gemma     signed in
     luna      signed in
     gemini    signed in
 
 ## Billing
 
-`rix` is 1 credit and everything else is 3, *including* a `best` turn that
-routes to gemma — the user pays for the model that actually ran, not the one
+`best` is 1 credit and everything else is 3, *including* a `best` turn that
+routes to luna — the user pays for the model that actually ran, not the one
 they picked.
 
 The routing decision and the billing decision are made in different places, and
-that is the one seam worth knowing about. `VisionModelMiddleware` swaps to gemma
+that is the one seam worth knowing about. `VisionModelMiddleware` swaps to luna
 when an image appears **anywhere in the conversation**; billing runs before the
 agent does and can only see **this turn's** attachments. So a follow-up question
-about an image sent two turns ago is served by gemma and billed at 1 credit.
+about an image sent two turns ago is served by luna and billed at 1 credit.
 Closing that gap means reading thread state on the charge path, which is a DB
 round trip on the hot path for a rare case — `credits_for` documents the rule it
 actually implements rather than pretending otherwise.
@@ -39,11 +37,11 @@ from dataclasses import dataclass
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from core.llm import (
-    rix_30b_a3b_v5,
     chat_llm,
     gemini_3_6_flash,
     gemma_4_31b,
     gpt_5_6_luna,
+    rix_30b_a3b_v6,
     vision_llm,
 )
 
@@ -55,13 +53,14 @@ class ChatModel:
     llm: BaseChatModel
     credits: float
     requires_auth: bool
-    # False only for `rix`: W&B serves the adapter text-only, so a
-    # multimodal request 400s. The frontend blocks the attachment before it is
-    # uploaded; `core/routers/chat.py` rejects it again for clients that don't.
+    # True for every model currently listed. It exists for text-only entries
+    # like the offline `rix` fine-tune, which W&B serves without vision: the
+    # frontend blocks the attachment before it is uploaded, and
+    # `core/routers/chat.py` rejects it again for clients that don't.
     accepts_images: bool
     # Model to swap in when the conversation contains an image. Set on `best`
     # only — that swap *is* what "best available" means here. None elsewhere:
-    # gemma/luna/gemini read images natively, and rix refuses them.
+    # gemma/luna/gemini read images natively, and `rix` refuses them outright.
     vision_fallback: BaseChatModel | None = None
     # Credits charged when `vision_fallback` takes the turn.
     vision_credits: float | None = None
@@ -81,11 +80,18 @@ CHAT_MODELS: dict[str, ChatModel] = {
     "rix": ChatModel(
         id="rix",
         label="Rix",
-        llm=rix_30b_a3b_v5,
+        llm=rix_30b_a3b_v6,
         credits=1.0,
         requires_auth=False,
+        # W&B serves the adapter text-only. The frontend blocks an attachment
+        # before upload and core/routers/chat.py rejects it again for clients
+        # that don't.
         accepts_images=False,
     ),
+    # No longer offered in the picker (see lib/models.ts in the frontend), but
+    # kept resolvable on purpose: `resolve_model` raises on an unknown id, and
+    # threads created while gemma was selectable still carry it — a rewind of
+    # one would 400 if this row went away.
     "gemma": ChatModel(
         id="gemma",
         label="Gemma 4",
@@ -114,10 +120,15 @@ CHAT_MODELS: dict[str, ChatModel] = {
 
 DEFAULT_MODEL = "best"
 
-# Wire-level compatibility. Threads created before this change carry
-# `mode: "fast" | "pro"`, and those values are persisted in message rows and in
-# the frontend's localStorage — a rewind of an old thread will send one. Both
-# map to `best`, which is the closest thing to what either used to do.
+# Wire-level compatibility. Persisted message rows and the frontend's
+# localStorage still carry `mode: "fast" | "pro"` from before the mode/model
+# switch; a rewind of an old thread will send one. Both map to `best`, the
+# closest thing to what each used to do.
+#
+# `rix` is deliberately NOT here any more. It was aliased to `best` while the
+# fine-tune was offline, and this lookup runs *before* the CHAT_MODELS one — so
+# leaving it would silently shadow the real `rix` entry above and serve `best`
+# to everyone who picked the adapter.
 _LEGACY_ALIASES = {"fast": "best", "pro": "best"}
 
 

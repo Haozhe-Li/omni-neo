@@ -46,7 +46,7 @@ Here's the report you asked for — it's opening in the reader on the right.
   report and points to the reader. The report body lives ONLY inside the tags —
   do not also paste it into the chat. Never end your turn with the block alone.
 - **Citations, restated because reports are where this slips:** every
-  `google_search`/`load_web_page` result carries a `n` — cite it, in ASCII
+  `web_search`/`fetch_url` result carries a `n` — cite it, in ASCII
   `[n]` (never full-width 【】), whenever a paragraph uses it, no exceptions.
   Put the [n]s (stacked, e.g. [1][2]) at the very END of the paragraph that
   relies on them, not mid-sentence and not scattered after every clause. Do

@@ -6,10 +6,8 @@ the report title, this module:
 1. Rewrites the title into a short, concrete image-search query with a fast
    LLM (titles are long/abstract — searching them verbatim mostly returns
    screenshots and infographics, not usable photos).
-2. Runs that query through Google Image Search (Serper) and takes the first
-   hit — same "search once, take the first result" pattern already used for
-   entity widgets, see ``core/widget_predictor.py::_fetch_entity_image``.
-3. Re-hosts the image on our own R2/CDN bucket, since the Serper result is a
+2. Runs that query through SearXNG's image search and takes the first hit.
+3. Re-hosts the image on our own R2/CDN bucket, since the search result is a
    hotlink to a random third-party page that can disappear at any time,
    which would silently break a cover that's meant to stay up indefinitely.
 
@@ -28,7 +26,7 @@ import uuid
 
 import boto3
 import httpx
-from langchain_community.utilities import GoogleSerperAPIWrapper
+from core.tools.searxng import search_image
 from langsmith import tracing_context
 
 from core.llm import generate_cover_llm
@@ -98,18 +96,9 @@ def _generate_cover_query(title: str) -> str:
 
 
 def _search_first_image(query: str) -> tuple[str, str] | None:
-    """Return (imageUrl, sourceLink) for the first Serper image result, or None."""
+    """Return (imageUrl, sourceLink) for the first image hit, or None."""
     try:
-        img_search = GoogleSerperAPIWrapper(k=1, type="images")
-        raw = img_search.results(query)
-        images = raw.get("images") or []
-        if not images:
-            return None
-        first = images[0]
-        image_url = first.get("imageUrl") or ""
-        if not image_url:
-            return None
-        return image_url, first.get("link") or ""
+        return search_image(query)
     except Exception as exc:
         logger.warning(f"[generate_cover] image search failed for {query!r}: {exc}")
         return None
