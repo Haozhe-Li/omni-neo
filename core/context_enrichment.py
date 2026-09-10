@@ -450,7 +450,7 @@ _QUESTION_ENDINGS = ("?", "？", "吗", "呢", "嘛", "麼", "么")
 # with web_search anyway. A miss costs a widget.
 _SHORTCUT_BLOCKERS = (
     # weather → weather_forecast widget
-    "weather", "temperature", "forecast", "raining", "rain today", "snow",
+    "weather", "temperature", "forecast", "raining", "rain today", "snow", "rainy", "snowy", "windy",
     "humidity", "wind speed", "umbrella", "how hot", "how cold", "uv index",
     "天气", "气温", "下雨", "温度", "下雪", "阴天", "台风", "雾霾",
     "空气质量", "紫外线", "带伞", "冷不冷", "热不热",
