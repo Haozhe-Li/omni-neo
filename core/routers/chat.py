@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessage
 
 from core.agent import get_agent, resolve_skill_name
+from core.follow_ups import get_follow_ups
 from core.chat_models import ChatModel, resolve_model
 from core.database.db_user_files import get_file_record
 from core.stream import run_agent_stream, build_message_content
@@ -68,7 +69,7 @@ router = APIRouter(tags=["chat"])
 # the batch and flush immediately so the frontend doesn't wait for them.
 _FLUSH_IMMEDIATELY: frozenset[str] = frozenset({
     "tool_call", "artifact", "sources", "done", "error", "stopped",
-    "widget", "drafting",
+    "widget", "drafting", "follow_up",
 })
 _BATCH_SIZE = 15        # flush when this many events are pending
 _BATCH_TIMEOUT_S = 0.03 # flush after 30 ms even if batch isn't full (slow models)
@@ -128,6 +129,9 @@ async def _generate_background(
     sources: list[dict] = []
     artifacts: list[dict] = []
     widgets: list[dict] = []
+    # Filled after the answer finishes, and left empty for the turns that skip
+    # generation — so the fallback persist below can read it unconditionally.
+    follow_ups: list[str] = []
     # Set the moment an `error` SSE event streams through. Used below to
     # decide what this fallback path persists — see the "safety cutoff"
     # block right after the streaming loop.
@@ -240,6 +244,30 @@ async def _generate_background(
             artifacts = []
             widgets = []
 
+        # ── Follow-up questions ────────────────────────────────────────────
+        # Emitted AFTER `done`, deliberately. The answer is complete by this
+        # point and the client has already flipped out of its loading state;
+        # making it wait on a second model call would keep the composer
+        # disabled for a few hundred ms for something that is not the answer.
+        #
+        # Emitted BEFORE the status flip, equally deliberately: `stream_read`
+        # only terminates once the status is done/error AND the tail is
+        # drained, so writing here means a client that reconnects mid-turn
+        # replays the suggestions along with everything else, for free.
+        #
+        # Skipped for turns with nothing to follow up on — a stopped run, a
+        # safety cutoff, a failure. Never allowed to fail the turn.
+        if text and not error_info and not is_safety_cutoff:
+            try:
+                follow_ups = await get_follow_ups(query, text)
+                if follow_ups:
+                    batch.append(
+                        f'data: {json.dumps({"type": "follow_up", "questions": follow_ups})}\n\n'
+                    )
+                    await _flush()
+            except Exception:
+                logger.warning("follow-up emit failed", exc_info=True)
+
         # Shrink TTL now that generation is complete.
         await stream_expire(thread_id)
         await stream_set_status(thread_id, "done", STREAM_TTL_DONE)
@@ -285,6 +313,8 @@ async def _generate_background(
                     "artifacts": artifacts,
                     "widgets": widgets,
                 }
+                if follow_ups:
+                    assistant_msg["followUps"] = follow_ups
                 if error_info:
                     assistant_msg["error"] = error_info
                 msgs.append(assistant_msg)

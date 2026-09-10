@@ -22,7 +22,17 @@ Wire protocol (one JSON object per `data:` line):
                                                             markers in the text
     text      {type, content}                           – streamed answer token(s)
     artifact  {type, id, title, kind, spec}             – chart for the side panel
-    done      {type, sources, artifacts}                – terminal summary
+    done      {type, sources, artifacts}                – answer complete. NOT
+                                                            the last event: see
+                                                            follow_up below.
+    follow_up {type, questions:[str]}                   – 3-4 suggested next
+                                                            questions, emitted by
+                                                            core/routers/chat.py
+                                                            AFTER `done` so the
+                                                            answer never waits on
+                                                            them. Optional — the
+                                                            frontend has its own
+                                                            fallback pool.
     error     {type, code, message, request_id}         – see core/utils/errors.py.
                                                             `code` is a closed
                                                             enum the frontend
