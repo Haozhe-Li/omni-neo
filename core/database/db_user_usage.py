@@ -17,8 +17,8 @@ Table schema (see schema.sql):
 
 Model:
     - Every /chat or /rewind call spends credits, priced by the model the user
-      picked: 1 for the fine-tune, 3 for the frontier models (MODE_CREDIT_COST
-      below). A scheduled research run (core/routers/scheduled_tasks.py) spends
+      picked: 1 for `best` and the fine-tune, 3 for a frontier model asked for
+      by name (MODE_CREDIT_COST below). A scheduled research run (core/routers/scheduled_tasks.py) spends
       4.7 against the same ledger. Costs are fractional, hence NUMERIC columns
       rather than INT.
     - Two independent caps apply at once: a daily one and a calendar-month one.
@@ -61,17 +61,20 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 # Cost of one charge, keyed by whatever the caller passes as `mode`.
 #
 # Interactive turns are keyed by **model id** now (see core/chat_models.py) —
-# `rix` and a plain `best` turn are 1 credit, every other model is 3, and
-# `best-vision` is what the chat router passes when this turn carries an image
-# and will therefore be re-routed to luna. The old `fast`/`pro` keys are kept
-# because a client on a stale bundle, or a rewind of a thread created before
-# this change, still sends them; both bill as `best` did.
+# `rix` and `best` are 1 credit and every other model is 3. `best-vision` is
+# what the chat router passes when this turn carries an image; it is priced the
+# same as `best` while `best` is luna on both paths, and stays a key of its own
+# so image turns remain countable in the usage rows and so there is one line to
+# put back to 3.0 when the fine-tune takes the text path again. The old
+# `fast`/`pro` keys are kept because a client on a stale bundle, or a rewind of
+# a thread created before this change, still sends them; both bill as `best`
+# did.
 #
 # `scheduled` is unrelated to the picker and unchanged: an unattended research
 # run is a much bigger job than one chat turn.
 MODE_CREDIT_COST: dict[str, float] = {
     "best": 1.0,
-    "best-vision": 3.0,
+    "best-vision": 1.0,
     "rix": 1.0,
     "gemma": 3.0,
     "luna": 3.0,

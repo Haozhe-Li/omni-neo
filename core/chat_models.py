@@ -21,12 +21,10 @@ Four entries, one of them open to guests:
 routes to luna — the user pays for the model that actually ran, not the one
 they picked.
 
-That rule is currently only half true, and knowingly so. While `best` serves
-luna on the text path too (see the entry below), the same model costs 1 credit
-for a text turn and 3 for an image turn. The prices are left where they were
-rather than levelled in either direction, because the split is what returns to
-being correct the moment the fine-tune comes back — and because moving either
-number is a pricing decision, not a routing one.
+While `best` serves luna on the text path too (see the entry below), it is a
+flat 1 credit either way — the split existed to charge for a different, dearer
+model taking the turn, and there is no different model at the moment. It goes
+back to 3 on the image path when the fine-tune takes the text path again.
 
 The routing decision and the billing decision are also made in different
 places, and that is the seam worth knowing about. `VisionModelMiddleware` swaps
@@ -86,11 +84,16 @@ CHAT_MODELS: dict[str, ChatModel] = {
         credits=1.0,
         requires_auth=False,
         accepts_images=True,
-        # A swap to the model already running, and kept anyway: it is the line
-        # that has to change back when the adapter returns, and dropping it
-        # would quietly take image turns from 3 credits to 1.
+        # A swap to the model already running, and kept anyway: it is the
+        # line that has to change back when the adapter returns, and it is
+        # what keeps image turns identifiable in the usage rows (the router
+        # bills them under a `best-vision` key of their own).
         vision_fallback=vision_llm,
-        vision_credits=3.0,
+        # Same price as a text turn, because it is now the same model. Stated
+        # rather than left to default to `credits` so that this and
+        # MODE_CREDIT_COST["best-vision"] read as the pair they are — both go
+        # back to 3.0 together when the adapter takes the text path again.
+        vision_credits=1.0,
     ),
     "rix": ChatModel(
         id="rix",
