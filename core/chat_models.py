@@ -10,7 +10,7 @@ entries uniform is what makes serving the next one a one-line change.
 
 Four entries, one of them open to guests:
 
-    best      the default, auto-routed to gemma when the turn has an image
+    best      the default; luna underneath, on both the text and image paths
     gemma     signed in
     luna      signed in
     gemini    signed in
@@ -21,14 +21,21 @@ Four entries, one of them open to guests:
 routes to luna — the user pays for the model that actually ran, not the one
 they picked.
 
-The routing decision and the billing decision are made in different places, and
-that is the one seam worth knowing about. `VisionModelMiddleware` swaps to luna
+That rule is currently only half true, and knowingly so. While `best` serves
+luna on the text path too (see the entry below), the same model costs 1 credit
+for a text turn and 3 for an image turn. The prices are left where they were
+rather than levelled in either direction, because the split is what returns to
+being correct the moment the fine-tune comes back — and because moving either
+number is a pricing decision, not a routing one.
+
+The routing decision and the billing decision are also made in different
+places, and that is the seam worth knowing about. `VisionModelMiddleware` swaps
 when an image appears **anywhere in the conversation**; billing runs before the
 agent does and can only see **this turn's** attachments. So a follow-up question
-about an image sent two turns ago is served by luna and billed at 1 credit.
-Closing that gap means reading thread state on the charge path, which is a DB
-round trip on the hot path for a rare case — `credits_for` documents the rule it
-actually implements rather than pretending otherwise.
+about an image sent two turns ago is billed at 1 credit. Closing that gap means
+reading thread state on the charge path, which is a DB round trip on the hot
+path for a rare case — `credits_for` documents the rule it actually implements
+rather than pretending otherwise.
 """
 from __future__ import annotations
 
@@ -37,7 +44,6 @@ from dataclasses import dataclass
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from core.llm import (
-    chat_llm,
     gemini_3_6_flash,
     gemma_4_31b,
     gpt_5_6_luna,
@@ -70,10 +76,19 @@ CHAT_MODELS: dict[str, ChatModel] = {
     "best": ChatModel(
         id="best",
         label="Best",
-        llm=chat_llm,
+        # Luna on both paths for now. The fine-tune served the text half until
+        # it started misbehaving in production; `best` is the default and the
+        # only entry a guest can reach, so it is the one place that cannot
+        # carry a model under investigation. Picking `rix` explicitly still
+        # gets the adapter, and so does the eval matrix — `core/llm.py`'s
+        # `chat_llm` deliberately did not follow this switch.
+        llm=gpt_5_6_luna,
         credits=1.0,
         requires_auth=False,
         accepts_images=True,
+        # A swap to the model already running, and kept anyway: it is the line
+        # that has to change back when the adapter returns, and dropping it
+        # would quietly take image turns from 3 credits to 1.
         vision_fallback=vision_llm,
         vision_credits=3.0,
     ),

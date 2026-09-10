@@ -265,10 +265,20 @@ rix_30b_a3b_v6 = ChatWandb(
     max_tokens=8192,
 )
 
-# For chat. `best` is these two: the fine-tune serves text, and
-# VisionModelMiddleware swaps to `vision_llm` the moment an image appears
-# anywhere in the conversation (core/agent.py) — the adapter is served by W&B
-# Inference without vision, so an image turn on it would 400.
+# The chat fine-tune, and the model an image turn is served on.
+#
+# `best` used to be exactly these two — the adapter on text, `vision_llm`
+# swapped in by VisionModelMiddleware the moment an image appeared anywhere in
+# the conversation (core/agent.py), since W&B Inference serves the adapter
+# without vision and an image turn on it would 400. It is luna on both paths
+# for the moment; core/chat_models.py holds that decision and why.
+#
+# `chat_llm` still names the adapter, and deliberately did not follow that
+# switch: the eval matrix and finetune/pro_agent/fingerprint.py both read it to
+# mean "the model the pro agent is served on", and the fingerprint in
+# particular resolves its harness profile from the model's provider — pointed
+# at an OpenAI model it would capture a system prompt the adapter is never
+# served.
 chat_llm = rix_30b_a3b_v6
 vision_llm = gpt_5_6_luna
 
