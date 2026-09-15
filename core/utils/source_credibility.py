@@ -21,15 +21,23 @@ source, cheapest first:
    resolved by (1)/(2) since quality varies wildly page-to-page — goes
    through a single batched gpt-oss-20b call (title + url + a short snippet
    + the user's query/topic, for judging "first_party"). The model produces
-   both the label and its own one-sentence reason. Only "trusted" verdicts
-   get written back into the Layer 2 cache (as JSON, `{label, reason}`
-   together) — "official" is left to the regex layer, "first_party" is a
-   property of (domain, query) not of the domain alone, "social_media" and
-   "unknown" carry no reusable signal, and "junk" is deliberately never
-   cached either: a page being junk for *this* query doesn't mean the whole
-   domain is junk (could just be one marketing page on an otherwise fine
-   site) — so every hit gets a fresh LLM judgment instead of inheriting a
-   stale domain-wide verdict.
+   both the label and its own one-sentence reason. Only "trusted" and
+   "arguable" verdicts get written back into the Layer 2 cache (as JSON,
+   `{label, reason}` together) — both are properties of the *domain*, not
+   the query, so they're safe to reuse. "official" is left to the regex
+   layer, "first_party" is a property of (domain, query) not of the domain
+   alone, "social_media" and "unknown" carry no reusable signal, and "junk"
+   is deliberately never cached: a page being junk for *this* query doesn't
+   mean the whole domain is junk (could just be one marketing page on an
+   otherwise fine site) — so every hit gets a fresh LLM judgment instead of
+   inheriting a stale domain-wide verdict.
+
+"arguable" sources (layer 2 or 3) are never dropped the way "junk" is —
+they're surfaced to the agent with their `reason` attached so it can weigh
+and attribute the content instead of citing it as settled fact. See
+`_CREDIBILITY_RANK` in core/tools/adapters.py for the ranking/visibility
+rule, and this module's `_SYSTEM_PROMPT` for what does and doesn't qualify
+for the label (a documented reliability record, never a viewpoint).
 """
 from __future__ import annotations
 
@@ -42,12 +50,12 @@ from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.llm import credibility_llm
-from core.utils.redis_credibility import TTL_TRUSTED, credibility_redis
+from core.utils.redis_credibility import TTL_DOMAIN_VERDICT, credibility_redis
 
 logger = logging.getLogger(__name__)
 
 CredibilityLabel = Literal[
-    "official", "trusted", "first_party", "social_media", "junk", "unknown"
+    "official", "trusted", "first_party", "social_media", "arguable", "junk", "unknown"
 ]
 
 
@@ -180,10 +188,11 @@ You will be given the user's query/topic (if known) and a numbered list of candi
 - "trusted": a well-established, editorially rigorous, widely recognized reliable source (major news outlets, encyclopedic references, standards bodies, established organizations' own documentation) — but not a government/official body.
 - "first_party": the page belongs to the exact entity, person, product, or organization the user's query is asking about (e.g. the user asks about a company and the source is that company's own domain). Judge this from the query, not general trustworthiness.
 - "social_media": a social media, forum, or user-generated-content platform post — credibility depends on the specific poster/account, not the platform.
+- "arguable": the domain has a documented, independently verifiable record of publishing fabricated, deceptively sourced, or manipulated content — e.g. flagged by independent fact-checking or media-reliability organizations, confirmed coordinated inauthentic behavior, a pattern of retracted or debunked stories. This is about a track record, not a viewpoint: a source being opinionated, partisan, or critical of a government, party, company, or public figure is NEVER by itself grounds for "arguable" — plenty of rigorous journalism is sharply critical of its subject. Only use this label when you can point to a specific, factual reliability problem, not a political alignment.
 - "junk": low-quality, spam, content-farm, clickbait, or otherwise unreliable.
 - "unknown": not enough information to confidently classify.
 
-`reason`: one concise, plain-language sentence explaining your judgment for THIS SPECIFIC source (not a generic definition of the label) — e.g. "This is Reuters' own news domain, a long-established wire service with editorial standards" rather than just "It's a trusted news source."
+`reason`: one concise, plain-language sentence explaining your judgment for THIS SPECIFIC source (not a generic definition of the label) — e.g. "This is Reuters' own news domain, a long-established wire service with editorial standards" rather than just "It's a trusted news source." For "arguable", name the specific reliability problem (e.g. "rated low for factual reporting by independent media monitors after repeated fabricated stories"), never a political characterization.
 
 Return ONLY a JSON object of the form {"items": [{"index": int, "label": str, "reason": str}]}, one item per candidate, indices matching the input."""
 
@@ -233,7 +242,7 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
             seed_domain_of[i] = seed_match
         cache_lookup.setdefault(cache_key, []).append(i)
 
-    to_cache_trusted: dict[str, str] = {}
+    to_cache_domain: dict[str, str] = {}
 
     if cache_lookup:
         cached = await credibility_redis.get_many(list(cache_lookup.keys()))
@@ -246,7 +255,7 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
                 credibility = _seed_credibility(cache_key)
                 for i in indices:
                     out[i] = {**items[i], "credibility": credibility}
-                to_cache_trusted[cache_key] = json.dumps(credibility)
+                to_cache_domain[cache_key] = json.dumps(credibility)
             else:
                 pending_llm.extend(indices)
 
@@ -254,15 +263,18 @@ async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
     if pending_llm:
         llm_labels = await _classify_via_llm(items, pending_llm, host_of, query)
 
+    # "trusted"/"arguable" are properties of the domain, so they're worth
+    # caching; every other label is either query-dependent (junk) or carries
+    # no reusable signal (social_media, unknown) — see module docstring.
     for i in pending_llm:
         credibility = llm_labels.get(i, _UNKNOWN_LLM_FAILED)
         out[i] = {**items[i], "credibility": credibility}
         cache_key = cache_key_of.get(i)
-        if cache_key and credibility["label"] == "trusted":
-            to_cache_trusted[cache_key] = json.dumps(credibility)
+        if cache_key and credibility["label"] in ("trusted", "arguable"):
+            to_cache_domain[cache_key] = json.dumps(credibility)
 
-    if to_cache_trusted:
-        await credibility_redis.set_many(to_cache_trusted, TTL_TRUSTED)
+    if to_cache_domain:
+        await credibility_redis.set_many(to_cache_domain, TTL_DOMAIN_VERDICT)
 
     return [
         out[i] if out[i] is not None else {**items[i], "credibility": _UNKNOWN_LLM_FAILED}

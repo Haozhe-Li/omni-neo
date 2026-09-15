@@ -15,10 +15,12 @@ from core.utils.redis_client import get_async_redis
 
 _PREFIX = "omni:credibility:domain:"
 
-# Whitelist-tier domains (regex hits + seed list) are rarely worth
-# re-checking. There's no TTL_JUNK counterpart — junk is never cached at the
-# domain level at all (see source_credibility.py's module docstring).
-TTL_TRUSTED = 3600 * 24 * 365
+# For verdicts that are properties of the domain itself — "trusted" (seed
+# list + LLM-confirmed) and "arguable" (documented unreliable domains) — and
+# so are rarely worth re-checking. There's no TTL_JUNK counterpart: junk is
+# never cached at the domain level at all (see source_credibility.py's
+# module docstring).
+TTL_DOMAIN_VERDICT = 3600 * 24 * 365
 
 
 class CredibilityRedis:

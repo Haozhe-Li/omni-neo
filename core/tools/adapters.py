@@ -92,15 +92,21 @@ for _capability in PROVIDERS:
 
 # Order results by credibility before the agent reads them: official/trusted/
 # first_party first (equally — all three mean "the reader can lean on this"),
-# unknown next, social_media last. Junk never appears: it is dropped from the
-# agent-facing list entirely, though still registered as a citation below so
-# the frontend's source list doesn't lose it.
+# unknown next, social_media after that, arguable last of all — we have
+# positive evidence of a reliability problem, which ranks worse than simply
+# not knowing. Junk never appears: it is dropped from the agent-facing list
+# entirely, though still registered as a citation below so the frontend's
+# source list doesn't lose it. "arguable" is deliberately NOT dropped the
+# same way — the agent still needs to see and can still cite the content,
+# just with the `reason` attached so it can attribute/hedge instead of
+# repeating it as settled fact (see web_search's docstring).
 _CREDIBILITY_RANK = {
     "official": 0,
     "trusted": 0,
     "first_party": 0,
     "unknown": 1,
     "social_media": 2,
+    "arguable": 3,
 }
 
 
@@ -269,8 +275,16 @@ async def web_search(query: str, k: int = 5, time_range: str | None = None) -> l
             Leave unset for queries with no time constraint.
 
     Returns:
-        list[dict]: Results with `title`, `url`, `content`, and an `n` field —
-        cite it inline as [n] when you use that result in your answer.
+        list[dict]: Results with `title`, `url`, `content`, an `n` field —
+        cite it inline as [n] when you use that result in your answer — and a
+        `credibility` field (`{"label", "reason"}`). Most results need no
+        special handling. When `label` is "arguable", the source has a
+        documented history of publishing fabricated or manipulated content:
+        you may still use and cite it, but attribute the claim to the source
+        by name rather than stating it as settled fact, and prefer
+        corroboration from another result when one is available. Treat
+        "social_media" and "unknown" with similar caution — the poster or
+        page, not the platform, determines reliability.
     """
     # This function is `async def`, so the agent awaits it directly on the
     # event loop instead of LangChain dispatching it to a worker thread the way
@@ -304,8 +318,11 @@ async def fetch_url(url: str) -> dict:
         url (str): The URL of the web page to load.
 
     Returns:
-        dict: The URL, title, content, and an `n` field — cite it inline as
-        [n] when you use this page's content in your answer.
+        dict: The URL, title, content, an `n` field — cite it inline as [n]
+        when you use this page's content in your answer — and a
+        `credibility` field (`{"label", "reason"}`), same meaning as in
+        `web_search`: if `label` is "arguable", attribute claims from it to
+        the source by name instead of stating them as fact.
     """
     # Blocking provider awaited off the event loop, for the reason in `web_search`.
     result = await asyncio.to_thread(_provider("fetch_url"), url)
