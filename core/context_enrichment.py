@@ -55,6 +55,7 @@ from typing import Any, Callable, Literal
 from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
+from core.agent import SKILL_FILES
 from core.llm import context_enrich_llm
 from core.tools.adapters import (
     currency_convert,
@@ -113,6 +114,7 @@ class EnrichmentDecision(BaseModel):
         "weather_forecast",
         "stock",
         "currency",
+        "about_omni",
         "direct_response",
     ] = Field(description="Which single retrieval to run, or direct_response for none.")
     search_query: str = Field(
@@ -195,11 +197,18 @@ TO), both uppercase ISO 4217. "100 dollars in yen" is USD -> JPY; "日元汇率"
 from a US user is JPY -> USD.
    Not for crypto pairs or "which currency is strongest" -> web_search.
 
-6. "direct_response" — no retrieval would help. Use it for translation, \
+6. "about_omni" — the query asks about Omni itself: its identity ("who are \
+you", "what are you", "what is omni"), its capabilities or modes ("what can \
+you do", "fast vs pro"), its tech stack or models, its author, or how its \
+product features work (accounts, credits, Pages, scheduled research, memory, \
+uploads). No fields needed.
+   Not for questions about *using* a tool result you already have, or about AI \
+in general ("how do LLMs work") — those are web_search.
+
+7. "direct_response" — no retrieval would help. Use it for translation, \
 rewriting, editing, summarizing text the user supplied, classification, \
-creative writing, brainstorming, small talk, personal preferences, and \
-questions about Omni itself or how it behaves. Also use it when the query is \
-too vague to search for.
+creative writing, brainstorming, small talk, and personal preferences. Also \
+use it when the query is too vague to search for.
    It is NOT for questions about the world. "who is X", "what is X", "is X \
 any good" and anything else with a checkable answer are lookups -> \
 web_search, however famous the subject.
@@ -439,6 +448,38 @@ _ASK_PATTERNS_ZH = (
 # blockers. Kept as its own constant so it is one line to remove.
 _QUESTION_ENDINGS = ("?", "？", "吗", "呢", "嘛", "麼", "么")
 
+# Phrases that go straight to `about_omni` without asking the model at all —
+# unlike the blockers below, which only force the *slower* path. An identity
+# question needs no argument extraction (there is nothing to resolve, unlike a
+# location or a ticker), so there is nothing for the model to add here: routing
+# it through classification would just be latency with no chance of a
+# different answer.
+#
+# Kept as whole phrases addressed to "you"/"omni" specifically, not bare
+# question words, because "who is X" or "what is X" for an arbitrary X is a
+# `web_search` (see `_ASK_PATTERNS`) — only the second-person or omni-named
+# form is unambiguously about this product.
+_ABOUT_OMNI_KEYWORDS_EN = (
+    "who are you", "what are you", "about omni", "what is omni", "what's omni",
+    "whats omni", "tell me about omni", "tell me about yourself",
+    "introduce yourself", "who made you", "who created you", "who built you",
+    "who developed omni", "who made omni", "who created omni", "who owns omni",
+    "what can you do", "what do you do", "what can omni do",
+    "your capabilities", "how do you work", "what model are you",
+    "what llm are you", "which model are you", "are you chatgpt", "are you gpt",
+    "are you an ai", "what's your name", "whats your name",
+)
+_ABOUT_OMNI_KEYWORDS_ZH = (
+    "你是谁", "你是什么", "你是啥", "你叫什么", "你是干嘛的", "你是干什么的",
+    "你是哪个模型", "你是什么模型", "你是什么ai", "你是什么AI",
+    "你能做什么", "你可以做什么", "你会做什么", "你会干什么", "你会干啥",
+    "你能干什么", "你有什么功能", "你有哪些功能",
+    "介绍一下你自己", "介绍一下自己", "自我介绍",
+    "omni是什么", "omni是啥", "什么是omni", "关于omni",
+    "omni是谁做的", "omni是谁开发的", "谁开发了omni", "谁做的omni",
+    "你是谁开发的", "你是谁做的", "你叫什么名字",
+)
+
 # Queries that match the ask patterns but must still go to the model. Every one
 # of these has a dedicated tool whose result the frontend renders as a live
 # card, and "what is the weather in Tokyo" matches "what is" perfectly — routed
@@ -473,16 +514,20 @@ _SHORTCUT_WORD_LIMIT = 20
 
 
 def shortcut_decision(query: str) -> EnrichmentDecision | None:
-    """A `web_search` decision reached without asking the model, or None.
+    """A `web_search` or `about_omni` decision reached without asking the
+    model, or None.
 
-    Returns the query *verbatim* as the search query. That is the point: for a
-    short question the text already is a good search string, and the value here
-    is skipping the round trip, not improving on it.
+    For `web_search`, returns the query *verbatim* as the search query — for a
+    short question the text already is a good search string, and the value
+    here is skipping the round trip, not improving on it. `about_omni` needs
+    no argument at all, so a keyword hit is the whole decision.
     """
     q = query.strip()
     if not q or word_count(q) >= _SHORTCUT_WORD_LIMIT:
         return None
     lowered = q.lower()
+    if any(k in lowered for k in _ABOUT_OMNI_KEYWORDS_EN) or any(k in q for k in _ABOUT_OMNI_KEYWORDS_ZH):
+        return EnrichmentDecision(action="about_omni")
     if any(b in lowered for b in _SHORTCUT_BLOCKERS):
         return None
     if not (
@@ -530,6 +575,40 @@ _PREAMBLE_TAIL = (
     "otherwise go deeper with your own tools."
 )
 
+# `about_omni` doesn't fetch anything — it's self-knowledge, not a retrieval —
+# so it gets its own preamble rather than `_PREAMBLE`'s "we ran X for you",
+# which would misdescribe a skill file as a live tool call. Reusing the
+# `about-omni` skill's own SKILL.md (rather than duplicating its content here)
+# means one place to update Omni's identity/capability copy, and it's the same
+# markdown the agent would otherwise load on demand via progressive
+# disclosure — this just saves that round trip when the question is about
+# Omni from the very first turn.
+_ABOUT_OMNI_SKILL_PATH = "/skills/about-omni/SKILL.md"
+_PREAMBLE_ABOUT_OMNI = (
+    "The about-omni skill was already loaded for you, because this question is "
+    "about Omni itself. Answer directly from it — no need to look it up again."
+)
+# The skill file runs ~8k chars today; this leaves headroom for it to grow
+# before silently chopping an FAQ answer in half. Well above `_MAX_JSON_CHARS`
+# because this is prose, not a terse payload — a truncated sentence here is
+# worse than a few extra hundred tokens.
+_MAX_SKILL_CHARS = 12000
+
+
+def _about_omni_text() -> str:
+    """The about-omni skill's body, frontmatter stripped, or "" if missing."""
+    file = SKILL_FILES.get(_ABOUT_OMNI_SKILL_PATH)
+    if not file:
+        return ""
+    content = (file.get("content") or "").strip()
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            content = content[end + 4:].strip()
+    if len(content) > _MAX_SKILL_CHARS:
+        content = content[:_MAX_SKILL_CHARS] + " …(truncated)"
+    return content
+
 
 _llm = context_enrich_llm.with_structured_output(EnrichmentDecision, method="json_schema")
 
@@ -574,6 +653,20 @@ async def enrich_context(
     if decision is None:
         return Enrichment()
     t_classify = time.monotonic() - t0
+
+    # `about_omni` short-circuits here: no tool, no citations, no widget — just
+    # the skill file's own text, so it skips the `_ACTIONS` whitelist (which
+    # assumes something is fetched and a `tool_call` event goes out) entirely.
+    if decision.action == "about_omni":
+        body = _about_omni_text()
+        if not body:
+            logger.warning("[context_enrichment] about-omni skill file missing — ignored")
+            return Enrichment()
+        logger.info(
+            "[context_enrichment] %.2fs (%s %.2fs) action=about_omni",
+            time.monotonic() - t0, "shortcut" if shortcut else "classify", t_classify,
+        )
+        return Enrichment(action="about_omni", text=f"{_PREAMBLE_ABOUT_OMNI}\n\n{body}")
 
     # Whitelist: direct_response, an action we don't implement, and an action
     # whose required argument came back empty are all the same outcome — no
