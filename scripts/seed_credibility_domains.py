@@ -51,6 +51,13 @@ _ARGUABLE_DOMAINS: dict[str, str] = {
         "2019 Facebook takedown for coordinated inauthentic behavior, and "
         "documented misinformation amplification)."
     ),
+    "epochtimes.com.tw": (
+        "Epoch Times' Taiwan/Traditional-Chinese edition; shares the same "
+        "editorial operation and documented reliability record as "
+        "theepochtimes.com (low independent fact-reliability ratings, a "
+        "2019 Facebook takedown for coordinated inauthentic behavior, and "
+        "documented misinformation amplification)."
+    ),
     "ntd.com": (
         "New Tang Dynasty Television is a sister outlet to The Epoch Times "
         "under the same media organization, sharing its editorial staff and "
@@ -60,6 +67,11 @@ _ARGUABLE_DOMAINS: dict[str, str] = {
     "ntdtv.com": (
         "Legacy domain for New Tang Dynasty Television; same organization "
         "and documented reliability record as ntd.com."
+    ),
+    "renminbao.com": (
+        "Renminbao (People's Report), a Falun Gong-affiliated advocacy "
+        "outlet, frequently publishes news that has not been independently "
+        "verified or fact-checked."
     ),
 }
 

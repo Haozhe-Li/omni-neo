@@ -91,6 +91,7 @@ _SEED_TRUSTED_DOMAINS = {
     "nytimes.com", "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk",
     "theguardian.com", "npr.org", "wsj.com", "bloomberg.com", "economist.com",
     "nature.com", "sciencedirect.com", "ieee.org",
+    "openweathermap.org",
 }
 
 # User-generated-content platforms: never resolved or cached at the domain
