@@ -31,8 +31,9 @@ from core.redis_stream import (
     stream_read,
     STREAM_TTL_DONE,
 )
-from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest
+from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest, ClassifyUrlRequest
 from core.check_source import check_source_matches
+from core.utils.source_credibility import classify_single_url
 from core.utils.citations import reset_citation_registry_async
 from core.utils.errors import ErrorCode, error_payload
 from core.utils.utils import format_system_reminder, format_user_memory
@@ -912,3 +913,16 @@ async def check_source(
         request.text_selection,
         request.turn,
     )
+
+
+@router.post("/classify_url")
+async def classify_url(
+    request: ClassifyUrlRequest,
+    user_id: str = Depends(get_current_user),
+):
+    """Classify a single URL with no citation/content context — used by the
+    frontend Safe Link interstitial for raw markdown links the model typed
+    with no `[n]` citation attached. No page fetching (SSRF/latency); judged
+    from the URL/domain string alone. See `classify_single_url`.
+    """
+    return await classify_single_url(request.url)

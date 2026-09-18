@@ -62,6 +62,10 @@ class CheckSourceRequest(BaseModel):
     turn: int | None = None
 
 
+class ClassifyUrlRequest(BaseModel):
+    url: str = Field(..., max_length=2048)
+
+
 class Decision(BaseModel):
     is_smart: bool = Field(
         description="True if query requires deep thinking, coding, or research. False if simple."

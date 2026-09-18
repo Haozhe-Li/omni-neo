@@ -197,6 +197,95 @@ You will be given the user's query/topic (if known) and a numbered list of candi
 Return ONLY a JSON object of the form {"items": [{"index": int, "label": str, "reason": str}]}, one item per candidate, indices matching the input."""
 
 
+async def classify_single_url(url: str) -> Credibility:
+    """Classify a single URL with no title/content/query context — used by
+    POST /classify_url for raw markdown links the agent typed directly into
+    an answer, which never went through `classify_sources`. Reuses the same
+    tier order (bypass -> official regex -> seed/platform -> Redis cache ->
+    LLM) and the same Redis keyspace/TTL, so a domain resolved by either path
+    benefits the other. Never raises; unresolvable input returns
+    `_UNKNOWN_NO_URL`.
+    """
+    host = _domain_of(url)
+    if not host:
+        return _UNKNOWN_NO_URL
+    if _matches(host, _HARDCODED_BYPASS_DOMAINS) is not None:
+        return _bypass_credibility(host)
+    if _is_official(host):
+        return _official_credibility(host)
+
+    is_platform = _matches(host, _PLATFORM_DOMAINS) is not None
+    seed_match = None if is_platform else _matches(host, _SEED_TRUSTED_DOMAINS)
+    cache_key = seed_match or (None if is_platform else host)
+
+    if cache_key:
+        cached = _decode_cached((await credibility_redis.get_many([cache_key])).get(cache_key))
+        if cached is not None:
+            return cached
+        if seed_match:
+            credibility = _seed_credibility(seed_match)
+            await credibility_redis.set_many({seed_match: json.dumps(credibility)}, TTL_DOMAIN_VERDICT)
+            return credibility
+
+    credibility = await _classify_url_via_llm(host, url)
+    if cache_key and credibility["label"] in ("trusted", "arguable"):
+        await credibility_redis.set_many({cache_key: json.dumps(credibility)}, TTL_DOMAIN_VERDICT)
+    return credibility
+
+
+class _UrlCredibilityResult(BaseModel):
+    label: CredibilityLabel = Field(description="The credibility classification for this URL.")
+    reason: str = Field(
+        description="One concise, plain-language sentence explaining the judgment "
+        "for this specific URL — not a generic definition of the label."
+    )
+
+
+# Separate model/prompt from `_classifier_model`/`_SYSTEM_PROMPT` on purpose:
+# that one is framed around "does this source support the topic" and expects
+# title/content/query, none of which exist here — a bare-URL judgment is a
+# structurally different question (does the URL itself look suspicious).
+_url_classifier_model = credibility_llm.with_structured_output(
+    _UrlCredibilityResult, method="json_mode"
+)
+
+_URL_SYSTEM_PROMPT = """You are judging whether a bare URL looks safe to click, using ONLY the URL string — no page title, content, or query is available, so never guess at what the page is about.
+
+Judge purely from structure:
+- IP-literal hosts, or hosts using punycode/homoglyph lookalikes of a known brand.
+- A domain that imitates a well-known brand via inserted words or a different TLD (e.g. "paypal-secure-login.com", "apple.com.verify-account.net").
+- A known URL-shortener domain (bit.ly, tinyurl.com, t.co, goo.gl, is.gd, ...) — shorteners hide the real destination and are inherently unverifiable from the URL alone.
+- Excessive/suspicious subdomain nesting combining a brand keyword with an unrelated domain.
+
+Never assign "official", "trusted", or "first_party" — those require context (institutional recognition, editorial record, or matching what a user asked about) that a bare URL cannot establish; leave them to the deterministic checks that already ran before you were consulted.
+Never assign "arguable" — that label means a documented, independently verifiable content-reliability track record, which a URL string cannot show.
+
+Use "social_media" only if the domain itself matches a known UGC/social platform pattern. Use "junk" only when the URL exhibits one of the structural red flags above. Otherwise use "unknown" — the right default for an ordinary domain you don't recognize; do not stretch to "junk" without a concrete structural reason.
+
+`reason`: one concise sentence about THIS URL specifically, naming the actual pattern you saw (or the absence of one). Never speculate about content.
+
+Return ONLY a JSON object of the form {"label": str, "reason": str}."""
+
+
+async def _classify_url_via_llm(host: str, url: str) -> Credibility:
+    messages = [("system", _URL_SYSTEM_PROMPT), ("human", f"URL: {url}\nDomain: {host}")]
+    for attempt in range(2):
+        try:
+            with tracing_context(project_name="source_credibility"):
+                result = await _url_classifier_model.ainvoke(messages)
+            label = result.label
+            # Defense in depth: never let the LLM self-grant a no-friction
+            # tier from URL text alone, regardless of what the prompt says —
+            # passthrough must only ever come from the deterministic tiers
+            # above (bypass/official-regex/seed whitelist).
+            if label in ("official", "trusted", "first_party"):
+                label = "unknown"
+            return {"label": label, "reason": result.reason.strip()}
+        except Exception as exc:
+            logger.warning(f"[source_credibility] url-classify attempt {attempt} failed: {exc}")
+    return _UNKNOWN_LLM_FAILED
+
+
 async def classify_sources(items: list[dict], query: str | None) -> list[dict]:
     """Attach a `credibility` dict (`{"label", "reason"}`) to each source dict.
 
