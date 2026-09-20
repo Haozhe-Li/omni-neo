@@ -33,7 +33,7 @@ from core.database.supabase_client import supabase, utcnow_iso
 
 logger = logging.getLogger(__name__)
 
-GUEST_MAX_THREADS: int = int(os.getenv("GUEST_MAX_THREADS", "5"))
+GUEST_MAX_THREADS: int = int(os.getenv("GUEST_MAX_THREADS", "500"))
 
 # Caps how much text per thread gets indexed/stored for search, guarding
 # against pathologically long threads bloating the stored search_text.

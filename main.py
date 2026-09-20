@@ -11,7 +11,8 @@ from core.agent import SYSTEM_PROMPTS, initialize_agents
 from core.database.checkpointer import setup_checkpointer, teardown_checkpointer
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.redis_client import close_async_redis
-from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks, evals
+from core.voice.agent import initialize_voice_agent
+from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks, evals, voice
 
 
 @asynccontextmanager
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
     # at import.
     await setup_checkpointer()
     initialize_agents()
+    initialize_voice_agent()
     yield
     await teardown_checkpointer()
     await close_async_redis()
@@ -49,3 +51,4 @@ app.include_router(misc.router)
 app.include_router(memories.router)
 app.include_router(scheduled_tasks.router)
 app.include_router(evals.router)
+app.include_router(voice.router)

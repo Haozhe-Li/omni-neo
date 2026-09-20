@@ -31,11 +31,16 @@ router = APIRouter(tags=["threads"])
 
 
 @router.get("/get_thread_id")
-def get_thread_id(user_id: str | None = Depends(get_optional_user)):
+def get_thread_id(user_id: str | None = Depends(get_optional_user), origin: str | None = None):
     """
     Generate a new thread ID and register it in both threads_control and user_threads.
     If auth headers are present the thread is immediately bound to the user.
     Guests are capped at GUEST_MAX_THREADS active threads.
+
+    `origin` is passed straight through to register_thread — e.g. "voice" for
+    the voice agent (core/routers/voice.py), same mechanism scheduled-task
+    threads already use to stay out of the regular chat sidebar
+    (get_threads_for_user filters on origin being null).
     """
     if user_id and user_id.startswith("guest_"):
         if count_user_threads(user_id) >= GUEST_MAX_THREADS:
@@ -46,7 +51,7 @@ def get_thread_id(user_id: str | None = Depends(get_optional_user)):
     thread_id = str(uuid.uuid4())
     upsert_thread(thread_id, user_id)
     if user_id:
-        register_thread(thread_id, user_id)
+        register_thread(thread_id, user_id, origin=origin)
     return thread_id
 
 

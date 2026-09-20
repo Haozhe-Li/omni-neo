@@ -55,6 +55,28 @@ def _verify_clerk_jwt(token: str) -> str:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
 
+def resolve_user(*, bearer_token: str | None, guest_id: str | None) -> str:
+    """Shared identity resolution behind `get_current_user`.
+
+    Pulled out so the voice WebSocket (core/routers/voice.py) can run the same
+    Clerk-JWT-or-guest check on values it reads from query params — a browser
+    WebSocket handshake can't carry a custom Authorization header the way a
+    normal fetch() can, so token/guest id travel in the URL there instead, but
+    the resolution logic itself must stay identical to /chat's.
+
+    Priority:
+      1. bearer_token   →  verified Clerk user
+      2. guest_<uuid>   →  unverified guest (rate-limited elsewhere)
+    """
+    if bearer_token:
+        return _verify_clerk_jwt(bearer_token)
+
+    if guest_id and guest_id.startswith("guest_"):
+        return guest_id
+
+    raise HTTPException(status_code=401, detail="Unauthorized.")
+
+
 def get_current_user(
     authorization: str = Header(default=None),
     x_guest_id: str = Header(default=None),
@@ -67,14 +89,8 @@ def get_current_user(
       1. Authorization: Bearer <token>  →  verified Clerk user
       2. X-Guest-Id: guest_<uuid>       →  unverified guest (rate-limited elsewhere)
     """
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ", 1)[1]
-        return _verify_clerk_jwt(token)
-
-    if x_guest_id and x_guest_id.startswith("guest_"):
-        return x_guest_id
-
-    raise HTTPException(status_code=401, detail="Unauthorized.")
+    token = authorization.split(" ", 1)[1] if authorization and authorization.startswith("Bearer ") else None
+    return resolve_user(bearer_token=token, guest_id=x_guest_id)
 
 
 def get_optional_user(
