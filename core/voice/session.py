@@ -32,6 +32,18 @@ Turn lifecycle:
      bumped so any audio already in flight from the cancelled turn gets
      tagged stale and the client drops it on arrival — cancellation stops
      *new* chunks, the turn_id tag protects against ones already queued.
+  5. `self.turn_task` finishing only means the server is done generating
+     text and forwarding TTS audio — the client schedules playback ahead of
+     time (see hooks/useVoiceSession.ts's nextPlayTimeRef), so several
+     seconds of already-sent audio can still be audibly playing after
+     turn_task completes. Gating "is the agent still speaking" on turn_task
+     alone meant a real interruption landing in that tail window was
+     silently ignored (SpeechStarted never armed, nothing ever cancelled
+     the turn) — confirmed live, and worse for longer replies since the
+     tail is proportionally bigger. `_turn_audible_until` tracks an exact
+     estimate instead (summed straight from the PCM byte durations sent in
+     tts_consumer, not a guess), and `_turn_is_audible` is what every
+     barge-in check actually gates on now.
 """
 from __future__ import annotations
 
@@ -39,14 +51,17 @@ import asyncio
 import json
 import logging
 import struct
+import time
 
 from fastapi import WebSocket
 
 from core.voice.agent import run_voice_turn
 from core.voice.deepgram_stt import DeepgramSTT
-from core.voice.fish_tts import FishTTS
+from core.voice.fish_tts import SAMPLE_RATE, FishTTS
 
 logger = logging.getLogger(__name__)
+
+_TAIL_MARGIN_S = 0.3  # network/scheduling slack — see VoiceSession._turn_is_audible
 
 _SENTENCE_END = set("。！？.!?\n")
 _CLAUSE_END = set("，,、；;")
@@ -114,6 +129,8 @@ class VoiceSession:
         self.stt = DeepgramSTT()  # raises if DEEPGRAM_API_KEY missing — fail fast, before accept-side cleanup gets messy
         self.active_turn_id = 0
         self.turn_task: asyncio.Task | None = None
+        # monotonic deadline — see _turn_is_audible
+        self._turn_audible_until = 0.0
         self._pending_transcript = ""
         # Set by a SpeechStarted event while a turn is in flight; only turns
         # into an actual barge-in once a subsequent Results event confirms
@@ -131,6 +148,17 @@ class VoiceSession:
         # and audio sends began overlapping for real. This lock serializes
         # every outbound frame (see _send_json and _send_audio below).
         self._ws_send_lock = asyncio.Lock()
+
+    def _turn_is_audible(self) -> bool:
+        """Whether the agent should still be treated as "speaking" for
+        barge-in purposes — see module docstring point 5. True while the
+        turn task is still generating/forwarding audio, OR while the
+        client's already-sent audio should still be playing out per
+        `_turn_audible_until`.
+        """
+        if self.turn_task is not None and not self.turn_task.done():
+            return True
+        return time.monotonic() < self._turn_audible_until + _TAIL_MARGIN_S
 
     async def run(self) -> None:
         await self.stt.connect()
@@ -175,12 +203,11 @@ class VoiceSession:
                     self._barge_in_armed = False
                     # Re-check liveness rather than letting _barge_in's own
                     # _cancel_active_turn no-op silently: if the armed turn
-                    # already finished on its own in the meantime (no
-                    # confirming Results ever arrived while it was still
-                    # running), this Results event belongs to an unrelated,
+                    # already finished (including its audible tail) in the
+                    # meantime, this Results event belongs to an unrelated,
                     # perfectly normal later utterance — calling _barge_in()
                     # would still wipe _pending_transcript out from under it.
-                    if self.turn_task is not None and not self.turn_task.done():
+                    if self._turn_is_audible():
                         await self._barge_in()
                 if event.get("is_final"):
                     self._pending_transcript = (self._pending_transcript + " " + text).strip()
@@ -195,7 +222,7 @@ class VoiceSession:
                 if self._pending_transcript:
                     await self._finalize_user_turn()
             elif etype == "SpeechStarted":
-                if self.turn_task is not None and not self.turn_task.done():
+                if self._turn_is_audible():
                     self._barge_in_armed = True
 
     async def _finalize_user_turn(self) -> None:
@@ -222,9 +249,11 @@ class VoiceSession:
         playing client-side with nothing telling it to stop, overlapping
         the new turn's speech instead of yielding to it.
         """
-        if self.turn_task is None or self.turn_task.done():
+        if not self._turn_is_audible():
             return
-        self.turn_task.cancel()
+        if self.turn_task is not None:
+            self.turn_task.cancel()  # no-op if it already finished — the audible tail is what's left
+        self._turn_audible_until = 0.0
         self.active_turn_id += 1
         await self._send_json({"type": "clear", "turn_id": self.active_turn_id})
 
@@ -235,6 +264,7 @@ class VoiceSession:
     async def _run_turn(self, turn_id: int, user_text: str) -> None:
         tts = FishTTS()
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._turn_audible_until = 0.0
 
         async def text_stream():
             while True:
@@ -242,6 +272,17 @@ class VoiceSession:
                 if chunk is None:
                     return
                 yield chunk
+
+        async def emit_ready(chunks: list[str]) -> None:
+            # Fish's live-TTS protocol has no per-segment audio boundary (only
+            # a stream-ending "finish"), so the client can't tell which
+            # arriving audio bytes belong to which sentence. Telling it the
+            # text of each chunk as we commit it to TTS lets it estimate
+            # speech timing from character count instead, synced against its
+            # own playback clock — see hooks/useVoiceSession.ts.
+            for chunk in chunks:
+                await self._send_json({"type": "speech_chunk", "turn_id": turn_id, "text": chunk})
+                await text_queue.put(chunk)
 
         async def agent_loop() -> None:
             buffer = ""
@@ -258,22 +299,19 @@ class VoiceSession:
                     buffer += event["delta"]
                     await self._send_json({"type": "agent_text", "turn_id": turn_id, "delta": event["delta"]})
                     ready, buffer = _drain_ready_chunks(buffer)
-                    for chunk in ready:
-                        await text_queue.put(chunk)
+                    await emit_ready(ready)
                 elif etype == "tool_start":
                     # Flush now: this is the model's spoken lead-in from the
                     # voice prompt ("嗯我去帮你查一查") and it needs to reach
                     # TTS before the tool's own latency, not after.
                     ready, buffer = _drain_ready_chunks(buffer, force=True)
-                    for chunk in ready:
-                        await text_queue.put(chunk)
+                    await emit_ready(ready)
                     await self._send_json(
                         {"type": "tool_call", "turn_id": turn_id, "tool": event["name"], "args": event["args"]}
                     )
                 elif etype == "done":
                     ready, buffer = _drain_ready_chunks(buffer, force=True)
-                    for chunk in ready:
-                        await text_queue.put(chunk)
+                    await emit_ready(ready)
             await text_queue.put(None)
 
         async def tts_consumer() -> None:
@@ -284,6 +322,10 @@ class VoiceSession:
                 seq += 1
                 header = struct.pack(">II", turn_id, seq)
                 await self._send_audio(header + pcm_chunk)
+                # PCM16 mono — exact playback duration, not an estimate (see
+                # _turn_is_audible).
+                duration = len(pcm_chunk) / 2 / SAMPLE_RATE
+                self._turn_audible_until = max(self._turn_audible_until, time.monotonic()) + duration
 
         try:
             await asyncio.gather(agent_loop(), tts_consumer())
