@@ -55,9 +55,12 @@ import time
 
 from fastapi import WebSocket
 
+from core.database.db_user_usage import commit_charge_fast, evaluate_charge_fast
+from core.utils.citations import all_citations, reset_citation_registry_async
 from core.voice.agent import run_voice_turn
 from core.voice.deepgram_stt import DeepgramSTT
 from core.voice.fish_tts import SAMPLE_RATE, FishTTS
+from core.voice.persist import persist_voice_turn
 
 logger = logging.getLogger(__name__)
 
@@ -118,12 +121,14 @@ class VoiceSession:
         self,
         ws: WebSocket,
         thread_id: str,
+        user_id: str,
         *,
         user_location: str | None = None,
         user_local_datetime: str | None = None,
     ) -> None:
         self.ws = ws
         self.thread_id = thread_id
+        self.user_id = user_id
         self.user_location = user_location
         self.user_local_datetime = user_local_datetime
         self.stt = DeepgramSTT()  # raises if DEEPGRAM_API_KEY missing — fail fast, before accept-side cleanup gets messy
@@ -230,6 +235,20 @@ class VoiceSession:
         self._pending_transcript = ""
         if not text:
             return
+        # Gated before anything else — same evaluate-then-commit split /chat
+        # uses (core/routers/chat.py): evaluate_charge_fast decides before a
+        # turn starts, commit_charge_fast (fire-and-forget) only fires once
+        # we're actually proceeding. Checked ahead of _cancel_active_turn so
+        # a user who's out of credits doesn't lose whatever's still playing
+        # from a turn they already paid for, just because they tried (and
+        # failed) to start a new one. No turn_id on the error — same as a
+        # missing-API-key rejection, this ends the whole call: every
+        # following turn would fail the same gate.
+        charge = await evaluate_charge_fast(self.user_id, "voice")
+        if not charge["charged"]:
+            await self._send_json({"type": "error", "detail": "Usage limit exceeded."})
+            return
+        commit_charge_fast(self.user_id, "voice")
         await self._cancel_active_turn()
         self.active_turn_id += 1
         turn_id = self.active_turn_id
@@ -265,6 +284,20 @@ class VoiceSession:
         tts = FishTTS()
         text_queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._turn_audible_until = 0.0
+        # Accumulated for persist_voice_turn once the turn completes — kept
+        # separate from agent_loop's own `buffer`, which gets drained as TTS
+        # chunks are cut from it and so never holds the full reply.
+        full_text_parts: list[str] = []
+        steps: list[dict] = []
+
+        # Same registry every retrieval tool call feeds (core/utils/citations.py)
+        # — reusing it here, the same way core/stream.py does for regular chat,
+        # means web_search/fetch_url calls made from this turn are already
+        # producing citation records; all_citations() below just reads them
+        # back out once the turn is done. `turn_id` doubles as the "turn"
+        # number — voice threads don't support rewind, so it only needs to be
+        # monotonically increasing, not exactly aligned with anything else.
+        await reset_citation_registry_async(self.thread_id, turn_id)
 
         async def text_stream():
             while True:
@@ -290,6 +323,7 @@ class VoiceSession:
                 etype = event["type"]
                 if etype == "text":
                     buffer += event["delta"]
+                    full_text_parts.append(event["delta"])
                     await self._send_json({"type": "agent_text", "turn_id": turn_id, "delta": event["delta"]})
                     ready, buffer = _drain_ready_chunks(buffer)
                     await emit_ready(ready)
@@ -299,6 +333,9 @@ class VoiceSession:
                     # TTS before the tool's own latency, not after.
                     ready, buffer = _drain_ready_chunks(buffer, force=True)
                     await emit_ready(ready)
+                    steps.append({
+                        "tool": event["name"], "args": event.get("args", {}), "timestamp": int(time.time() * 1000),
+                    })
                     await self._send_json(
                         {"type": "tool_call", "turn_id": turn_id, "tool": event["name"], "args": event["args"]}
                     )
@@ -324,6 +361,16 @@ class VoiceSession:
             await asyncio.gather(agent_loop(), tts_consumer())
             if turn_id == self.active_turn_id:
                 await self._send_json({"type": "turn_end", "turn_id": turn_id})
+                # Fire-and-forget: a Supabase round trip has no business
+                # delaying turn_end (the client's cue to stop showing
+                # "thinking"/"speaking"). A barge-in or a hangup that lands
+                # before this finishes doesn't lose the write — it's not
+                # tied to turn_task or the WS connection.
+                asyncio.create_task(
+                    persist_voice_turn(
+                        self.thread_id, self.user_id, user_text, "".join(full_text_parts), steps, all_citations(),
+                    )
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — surface pipeline failures to the client instead of a silent dropped task

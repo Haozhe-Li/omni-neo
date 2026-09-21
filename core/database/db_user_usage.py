@@ -72,6 +72,13 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 #
 # `scheduled` is unrelated to the picker and unchanged: an unattended research
 # run is a much bigger job than one chat turn.
+#
+# `voice`/`voice-text` are core/voice/session.py's live call and
+# core/routers/voice.py's typed-continuation endpoint — priced apart from
+# everything above since neither goes through model selection at all (both
+# always run the same fixed voice agent). A spoken turn costs more than a
+# typed one in the same thread because it also pays for STT (Deepgram) and
+# TTS (Fish Audio) on top of the LLM call a typed turn alone makes.
 MODE_CREDIT_COST: dict[str, float] = {
     "best": 1.0,
     "best-vision": 1.0,
@@ -82,6 +89,8 @@ MODE_CREDIT_COST: dict[str, float] = {
     "fast": 1.0,
     "pro": 1.0,
     "scheduled": 4.7,
+    "voice": 5.0,
+    "voice-text": 1.0,
 }
 
 # A charge key the table doesn't know must not take chat down: an unpriced

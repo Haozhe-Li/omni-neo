@@ -49,13 +49,18 @@ def get_threads_for_user(user_id: str) -> list[dict]:
 
     Excludes scheduled-research threads (origin='scheduled_task') — those are
     surfaced only via /schedule_task's own run list (see
-    core/routers/scheduled_tasks.py), never in the regular chat sidebar."""
+    core/routers/scheduled_tasks.py), never in the regular chat sidebar.
+    Voice threads (origin='voice') ARE included — once a voice call has any
+    content synced (see core/voice/session.py), it reads like any other
+    thread here, just tagged with its origin so the frontend can render its
+    restricted composer (see core/routers/voice.py's text-continuation
+    endpoint)."""
     try:
         res = (
             supabase.table("user_threads")
-            .select("thread_id, title, is_pinned, is_locked, updated_at")
+            .select("thread_id, title, is_pinned, is_locked, origin, updated_at")
             .eq("user_id", user_id)
-            .is_("origin", "null")
+            .or_("origin.is.null,origin.eq.voice")
             .order("is_pinned", desc=True)
             .order("updated_at", desc=True)
             .execute()
@@ -203,7 +208,7 @@ def search_user_threads(user_id: str, query: str, limit: int = 20) -> list[dict]
             supabase.table("user_threads")
             .select("thread_id, title, is_pinned, is_locked, updated_at, search_text")
             .eq("user_id", user_id)
-            .is_("origin", "null")
+            .or_("origin.is.null,origin.eq.voice")
             .execute()
         )
         ql = query.lower()
@@ -391,7 +396,7 @@ def get_thread_row(thread_id: str, user_id: str) -> dict | None:
     try:
         res = (
             supabase.table("user_threads")
-            .select("ui_messages, is_locked, locked_reason, locked_at")
+            .select("ui_messages, is_locked, locked_reason, locked_at, origin")
             .eq("thread_id", thread_id)
             .eq("user_id", user_id)
             .limit(1)
@@ -408,6 +413,7 @@ def get_thread_row(thread_id: str, user_id: str) -> dict | None:
             "is_locked": bool(row.get("is_locked")),
             "locked_reason": row.get("locked_reason"),
             "locked_at": row.get("locked_at"),
+            "origin": row.get("origin"),
         }
     except Exception as e:
         logger.error(f"[db_user_threads] get_thread_row error: {e}")

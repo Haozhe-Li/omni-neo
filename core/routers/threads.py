@@ -128,6 +128,7 @@ async def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user
         "is_locked": row["is_locked"],
         "locked_reason": row["locked_reason"],
         "locked_at": locked_at,
+        "origin": row.get("origin"),
     }
 
 
