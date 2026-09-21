@@ -15,6 +15,7 @@ from core.database.db_user_memories import migrate_guest_memory, delete_user_mem
 from core.database.db_user_files import get_user_file_buckets, delete_user_files
 from core.database.db_user_usage import get_usage, delete_user_usage
 from core.database.db_redeem_codes import redeem_code
+from core.database.db_free_credit import request_free_credit
 from core.RAG.file_parser import delete_user_uploads_from_s3
 
 router = APIRouter(prefix="/api", tags=["users"])
@@ -70,6 +71,26 @@ def api_redeem_code(
             status_code=_REDEEM_STATUS_CODES.get(result["status"], 400),
             detail={"error": result["status"]},
         )
+    return result
+
+
+@router.post("/free_credit")
+async def api_free_credit(user_id: str = Depends(get_current_user)):
+    """
+    Self-serve free-credit check for the /get-free-credit page: gate on a
+    (currently stub, see db_free_credit.py) risk check, and on approval mint a
+    code only this user can redeem. At most one real check per user per day —
+    a repeat call within the cooldown just replays that check's cached result.
+
+    Signed-in only, same reasoning as /redeem: a guest id is a disposable
+    client-generated uuid, so gating on it would let anyone farm free credit
+    from an unlimited supply of fresh identities.
+    """
+    if user_id.startswith("guest_"):
+        raise HTTPException(status_code=403, detail={"error": "sign_in_required"})
+    result = await request_free_credit(user_id)
+    if result["status"] == "error":
+        raise HTTPException(status_code=500, detail={"error": "error"})
     return result
 
 

@@ -16,6 +16,8 @@ Table schema (managed in Supabase, see schema.sql):
         expires_at TIMESTAMPTZ,
         active BOOLEAN NOT NULL DEFAULT TRUE,
         note TEXT,
+        restricted_user_id VARCHAR(255),   -- NULL for every ordinary code; set only
+                                            -- by create_restricted_code, see below
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS code_redemptions (
@@ -40,7 +42,8 @@ campaign ever needs a hard cap.
 
 import logging
 import re
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 
 from core.database.supabase_client import supabase, utcnow_iso
 from core.database.db_user_usage import invalidate_usage_snapshot
@@ -55,6 +58,22 @@ MAX_CODE_LENGTH = 64
 
 def normalize_code(code: str) -> str:
     return _NORMALIZE_STRIP.sub("", (code or "")).upper()[:MAX_CODE_LENGTH]
+
+
+# No I/O/0/1 — the alphabet is deliberately unambiguous, because these get read
+# off a screen, written down, and typed back in by hand. Shared by
+# scripts/gen_redeem_codes.py (hand-minted campaign codes) and
+# create_restricted_code below (the "get free credit" flow) so both draw codes
+# from the same format.
+_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_PREFIX = "OMNI"
+
+
+def generate_code(groups: int = 3, group_len: int = 4) -> str:
+    """e.g. OMNI-K7QX-2M9P-TRWD. Stored normalized (no dashes) — the dashes are
+    purely for readability; normalize_code strips them on redeem."""
+    body = ["".join(secrets.choice(_ALPHABET) for _ in range(group_len)) for _ in range(groups)]
+    return "-".join([_PREFIX, *body])
 
 
 def _is_duplicate_error(e: Exception) -> bool:
@@ -104,7 +123,7 @@ def redeem_code(user_id: str, code: str) -> dict:
     try:
         res = (
             supabase.table("redeem_codes")
-            .select("code, credits, max_uses, used_count, expires_at, active")
+            .select("code, credits, max_uses, used_count, expires_at, active, restricted_user_id")
             .eq("code", code)
             .limit(1)
             .execute()
@@ -114,10 +133,15 @@ def redeem_code(user_id: str, code: str) -> dict:
         return {"status": "error"}
 
     row = res.data[0] if res.data else None
-    # An inactive code is reported as invalid rather than as its own state:
-    # whether a code exists but was switched off isn't something a stranger
-    # guessing codes should be able to learn.
+    # An inactive code, or a code minted for a different user (see
+    # create_restricted_code / the "get free credit" flow), is reported as
+    # invalid rather than as its own state: whether a code exists but doesn't
+    # belong to you isn't something a stranger guessing codes should be able
+    # to learn.
     if not row or not row.get("active"):
+        return {"status": "invalid_code"}
+    restricted_to = row.get("restricted_user_id")
+    if restricted_to and restricted_to != user_id:
         return {"status": "invalid_code"}
     if _expired(row.get("expires_at")):
         return {"status": "code_expired"}
@@ -267,3 +291,37 @@ def repair_grant(user_id: str, code: str) -> dict:
         return {"status": "error"}
     invalidate_usage_snapshot(user_id)
     return {"status": "ok", "extra_granted": granted[0]}
+
+
+def create_restricted_code(user_id: str, credits: float, expires_in_days: int) -> tuple[str, str] | None:
+    """Mint a fresh code that only `user_id` can redeem (single use, expires in
+    `expires_in_days`) — the code-minting half of the "get free credit" flow;
+    see core/database/db_free_credit.py for the risk-check + cooldown half that
+    decides whether to call this at all.
+
+    Returns (code, expires_at) on success, None if the insert failed. Retries
+    once on a PK collision (astronomically unlikely at this alphabet/length,
+    same odds scripts/gen_redeem_codes.py already accepts) before giving up —
+    a second collision is treated as a real error rather than looped on.
+    """
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat()
+    for _ in range(2):
+        code = generate_code()
+        try:
+            supabase.table("redeem_codes").insert({
+                "code": code,
+                "credits": credits,
+                "max_uses": 1,
+                "expires_at": expires_at,
+                "note": "free_credit self-serve grant",
+                "restricted_user_id": user_id,
+            }).execute()
+            return code, expires_at
+        except Exception as e:
+            if _is_duplicate_error(e):
+                logger.warning(f"[db_redeem_codes] code collision minting for {user_id}, retrying: {code}")
+                continue
+            logger.error(f"[db_redeem_codes] create_restricted_code insert error for {user_id}: {e}")
+            return None
+    logger.error(f"[db_redeem_codes] create_restricted_code gave up after repeated collisions for {user_id}")
+    return None

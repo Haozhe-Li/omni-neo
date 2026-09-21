@@ -18,7 +18,6 @@ Requires the same SUPABASE_URL / SUPABASE_KEY the backend uses (loaded from
 """
 
 import argparse
-import secrets
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -27,22 +26,11 @@ import dotenv
 dotenv.load_dotenv()
 
 from core.database.supabase_client import supabase  # noqa: E402  (after load_dotenv)
-# Same normalization the redeem endpoint applies, imported rather than
-# reimplemented — a code minted under different rules than it's looked up
-# under would simply never be redeemable.
-from core.database.db_redeem_codes import normalize_code  # noqa: E402
-
-# No I/O/0/1 — the alphabet is deliberately unambiguous, because these get read
-# off a screen, written down, and typed back in by hand.
-_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-_PREFIX = "OMNI"
-
-
-def generate_code(groups: int = 3, group_len: int = 4) -> str:
-    """e.g. OMNI-K7QX-2M9P-TRWD. Stored normalized (no dashes) — the dashes are
-    purely for readability; `normalize_code` strips them on redeem."""
-    body = ["".join(secrets.choice(_ALPHABET) for _ in range(group_len)) for _ in range(groups)]
-    return "-".join([_PREFIX, *body])
+# Same normalization the redeem endpoint applies, and the same code-format
+# generator core/database/db_free_credit.py uses for self-serve grants —
+# imported rather than reimplemented so every code in the system is minted
+# and looked up under identical rules.
+from core.database.db_redeem_codes import generate_code, normalize_code  # noqa: E402
 
 
 def main() -> int:

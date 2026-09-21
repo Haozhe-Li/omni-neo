@@ -105,17 +105,22 @@ ALTER TABLE user_usage ADD COLUMN IF NOT EXISTS extra_used    NUMERIC(10,2) NOT 
 -- `code` is stored normalized (upper-cased, dashes/spaces stripped) so lookup
 -- is a plain primary-key hit and users can type it however they like.
 CREATE TABLE IF NOT EXISTS redeem_codes (
-    code       VARCHAR(64) PRIMARY KEY,
-    credits    NUMERIC(10,2) NOT NULL DEFAULT 1000,
-    max_uses   INT NOT NULL DEFAULT 1,   -- 1 = single-use; >1 = shared campaign code;
-                                         -- <=0 = unlimited users (still once each,
-                                         -- enforced by code_redemptions' unique index)
-    used_count INT NOT NULL DEFAULT 0,
-    expires_at TIMESTAMPTZ,              -- NULL = never expires
-    active     BOOLEAN NOT NULL DEFAULT TRUE,
-    note       TEXT,                     -- free-form: what campaign this was for
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    code               VARCHAR(64) PRIMARY KEY,
+    credits            NUMERIC(10,2) NOT NULL DEFAULT 1000,
+    max_uses           INT NOT NULL DEFAULT 1,   -- 1 = single-use; >1 = shared campaign code;
+                                                  -- <=0 = unlimited users (still once each,
+                                                  -- enforced by code_redemptions' unique index)
+    used_count         INT NOT NULL DEFAULT 0,
+    expires_at         TIMESTAMPTZ,              -- NULL = never expires
+    active             BOOLEAN NOT NULL DEFAULT TRUE,
+    note               TEXT,                     -- free-form: what campaign this was for
+    -- Set only by the "get free credit" self-serve flow (core/database/db_free_credit.py):
+    -- when non-NULL, redeem_code() refuses anyone but this user_id, as if the
+    -- code didn't exist. NULL for every ordinary/campaign code.
+    restricted_user_id VARCHAR(255),
+    created_at         TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE redeem_codes ADD COLUMN IF NOT EXISTS restricted_user_id VARCHAR(255);
 
 -- ---------------------------------------------------------------------------
 -- code_redemptions: who redeemed what, and the double-redeem guard
