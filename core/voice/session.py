@@ -274,14 +274,7 @@ class VoiceSession:
                 yield chunk
 
         async def emit_ready(chunks: list[str]) -> None:
-            # Fish's live-TTS protocol has no per-segment audio boundary (only
-            # a stream-ending "finish"), so the client can't tell which
-            # arriving audio bytes belong to which sentence. Telling it the
-            # text of each chunk as we commit it to TTS lets it estimate
-            # speech timing from character count instead, synced against its
-            # own playback clock — see hooks/useVoiceSession.ts.
             for chunk in chunks:
-                await self._send_json({"type": "speech_chunk", "turn_id": turn_id, "text": chunk})
                 await text_queue.put(chunk)
 
         async def agent_loop() -> None:
