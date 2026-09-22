@@ -93,8 +93,8 @@ upstash-search
 resend
 qstash
 
-# live voice agent MVP: Deepgram streaming STT is a hand-rolled raw
-# WebSocket (see core/voice/deepgram_stt.py), Fish Audio TTS uses its
+# live voice agent MVP: OpenAI realtime streaming STT is a hand-rolled raw
+# WebSocket (see core/voice/openai_stt.py), Fish Audio TTS uses its
 # official SDK
 fish-audio-sdk
 websockets

@@ -57,7 +57,7 @@ async def _reject(websocket: WebSocket, detail: str) -> None:
 async def voice_ws(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    missing = [k for k in ("DEEPGRAM_API_KEY", "FISH_API_KEY") if not os.environ.get(k)]
+    missing = [k for k in ("OPENAI_API_KEY", "FISH_API_KEY") if not os.environ.get(k)]
     if missing:
         await websocket.send_json({"type": "error", "detail": f"Missing env vars: {', '.join(missing)}"})
         await websocket.close()

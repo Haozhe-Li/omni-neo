@@ -1,33 +1,33 @@
-"""Per-connection orchestration: client audio -> Deepgram -> voice agent ->
-Fish TTS -> client audio, with barge-in.
+"""Per-connection orchestration: client audio -> OpenAI realtime STT -> voice
+agent -> Fish TTS -> client audio, with barge-in.
 
 Turn lifecycle:
   1. Client streams continuous PCM16 audio (no client-side VAD for this MVP
-     — see core/static/voice_test.html; Deepgram's own VAD does endpointing,
-     one source of truth instead of two independently-tuned ones).
-  2. Deepgram finalizes an utterance (`speech_final` or `UtteranceEnd`) ->
-     `_finalize_user_turn` assigns a fresh `turn_id` and starts `_run_turn`.
+     — see core/static/voice_test.html; the STT provider's own server_vad
+     does endpointing, one source of truth instead of two independently-
+     tuned ones).
+  2. The STT provider finalizes an utterance (a `...transcription.completed`
+     event, see core/voice/openai_stt.py) -> `_finalize_user_turn` assigns a
+     fresh `turn_id` and starts `_run_turn`.
   3. `_run_turn` streams the agent's reply, chunks it into sentences/clauses,
      feeds each chunk to a single Fish TTS connection spanning the whole
      turn, and forwards resulting PCM16 back to the client tagged with
      `turn_id` (8-byte header: turn_id, seq — both uint32 big-endian).
-  4. If Deepgram's `SpeechStarted` fires while a turn is still in flight,
-     that arms a barge-in — it does not fire one outright. Deepgram's own
-     docs describe VAD as tonal-analysis speech-onset detection with no
-     stated false-positive handling, and this app never stops streaming mic
-     audio while the agent is talking (no client-side gating), so any echo
-     of the agent's own TTS leaking back into the mic (routine without
-     headphones) or ambient noise reliably fires SpeechStarted with no
-     actual user speech behind it. Firing a cancel on that signal alone
-     cuts the agent off mid-sentence, or — worse — cancels a turn within
-     the first instant of `_finalize_user_turn`, which just looks like "I
-     finished talking and nothing happened." So SpeechStarted only *arms*
-     the barge-in; it's committed only once the next `Results` event
-     carries actual recognized text, confirming a real utterance is
-     underway. A genuine interruption still lands fast (Deepgram typically
-     produces an interim hypothesis within ~100-300ms of true speech), a
-     bare noise/echo blip that never resolves to words never cancels
-     anything.
+  4. If the STT provider's `input_audio_buffer.speech_started` fires while a
+     turn is still in flight, that arms a barge-in — it does not fire one
+     outright. This app never stops streaming mic audio while the agent is
+     talking (no client-side gating), so any echo of the agent's own TTS
+     leaking back into the mic (routine without headphones) or ambient noise
+     can trip speech-onset detection with no actual user speech behind it.
+     Firing a cancel on that signal alone cuts the agent off mid-sentence,
+     or — worse — cancels a turn within the first instant of
+     `_finalize_user_turn`, which just looks like "I finished talking and
+     nothing happened." So speech_started only *arms* the barge-in; it's
+     committed only once a transcription delta/completed event carries
+     actual recognized text, confirming a real utterance is underway. A
+     genuine interruption still lands fast (an interim hypothesis typically
+     arrives within a few hundred ms of true speech), a bare noise/echo
+     blip that never resolves to words never cancels anything.
      Once committed, the turn task is cancelled and `active_turn_id` is
      bumped so any audio already in flight from the cancelled turn gets
      tagged stale and the client drops it on arrival — cancellation stops
@@ -38,7 +38,7 @@ Turn lifecycle:
      seconds of already-sent audio can still be audibly playing after
      turn_task completes. Gating "is the agent still speaking" on turn_task
      alone meant a real interruption landing in that tail window was
-     silently ignored (SpeechStarted never armed, nothing ever cancelled
+     silently ignored (speech_started never armed, nothing ever cancelled
      the turn) — confirmed live, and worse for longer replies since the
      tail is proportionally bigger. `_turn_audible_until` tracks an exact
      estimate instead (summed straight from the PCM byte durations sent in
@@ -58,7 +58,7 @@ from fastapi import WebSocket
 from core.database.db_user_usage import commit_charge_fast, evaluate_charge_fast
 from core.utils.citations import all_citations, reset_citation_registry_async
 from core.voice.agent import run_voice_turn
-from core.voice.deepgram_stt import DeepgramSTT
+from core.voice.openai_stt import OpenAISTT
 from core.voice.fish_tts import SAMPLE_RATE, FishTTS
 from core.voice.persist import persist_voice_turn
 
@@ -131,15 +131,23 @@ class VoiceSession:
         self.user_id = user_id
         self.user_location = user_location
         self.user_local_datetime = user_local_datetime
-        self.stt = DeepgramSTT()  # raises if DEEPGRAM_API_KEY missing — fail fast, before accept-side cleanup gets messy
+        self.stt = OpenAISTT()  # raises if OPENAI_API_KEY missing — fail fast, before accept-side cleanup gets messy
         self.active_turn_id = 0
         self.turn_task: asyncio.Task | None = None
         # monotonic deadline — see _turn_is_audible
         self._turn_audible_until = 0.0
         self._pending_transcript = ""
-        # Set by a SpeechStarted event while a turn is in flight; only turns
-        # into an actual barge-in once a subsequent Results event confirms
-        # real recognized text (see module docstring point 4).
+        # The utterance currently being recognized: OpenAI's transcription
+        # deltas are incremental fragments (unlike Deepgram's old Results,
+        # which re-sent the whole current hypothesis each time), so they're
+        # accumulated here per item_id until a `...completed` event lands it
+        # in _pending_transcript. See _consume_stt_events.
+        self._current_item_id: str | None = None
+        self._current_utterance_text = ""
+        # Set by a speech_started event while a turn is in flight; only turns
+        # into an actual barge-in once a subsequent transcription delta/
+        # completed event confirms real recognized text (see module
+        # docstring point 4).
         self._barge_in_armed = False
         # agent_text/tool_call (text frames, from agent_loop) and TTS audio
         # (binary frames, from tts_consumer) are sent from two different
@@ -167,22 +175,22 @@ class VoiceSession:
 
     async def run(self) -> None:
         await self.stt.connect()
-        # Only now — Deepgram is actually connected and ready to receive —
-        # tell the client it's safe to start streaming. Before this point
+        # Only now — the STT connection is actually up and ready to receive
+        # — tell the client it's safe to start streaming. Before this point
         # any audio the client already sent has been sitting unread in the
         # WebSocket's own receive buffer (accept() happens before this, so
         # the client's ws.onopen can fire early); the frontend buffers
         # locally until it sees this and flushes in order, so nothing said
         # in that gap gets lost, but the burst of already-arrived bytes was
-        # still not going to Deepgram until now, which — if the frontend
-        # had started streaming on its own — would have skewed Deepgram's
+        # still not going anywhere until now, which — if the frontend had
+        # started streaming on its own — would have skewed the server_vad
         # endpointing timing for the opening of the very first utterance.
         await self._send_json({"type": "ready"})
-        deepgram_pump = asyncio.create_task(self._consume_deepgram_events())
+        stt_pump = asyncio.create_task(self._consume_stt_events())
         try:
             await self._pump_client_audio()
         finally:
-            deepgram_pump.cancel()
+            stt_pump.cancel()
             if self.turn_task is not None and not self.turn_task.done():
                 self.turn_task.cancel()
             await self.stt.close()
@@ -196,37 +204,55 @@ class VoiceSession:
             if data:
                 self.stt.send(data)
 
-    async def _consume_deepgram_events(self) -> None:
+    async def _confirm_barge_in_if_armed(self) -> None:
+        """Real recognized text just arrived while a speech_started-armed
+        barge-in was pending — commit it (see module docstring point 4)."""
+        if not self._barge_in_armed:
+            return
+        self._barge_in_armed = False
+        # Re-check liveness rather than letting _barge_in's own
+        # _cancel_active_turn no-op silently: if the armed turn already
+        # finished (including its audible tail) in the meantime, this text
+        # belongs to an unrelated, perfectly normal later utterance —
+        # calling _barge_in() would still wipe _pending_transcript out from
+        # under it.
+        if self._turn_is_audible():
+            await self._barge_in()
+
+    async def _consume_stt_events(self) -> None:
         async for event in self.stt.events():
             etype = event.get("type")
-            if etype == "Results":
-                alt = event["channel"]["alternatives"][0]
-                text = alt.get("transcript", "")
-                if not text:
+            if etype == "conversation.item.input_audio_transcription.delta":
+                # Incremental fragments, not a re-sent full hypothesis (that
+                # was Deepgram's shape, not this API's) — accumulated per
+                # item_id until the matching `...completed` event below.
+                item_id = event.get("item_id")
+                delta = event.get("delta", "")
+                if not delta:
                     continue
-                if self._barge_in_armed:
-                    self._barge_in_armed = False
-                    # Re-check liveness rather than letting _barge_in's own
-                    # _cancel_active_turn no-op silently: if the armed turn
-                    # already finished (including its audible tail) in the
-                    # meantime, this Results event belongs to an unrelated,
-                    # perfectly normal later utterance — calling _barge_in()
-                    # would still wipe _pending_transcript out from under it.
-                    if self._turn_is_audible():
-                        await self._barge_in()
-                if event.get("is_final"):
+                if item_id != self._current_item_id:
+                    self._current_item_id = item_id
+                    self._current_utterance_text = ""
+                self._current_utterance_text += delta
+                await self._confirm_barge_in_if_armed()
+                live = (self._pending_transcript + " " + self._current_utterance_text).strip()
+                await self._send_json({"type": "partial_transcript", "text": live})
+            elif etype == "conversation.item.input_audio_transcription.completed":
+                # The one event that both finalizes this utterance's text and
+                # signals server_vad decided the turn is over — Deepgram
+                # needed two separate signals (speech_final vs UtteranceEnd)
+                # for this; this API collapses them into one.
+                text = event.get("transcript") or self._current_utterance_text
+                self._current_item_id = None
+                self._current_utterance_text = ""
+                if text:
+                    await self._confirm_barge_in_if_armed()
                     self._pending_transcript = (self._pending_transcript + " " + text).strip()
                     await self._send_json({"type": "partial_transcript", "text": self._pending_transcript})
-                    if event.get("speech_final"):
-                        await self._finalize_user_turn()
-                else:
-                    live = (self._pending_transcript + " " + text).strip()
-                    await self._send_json({"type": "partial_transcript", "text": live})
-            elif etype == "UtteranceEnd":
-                self._barge_in_armed = False
-                if self._pending_transcript:
-                    await self._finalize_user_turn()
-            elif etype == "SpeechStarted":
+                # No-op (via its own empty-text guard) if nothing was ever
+                # actually recognized in this turn.
+                await self._finalize_user_turn()
+            elif etype == "input_audio_buffer.speech_started":
                 if self._turn_is_audible():
                     self._barge_in_armed = True
 

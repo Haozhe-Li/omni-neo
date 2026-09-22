@@ -77,8 +77,8 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 # core/routers/voice.py's typed-continuation endpoint — priced apart from
 # everything above since neither goes through model selection at all (both
 # always run the same fixed voice agent). A spoken turn costs more than a
-# typed one in the same thread because it also pays for STT (Deepgram) and
-# TTS (Fish Audio) on top of the LLM call a typed turn alone makes.
+# typed one in the same thread because it also pays for STT (OpenAI realtime)
+# and TTS (Fish Audio) on top of the LLM call a typed turn alone makes.
 MODE_CREDIT_COST: dict[str, float] = {
     "best": 1.0,
     "best-vision": 1.0,
