@@ -392,11 +392,11 @@ def lock_user_thread_row(thread_id: str, reason: str) -> bool:
 
 
 def get_thread_row(thread_id: str, user_id: str) -> dict | None:
-    """Return ui_messages + lock state for an owned thread, or None if not found."""
+    """Return ui_messages + title + lock state for an owned thread, or None if not found."""
     try:
         res = (
             supabase.table("user_threads")
-            .select("ui_messages, is_locked, locked_reason, locked_at, origin")
+            .select("ui_messages, title, is_locked, locked_reason, locked_at, origin")
             .eq("thread_id", thread_id)
             .eq("user_id", user_id)
             .limit(1)
@@ -410,6 +410,7 @@ def get_thread_row(thread_id: str, user_id: str) -> dict | None:
             msgs = json.loads(msgs)
         return {
             "messages": msgs or [],
+            "title": row.get("title"),
             "is_locked": bool(row.get("is_locked")),
             "locked_reason": row.get("locked_reason"),
             "locked_at": row.get("locked_at"),
