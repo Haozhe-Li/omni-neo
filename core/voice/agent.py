@@ -112,6 +112,22 @@ def _build_turn_content(text: str, user_location: str | None, user_local_datetim
     )
 
 
+def _is_cjk(ch: str) -> bool:
+    # CJK punctuation/kana/ideographs, compatibility ideographs, fullwidth forms.
+    return "⺀" <= ch <= "鿿" or "豈" <= ch <= "﫿" or "＀" <= ch <= "￯"
+
+
+def _needs_space(prev: str, nxt: str) -> bool:
+    """Whether two separately generated stretches of reply text need a space
+    between them. The spoken lead-in before a tool call and the answer after
+    it are separate model messages, and the second doesn't start with a space
+    — joined raw, English reads "…today.Chicago is…". Chinese doesn't space
+    between sentences, so nothing is added next to a CJK character."""
+    if not prev or prev.isspace() or nxt.isspace() or nxt in ",.;:!?)]}":
+        return False
+    return not (_is_cjk(prev) or _is_cjk(nxt))
+
+
 async def run_voice_turn(
     thread_id: str,
     text: str,
@@ -137,14 +153,22 @@ async def run_voice_turn(
     input_state = {"messages": [HumanMessage(content)]}
 
     announced_tool_calls: set[str] = set()
+    last_char = ""
+    # Set once a tool call is announced: any text after it comes from a new
+    # model message — see _needs_space.
+    new_message = False
     async for mode, data in voice_agent.astream(input_state, config=config, stream_mode=["messages", "updates"]):
         if mode == "messages":
             chunk = data[0] if isinstance(data, tuple) else data
             # The Responses API streams content as a list of blocks, not a
             # plain string — everything downstream appends deltas as str.
-            text = _text_of(chunk.content) if isinstance(chunk, AIMessageChunk) else ""
-            if text:
-                yield {"type": "text", "delta": text}
+            delta = _text_of(chunk.content) if isinstance(chunk, AIMessageChunk) else ""
+            if delta:
+                if new_message and _needs_space(last_char, delta[0]):
+                    delta = " " + delta
+                new_message = False
+                last_char = delta[-1]
+                yield {"type": "text", "delta": delta}
         elif mode == "updates" and isinstance(data, dict):
             for node_output in data.values():
                 if not isinstance(node_output, dict):
@@ -158,6 +182,7 @@ async def run_voice_turn(
                     for call in getattr(msg, "tool_calls", None) or []:
                         if call["id"] not in announced_tool_calls:
                             announced_tool_calls.add(call["id"])
+                            new_message = True
                             yield {"type": "tool_start", "name": call["name"], "args": call["args"]}
                     if getattr(msg, "type", None) == "tool":
                         yield {"type": "tool_end", "name": msg.name}
