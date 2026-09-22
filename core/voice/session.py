@@ -55,10 +55,10 @@ from fastapi import WebSocket
 
 from core.database.db_user_usage import commit_charge_fast, evaluate_charge_fast
 from core.utils.citations import all_citations, reset_citation_registry_async
-from core.voice.agent import run_voice_turn
+from core.voice.agent import END_CALL_TOOL_NAME, run_voice_turn
 from core.voice.openai_stt import OpenAISTT
 from core.voice.fish_tts import SAMPLE_RATE, FishTTS
-from core.voice.persist import persist_voice_turn
+from core.voice.persist import mark_voice_call_end, persist_voice_turn
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,15 @@ class VoiceSession:
         # Committed item_id -> (its delta text, commit time), until its
         # completed event arrives — see _endpoint_watchdog.
         self._awaiting: dict[str, tuple[str, float]] = {}
+        # Every write this call makes to the thread's saved transcript, as one
+        # chain (see _queue_persist): each read-modify-writes the same
+        # ui_messages row, so two racing would drop one, and the call-ended
+        # marker must land after the call's last turn, not beside it.
+        self._persist_tail: asyncio.Task | None = None
+        # ui_messages index of this call's latest saved reply — the call-start
+        # marker goes on the first turn saved, the call-end one here.
+        self._last_persisted_index: int | None = None
+        self._call_end_written = False
         # agent_text/tool_call (text frames, from agent_loop) and TTS audio
         # (binary frames, from tts_consumer) are sent from two different
         # coroutines running concurrently under the same asyncio.gather —
@@ -200,8 +209,10 @@ class VoiceSession:
         finally:
             stt_pump.cancel()
             watchdog.cancel()
-            if self.turn_task is not None and not self.turn_task.done():
-                self.turn_task.cancel()
+            await self._cancel_turn_task()
+            # A call that just dropped (no hangup message) still gets its
+            # end marker. No-op after a clean hangup, which already wrote it.
+            await self._write_call_end()
             await self.stt.close()
 
     async def _pump_client_audio(self) -> None:
@@ -212,6 +223,65 @@ class VoiceSession:
             data = message.get("bytes")
             if data:
                 self.stt.send(data)
+                continue
+            text = message.get("text")
+            if text:
+                try:
+                    control = json.loads(text)
+                except ValueError:
+                    continue
+                if control.get("type") == "hangup":
+                    await self._hang_up()
+                    return
+
+    async def _cancel_turn_task(self) -> None:
+        # Waited on, not just cancelled: until it has actually stopped, a turn
+        # that already sent turn_end could still be about to queue its save.
+        if self.turn_task is not None and not self.turn_task.done():
+            self.turn_task.cancel()
+            await asyncio.wait([self.turn_task])
+
+    async def _hang_up(self) -> None:
+        """The client's hang-up: finish writing the transcript, then ack.
+
+        The client leaves for the thread's text view as soon as it hangs up,
+        and would otherwise load it before the call-ended marker exists — so
+        it waits for this ack (see useVoiceSession's hangUp) first.
+        """
+        await self._cancel_turn_task()
+        await self._write_call_end()
+        await self._send_json({"type": "hangup_ack"})
+
+    def _queue_persist(self, user_text: str, agent_text: str, steps: list[dict], sources: list[dict]) -> None:
+        """Save a finished turn after every save queued before it.
+
+        Chained on the previous save's *task* rather than a lock: a save that
+        has been created but hasn't started yet holds no lock, so a lock alone
+        would let the call-end marker slip in ahead of it.
+        """
+        prev = self._persist_tail
+
+        async def run() -> None:
+            if prev is not None:
+                await asyncio.wait([prev])
+            index = await persist_voice_turn(
+                self.thread_id, self.user_id, user_text, agent_text, steps, sources,
+                call_start=self._last_persisted_index is None,
+            )
+            if index is not None:
+                self._last_persisted_index = index
+
+        self._persist_tail = asyncio.create_task(run())
+
+    async def _write_call_end(self) -> None:
+        if self._call_end_written:
+            return
+        self._call_end_written = True
+        if self._persist_tail is not None:
+            await asyncio.wait([self._persist_tail])
+        # Nothing saved means no call worth marking in the transcript.
+        if self._last_persisted_index is not None:
+            await mark_voice_call_end(self.thread_id, self.user_id, self._last_persisted_index)
 
     async def _consume_stt_events(self) -> None:
         async for event in self.stt.events():
@@ -369,6 +439,7 @@ class VoiceSession:
             async for event in run_voice_turn(
                 self.thread_id,
                 user_text,
+                live_call=True,
                 user_location=self.user_location,
                 user_local_datetime=self.user_local_datetime,
             ):
@@ -387,9 +458,13 @@ class VoiceSession:
                     # TTS before the tool's own latency, not after.
                     ready, buffer = _drain_ready_chunks(buffer, force=True)
                     await emit_ready(ready)
-                    steps.append({
-                        "tool": event["name"], "args": event.get("args", {}), "timestamp": int(time.time() * 1000),
-                    })
+                    # end_call is the client's cue to hang up (it still gets
+                    # the tool_call below), not a step worth showing in the
+                    # thread — the call-ended banner already says it.
+                    if event["name"] != END_CALL_TOOL_NAME:
+                        steps.append({
+                            "tool": event["name"], "args": event.get("args", {}), "timestamp": int(time.time() * 1000),
+                        })
                     await self._send_json(
                         {"type": "tool_call", "turn_id": turn_id, "tool": event["name"], "args": event["args"]}
                     )
@@ -415,16 +490,13 @@ class VoiceSession:
             await asyncio.gather(agent_loop(), tts_consumer())
             if turn_id == self.active_turn_id:
                 await self._send_json({"type": "turn_end", "turn_id": turn_id})
-                # Fire-and-forget: a Supabase round trip has no business
-                # delaying turn_end (the client's cue to stop showing
-                # "thinking"/"speaking"). A barge-in or a hangup that lands
-                # before this finishes doesn't lose the write — it's not
-                # tied to turn_task or the WS connection.
-                asyncio.create_task(
-                    persist_voice_turn(
-                        self.thread_id, self.user_id, user_text, "".join(full_text_parts), steps, all_citations(),
-                    )
-                )
+                # Not awaited: a Supabase round trip has no business delaying
+                # turn_end (the client's cue to stop showing "thinking"/
+                # "speaking"). A barge-in or a hangup that lands before this
+                # finishes doesn't lose the write — it's not tied to
+                # turn_task or the WS connection. Sources are read now, while
+                # this turn's citation registry is still the current one.
+                self._queue_persist(user_text, "".join(full_text_parts), steps, all_citations())
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — surface pipeline failures to the client instead of a silent dropped task

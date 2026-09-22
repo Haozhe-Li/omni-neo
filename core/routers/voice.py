@@ -178,6 +178,7 @@ async def voice_thread_message(
         async for event in run_voice_turn(
             thread_id,
             query,
+            live_call=False,
             user_location=body.user_location,
             user_local_datetime=body.user_local_datetime,
         ):
