@@ -5,31 +5,40 @@ has no streaming mode that reliably auto-picks between Chinese and English
 (nova-3's codeswitch `language=multi` covers neither Chinese, and
 `detect_language=true` isn't supported for streaming at all per Deepgram's own
 docs), so it was pinned to `language=zh` and English speech came back as
-noise. `gpt-live-transcribe`'s `languages` hint (session config below) covers
-both in the same stream, which is the entire reason for this swap.
+noise. `gpt-live-transcribe`'s `languages` hint covers both in one stream —
+verified live with a spoken English and a spoken Chinese sentence back to
+back in the same session, both transcribed correctly.
 
-Hand-rolled rather than an SDK, same reasoning as the file this replaces: the
-wire protocol is a JSON handshake (`session.update`) followed by JSON-framed
-audio (`input_audio_buffer.append`, base64 — unlike Deepgram, which took raw
-binary frames directly) in, and JSON transcript/VAD events out.
+Configured exactly as OpenAI's realtime-transcription guide recommends:
+  - `gpt-live-transcribe`, which streams transcript deltas *while the user is
+    still speaking* (measured: ~0.2-0.5s behind the audio). That is what
+    live captions and barge-in both depend on. `gpt-transcribe` is the wrong
+    model here even though it accepts server VAD: per the same guide it only
+    starts transcribing after a turn is committed, and measured, every delta
+    arrived in one burst ~0.7s after the speaker stopped — nothing at all
+    while they talked.
+  - `turn_detection: null`. The guide's recommended model returns its final
+    transcript "when your application commits each audio turn", and the
+    server rejects server_vad for it outright. Deciding when a turn ends —
+    and sending `commit()` — is core/voice/session.py's job.
+  - 24kHz PCM, as in every example in that guide. The frontend captures 16kHz
+    (what Deepgram needed), so `_sender` upsamples 16k -> 24k with
+    `audioop.ratecv`, state threaded across the whole call so chunk
+    boundaries don't click. (`audioop` is gone in Python 3.13; the Docker
+    image pins 3.12.)
+  - Connected with `?intent=transcription`: the model page lists plain
+    `v1/realtime` as unsupported for gpt-live-transcribe (`?model=...` there
+    fails with invalid_model), and this is how a WebSocket lands on a
+    transcription session instead.
 
-Endpoint/header/event-name choices below are taken from OpenAI's realtime
-transcription docs as of 2026-09; a couple of details (whether the connect
-URL needs a `?model=` or `?intent=` query param the transcription-session
-example didn't show, and the exact field name of anything not exercised by a
-short utterance) could only be confirmed by verified docs excerpts, not a
-live call — check the first real connection's `session.updated`/`error`
-frames against this before trusting it in production.
-
-Turn detection lives in OpenAI's own `server_vad`, not a second,
-independently-tuned front-end VAD — same one-source-of-truth reasoning as the
-file this replaces. `silence_duration_ms=500` is a starting point translated
-from Deepgram's old `endpointing=300` + `utterance_end_ms=1000` pair (which
-had no direct one-knob equivalent here); expect to retune against real calls.
+Hand-rolled rather than an SDK, same reasoning as the file this replaces: a
+JSON handshake (`session.update`), JSON-framed base64 audio
+(`input_audio_buffer.append`) and commits in, JSON transcript events out.
 """
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 import json
 import os
@@ -37,7 +46,10 @@ from typing import AsyncIterator
 
 import websockets
 
-_OPENAI_REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
+_OPENAI_REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+
+_INPUT_RATE = 16000   # what the frontend captures and sends
+_OPENAI_RATE = 24000
 
 _SESSION_UPDATE = {
     "type": "session.update",
@@ -45,41 +57,30 @@ _SESSION_UPDATE = {
         "type": "transcription",
         "audio": {
             "input": {
-                # Matches the PCM16/mono/16kHz the frontend already captures
-                # for Deepgram (core/voice/session.py's docstring) — no
-                # frontend change needed, 16kHz is a supported rate here too.
-                "format": {"type": "audio/pcm", "rate": 16000},
+                "format": {"type": "audio/pcm", "rate": _OPENAI_RATE},
                 "transcription": {
                     "model": "gpt-live-transcribe",
-                    # The fix this whole module exists for: both languages in
-                    # one stream, instead of Deepgram's pinned-to-one-language
-                    # limitation. ISO 639-1 codes, per the docs.
                     "languages": ["en", "zh"],
-                    # "low" = tuned for low-latency live captions, matching
-                    # what this app already needs (live partial_transcript).
                     "delay": "low",
                 },
-                "turn_detection": {
-                    "type": "server_vad",
-                    "silence_duration_ms": 500,
-                },
+                "turn_detection": None,
             }
         },
     },
 }
 
+# Queued alongside audio so a commit lands after every chunk that arrived
+# before it, never ahead of audio still waiting in the queue.
+_COMMIT = object()
+
 
 class OpenAISTT:
     """One connection for the lifetime of a voice session.
 
-    Same connect/send/events/close shape as the DeepgramSTT it replaces —
-    core/voice/session.py only ever talked to that shape, not to
-    Deepgram-specific details, so the event *payloads* `events()` yields are
-    the only thing session.py's consumer needs to know changed.
-
-    `send()` is fire-and-forget (queues audio for a background sender task
-    that also does the base64 encoding this wire format requires); `events()`
-    is the async-iterator side callers pump concurrently.
+    `send()` and `commit()` are fire-and-forget — both only enqueue, and a
+    background sender task does the resampling, base64/JSON framing and the
+    actual network writes, in order. `events()` is the async-iterator side
+    callers pump concurrently.
     """
 
     def __init__(self) -> None:
@@ -88,8 +89,11 @@ class OpenAISTT:
             raise RuntimeError("OPENAI_API_KEY is not set")
         self._api_key = api_key
         self._ws: websockets.ClientConnection | None = None
-        self._send_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._send_queue: asyncio.Queue[object] = asyncio.Queue()
         self._sender_task: asyncio.Task | None = None
+        # audioop.ratecv's continuation state, carried across every chunk of
+        # the call (never reset per chunk) so the upsample stays seamless.
+        self._resample_state = None
 
     async def connect(self) -> None:
         self._ws = await websockets.connect(
@@ -97,31 +101,38 @@ class OpenAISTT:
             additional_headers={"Authorization": f"Bearer {self._api_key}"},
             max_size=None,
         )
-        # Must be the first thing sent — nothing is transcribed correctly
-        # until the session knows type="transcription" plus the model/
-        # languages/turn_detection above.
         await self._ws.send(json.dumps(_SESSION_UPDATE))
         self._sender_task = asyncio.create_task(self._sender())
 
     async def _sender(self) -> None:
         assert self._ws is not None
         while True:
-            chunk = await self._send_queue.get()
-            if chunk is None:
+            item = await self._send_queue.get()
+            if item is None:
                 return
-            try:
-                await self._ws.send(json.dumps({
+            if item is _COMMIT:
+                payload = {"type": "input_audio_buffer.commit"}
+            else:
+                resampled, self._resample_state = audioop.ratecv(
+                    item, 2, 1, _INPUT_RATE, _OPENAI_RATE, self._resample_state
+                )
+                payload = {
                     "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(chunk).decode("ascii"),
-                }))
+                    "audio": base64.b64encode(resampled).decode("ascii"),
+                }
+            try:
+                await self._ws.send(json.dumps(payload))
             except websockets.exceptions.ConnectionClosed:
                 return
 
     def send(self, pcm16_bytes: bytes) -> None:
-        """Queue a raw PCM16 audio frame. Safe to call from the hot path —
-        never awaits, never blocks on the network. The base64/JSON framing
-        this API requires happens in the sender task, not here."""
+        """Queue a raw 16kHz PCM16 mono frame. Never awaits or blocks."""
         self._send_queue.put_nowait(pcm16_bytes)
+
+    def commit(self) -> None:
+        """End the current audio turn: its final transcript arrives as a
+        `conversation.item.input_audio_transcription.completed` event."""
+        self._send_queue.put_nowait(_COMMIT)
 
     async def events(self) -> AsyncIterator[dict]:
         assert self._ws is not None
