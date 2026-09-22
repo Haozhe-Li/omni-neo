@@ -21,8 +21,8 @@ from langchain.agents.middleware import ToolCallLimitMiddleware
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import core.database.checkpointer as _db
-from core.llm import gpt_oss_120b_low
-from core.stream import _tagged_block
+from core.llm import gpt_56_luna_voice
+from core.stream import _tagged_block, _text_of
 from core.tools.adapters import web_search, weather_current, weather_forecast
 from core.utils.data_model import Personalization
 from core.utils.utils import format_system_reminder
@@ -42,7 +42,7 @@ voice_agent = None
 def initialize_voice_agent() -> None:
     global voice_agent
     voice_agent = create_agent(
-        model=gpt_oss_120b_low,
+        model=gpt_56_luna_voice,
         tools=VOICE_TOOLS,
         system_prompt=VOICE_SYSTEM_PROMPT,
         checkpointer=_db.checkpointer,
@@ -140,8 +140,11 @@ async def run_voice_turn(
     async for mode, data in voice_agent.astream(input_state, config=config, stream_mode=["messages", "updates"]):
         if mode == "messages":
             chunk = data[0] if isinstance(data, tuple) else data
-            if isinstance(chunk, AIMessageChunk) and chunk.content:
-                yield {"type": "text", "delta": chunk.content}
+            # The Responses API streams content as a list of blocks, not a
+            # plain string — everything downstream appends deltas as str.
+            text = _text_of(chunk.content) if isinstance(chunk, AIMessageChunk) else ""
+            if text:
+                yield {"type": "text", "delta": text}
         elif mode == "updates" and isinstance(data, dict):
             for node_output in data.values():
                 if not isinstance(node_output, dict):
