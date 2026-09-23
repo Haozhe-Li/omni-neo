@@ -79,7 +79,12 @@ from core.database.db_threads_control import lock_thread_state
 from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.tools.web_page_reader import first_party_redis_shortcut, load_web_page_spider
-from core.context_enrichment import Enrichment, enrich_context, requested_skill_enrichment
+from core.context_enrichment import (
+    Enrichment,
+    enrich_context,
+    requested_skill_enrichment,
+    skill_already_delivered,
+)
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_EXTENSIONS
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
 
@@ -659,13 +664,20 @@ async def _stream_agent(
         #
         # 1. The user's own URLs, fetched inside build_message_content below
         #    (`source_url`) — outranks everything, on every turn.
-        # 2. An explicitly picked skill (`requested_skill_enrichment`) — the
-        #    user already told us exactly what to load via the skill picker,
-        #    same as picking a URL is telling us exactly what to fetch, so it
-        #    gets the same precedence over the scout's guess. Not gated to
-        #    the first turn: picking a skill is a per-turn action (the picker
-        #    is available on any message, not just the thread's first), and
-        #    unlike the scout it needs no conversation history to act on.
+        # 2. An explicitly picked skill (`requested_skill_enrichment`), the
+        #    first turn it's active. The user already told us exactly what
+        #    to load via the skill picker, same as picking a URL is telling
+        #    us exactly what to fetch, so it gets the same precedence over
+        #    the scout's guess — but only once per (thread, skill): once
+        #    delivered, the content is sitting in the checkpointed history
+        #    for every later turn to see, and re-injecting it on a turn
+        #    where the skill just happens to still be toggled on would be
+        #    pure duplication (same reasoning `should_inject_memory` in
+        #    core/routers/chat.py applies to memory). Not gated to the
+        #    thread's first turn specifically — the picker can be turned on
+        #    for the first time on any turn, not only turn 1 — just to the
+        #    first turn *this skill* is active for *this thread*; see
+        #    `skill_already_delivered`.
         # 3. The pre-flight scout (`enrich_context`), first turn only — see
         #    below.
         #
@@ -684,12 +696,17 @@ async def _stream_agent(
         # client too old to send one (QueryRequest.turn is frontend-assigned),
         # and a thread-less direct stream has no persisted history at all —
         # both count as a first turn, the same rule, for the same reason, as
-        # memory injection in core/routers/chat.py.
+        # memory injection in core/routers/chat.py. A thread-less request also
+        # has nowhere to remember "already delivered" in, so an explicit skill
+        # there is always treated as fresh.
         first_turn = thread_id is None or turn is None or turn == 1
+        skill_is_new = bool(skill) and (
+            thread_id is None or not await skill_already_delivered(thread_id, skill)
+        )
         enrichment = Enrichment()
-        if skill and not source_url:
+        if skill_is_new and not source_url:
             enrichment = requested_skill_enrichment(skill)
-        elif not source_url and first_turn:
+        elif not source_url and not skill and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,

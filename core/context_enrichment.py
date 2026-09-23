@@ -57,6 +57,7 @@ from pydantic import BaseModel, Field
 
 from core.agent import SKILL_FILES
 from core.llm import context_enrich_llm
+from core.utils.redis_client import get_async_redis
 from core.tools.adapters import (
     currency_convert,
     stock_search,
@@ -653,16 +654,51 @@ def requested_skill_enrichment(skill: str) -> Enrichment:
     file — the `<requested_skill>` tag is still there either way, so the
     model can fall back to reading it itself.
     """
-    body = _skill_body(f"/skills/{skill}/SKILL.md")
+    path = f"/skills/{skill}/SKILL.md"
+    body = _skill_body(path)
     if not body:
         return Enrichment()
     text = f"{_PREAMBLE_REQUESTED_SKILL.format(skill=skill)}\n\n{body}"
-    # Same event shape the agent's own tool loop emits — core/stream.py
-    # streams `enrichment.events` before the agent starts, and the frontend
-    # renders a `tool_call` event as a regular step no matter which of the
-    # two produced it (see thinking-timeline.tsx's `load_skill` case).
-    events = [{"type": "tool_call", "tool": "load_skill", "args": {"skill": skill}}]
+    # Deliberately shaped as a plain `read_file` call, not a distinct event
+    # type of its own — this stands in for the model reading the skill
+    # itself (see the module's docstring above), so on the frontend it must
+    # render as exactly that, indistinguishable from the agent choosing to
+    # load a skill mid-turn on its own initiative. `args` mirrors deepagents'
+    # own read_file tool schema (file_path only, a full-file read) — core/
+    # stream.py streams `enrichment.events` before the agent starts, ahead of
+    # any step the agent's own tool loop produces, same as an early
+    # self-initiated read would appear.
+    events = [{"type": "tool_call", "tool": "read_file", "args": {"file_path": path}}]
     return Enrichment(action="requested_skill", text=text, events=events)
+
+
+# Long enough that a still-active thread never sees a spurious re-inject; short
+# enough not to leak a key per (thread, skill) forever for one that was
+# abandoned after a single turn.
+_SKILL_DELIVERED_TTL_S = 60 * 60 * 24 * 90
+
+
+async def skill_already_delivered(thread_id: str, skill: str) -> bool:
+    """Whether `skill` was already eagerly loaded into `thread_id` on an
+    earlier turn via `requested_skill_enrichment`.
+
+    Once delivered, the skill's content lives in the thread's checkpointed
+    history for good — same reasoning as `should_inject_memory` in
+    core/routers/chat.py, just keyed per (thread, skill) instead of per
+    thread, since the skill picker (unlike memory) can be toggled on for the
+    first time on any turn, not only the thread's first.
+
+    Not a pure read: marks the pair delivered as a side effect (`SET NX`, so
+    a race between two turns starting at once still only marks it once).
+    Call this exactly once per turn, right where the decision to load is
+    made — a second call for the same (thread, skill) always reads "already
+    delivered" even if the first call's caller never actually used the
+    result.
+    """
+    r = get_async_redis()
+    key = f"skill_delivered:{thread_id}:{skill}"
+    is_new = await r.set(key, "1", nx=True, ex=_SKILL_DELIVERED_TTL_S)
+    return not is_new
 
 
 _llm = context_enrich_llm.with_structured_output(EnrichmentDecision, method="json_schema")
