@@ -588,6 +588,17 @@ _PREAMBLE_ABOUT_OMNI = (
     "The about-omni skill was already loaded for you, because this question is "
     "about Omni itself. Answer directly from it — no need to look it up again."
 )
+# Same shortcut, for the general case: the user picked a skill explicitly
+# (the frontend's skill picker, not the model's own judgment) rather than the
+# model discovering it needed one. `<requested_skill>` already tells it to
+# "load it before anything else" (core/agent.py's Input Format section) — the
+# model would otherwise spend its first turn on a `read_file` call for
+# something we can just hand it, and this preamble tells it not to bother.
+_PREAMBLE_REQUESTED_SKILL = (
+    "The {skill} skill was already loaded for you, because the user explicitly "
+    "picked it before asking. Follow its instructions for this turn — no need "
+    "to read_file it again."
+)
 # The skill file runs ~8k chars today; this leaves headroom for it to grow
 # before silently chopping an FAQ answer in half. Well above `_MAX_JSON_CHARS`
 # because this is prose, not a terse payload — a truncated sentence here is
@@ -595,9 +606,10 @@ _PREAMBLE_ABOUT_OMNI = (
 _MAX_SKILL_CHARS = 12000
 
 
-def _about_omni_text() -> str:
-    """The about-omni skill's body, frontmatter stripped, or "" if missing."""
-    file = SKILL_FILES.get(_ABOUT_OMNI_SKILL_PATH)
+def _skill_body(path: str) -> str:
+    """A mounted skill file's body, frontmatter stripped and length-capped, or
+    "" if `path` isn't a real skill file."""
+    file = SKILL_FILES.get(path)
     if not file:
         return ""
     content = (file.get("content") or "").strip()
@@ -608,6 +620,49 @@ def _about_omni_text() -> str:
     if len(content) > _MAX_SKILL_CHARS:
         content = content[:_MAX_SKILL_CHARS] + " …(truncated)"
     return content
+
+
+def _about_omni_text() -> str:
+    """The about-omni skill's body, frontmatter stripped, or "" if missing."""
+    return _skill_body(_ABOUT_OMNI_SKILL_PATH)
+
+
+def requested_skill_enrichment(skill: str) -> Enrichment:
+    """Eagerly load an explicitly-picked skill instead of running the scout.
+
+    Two things this replaces:
+
+    - The scout's own guess. It classifies the raw query to decide what (if
+      anything) is worth fetching before the agent starts — but the user
+      already made that exact decision by picking a skill from the menu, so
+      the scout's own read of the query would at best duplicate that choice
+      and at worst compete with it: a second, unrelated block of pre-fetched
+      search results sitting next to `<requested_skill>` dilutes the one
+      instruction that already told the model exactly what to load first,
+      rather than helping.
+    - The model's own `read_file` round trip. `<requested_skill>` tells it to
+      load the skill before anything else; handing over the file's content
+      here means that happens for free, in the same turn, instead of costing
+      a full extra model call.
+
+    Same shortcut `about_omni`'s scout action already takes — the difference
+    is this one is driven by the user's explicit pick, not the scout's
+    classification, so it runs instead of the scout entirely rather than as
+    one of its possible outcomes. Returns an empty `Enrichment` (reads
+    downstream as "no enrichment") if `skill` doesn't resolve to a real skill
+    file — the `<requested_skill>` tag is still there either way, so the
+    model can fall back to reading it itself.
+    """
+    body = _skill_body(f"/skills/{skill}/SKILL.md")
+    if not body:
+        return Enrichment()
+    text = f"{_PREAMBLE_REQUESTED_SKILL.format(skill=skill)}\n\n{body}"
+    # Same event shape the agent's own tool loop emits — core/stream.py
+    # streams `enrichment.events` before the agent starts, and the frontend
+    # renders a `tool_call` event as a regular step no matter which of the
+    # two produced it (see thinking-timeline.tsx's `load_skill` case).
+    events = [{"type": "tool_call", "tool": "load_skill", "args": {"skill": skill}}]
+    return Enrichment(action="requested_skill", text=text, events=events)
 
 
 _llm = context_enrich_llm.with_structured_output(EnrichmentDecision, method="json_schema")

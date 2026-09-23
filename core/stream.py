@@ -79,7 +79,7 @@ from core.database.db_threads_control import lock_thread_state
 from core.database.db_user_threads import lock_user_thread_row
 from core.tools.artifact_tools import ARTIFACT_SENTINEL
 from core.tools.web_page_reader import first_party_redis_shortcut, load_web_page_spider
-from core.context_enrichment import Enrichment, enrich_context
+from core.context_enrichment import Enrichment, enrich_context, requested_skill_enrichment
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_EXTENSIONS
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
 
@@ -652,33 +652,44 @@ async def _stream_agent(
         # aput hook can key the rewind_points map by it (see
         # core/database/checkpointer.py) — nothing in the graph itself reads it.
         config = {"configurable": {"thread_id": thread_id, "turn": turn}}
-        # Pre-flight scout, on the critical path by necessity: whatever it
-        # finds has to be inside the user message the agent is about to read,
-        # so the agent cannot start until it returns. It is timeout-bounded and
+        # What fills `<context_enrichment>`, in priority order — never more
+        # than one of these three, and never a blocking scout call once
+        # either of the other two already answered the question of "what
+        # goes here" on the user's behalf:
+        #
+        # 1. The user's own URLs, fetched inside build_message_content below
+        #    (`source_url`) — outranks everything, on every turn.
+        # 2. An explicitly picked skill (`requested_skill_enrichment`) — the
+        #    user already told us exactly what to load via the skill picker,
+        #    same as picking a URL is telling us exactly what to fetch, so it
+        #    gets the same precedence over the scout's guess. Not gated to
+        #    the first turn: picking a skill is a per-turn action (the picker
+        #    is available on any message, not just the thread's first), and
+        #    unlike the scout it needs no conversation history to act on.
+        # 3. The pre-flight scout (`enrich_context`), first turn only — see
+        #    below.
+        #
+        # The scout is on the critical path by necessity: whatever it finds
+        # has to be inside the user message the agent is about to read, so
+        # the agent cannot start until it returns. It is timeout-bounded and
         # fails soft to "no enrichment" (core/context_enrichment.py).
         #
-        # Two conditions gate it:
-        #
-        # - Not when the user named their own URLs. Those are fetched inside
-        #   build_message_content and fill the same `<context_enrichment>`
-        #   block, and a URL the user picked outranks anything the scout would
-        #   have guessed at. That path is deterministic and stays available on
-        #   every turn.
-        # - First turn only. The scout classifies the raw query with no
-        #   conversation history — `enrich_context` is handed the query string
-        #   and nothing else — so on a follow-up like "那它的市值呢" it sees an
-        #   unresolvable fragment and would either skip or search the wrong
-        #   subject. The agent, which does have the history, is strictly better
-        #   placed to decide what to retrieve by then, and paying blocking
-        #   latency to guess ahead of it is a bad trade.
-        #
-        # `turn is None` is a client too old to send one (QueryRequest.turn is
-        # frontend-assigned), and a thread-less direct stream has no persisted
-        # history at all. Both count as a first turn — the same rule, for the
-        # same reason, as memory injection in core/routers/chat.py.
+        # First-turn-only because it classifies the raw query with no
+        # conversation history — `enrich_context` is handed the query string
+        # and nothing else — so on a follow-up like "那它的市值呢" it sees an
+        # unresolvable fragment and would either skip or search the wrong
+        # subject. The agent, which does have the history, is strictly better
+        # placed to decide what to retrieve by then, and paying blocking
+        # latency to guess ahead of it is a bad trade. `turn is None` is a
+        # client too old to send one (QueryRequest.turn is frontend-assigned),
+        # and a thread-less direct stream has no persisted history at all —
+        # both count as a first turn, the same rule, for the same reason, as
+        # memory injection in core/routers/chat.py.
         first_turn = thread_id is None or turn is None or turn == 1
         enrichment = Enrichment()
-        if not source_url and first_turn:
+        if skill and not source_url:
+            enrichment = requested_skill_enrichment(skill)
+        elif not source_url and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,
