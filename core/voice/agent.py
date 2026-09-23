@@ -24,7 +24,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict
 
 import core.database.checkpointer as _db
-from core.llm import gpt_oss_120b_low
+from core.llm import gpt_oss_120b_low,gpt_6_luna_voice
 from core.stream import _tagged_block, _text_of
 from core.tools.adapters import python_exec, web_search, weather_current, weather_forecast
 from core.utils.data_model import Personalization
@@ -75,7 +75,7 @@ voice_text_agent = None
 
 def _build_agent(tools: list, system_prompt: str):
     return create_agent(
-        model=gpt_oss_120b_low,
+        model=gpt_6_luna_voice,
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=_db.checkpointer,
