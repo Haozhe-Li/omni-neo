@@ -44,7 +44,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from core.llm import (
     gemini_3_6_flash,
     gemma_4_31b,
-    gpt_5_6_luna,
+    gpt_6_luna,
     rix_30b_a3b_v6,
     vision_llm,
 )
@@ -80,7 +80,7 @@ CHAT_MODELS: dict[str, ChatModel] = {
         # carry a model under investigation. Picking `rix` explicitly still
         # gets the adapter, and so does the eval matrix — `core/llm.py`'s
         # `chat_llm` deliberately did not follow this switch.
-        llm=gpt_5_6_luna,
+        llm=gpt_6_luna,
         credits=1.0,
         requires_auth=False,
         accepts_images=True,
@@ -121,7 +121,7 @@ CHAT_MODELS: dict[str, ChatModel] = {
     "luna": ChatModel(
         id="luna",
         label="GPT-5.6 Luna",
-        llm=gpt_5_6_luna,
+        llm=gpt_6_luna,
         credits=3.0,
         requires_auth=True,
         accepts_images=True,

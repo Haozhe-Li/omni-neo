@@ -111,12 +111,12 @@ gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effor
 gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="high")
 prompt_guard_2_86m = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
 gemini_3_6_flash = init_chat_model("google_genai:gemini-3.6-flash")
-gpt_5_6_luna = init_chat_model("openai:gpt-5.6-luna", use_responses_api=True)
+gpt_6_luna = init_chat_model("openai:gpt-6-luna", use_responses_api=True)
 # The voice agent's model (core/voice/agent.py): reasoning fully off and terse
 # output, on the Fast service tier — every token is spoken aloud to someone
 # waiting on the line, so time-to-first-token is the whole game.
-gpt_56_luna_voice = init_chat_model(
-    "openai:gpt-5.6-luna",
+gpt_6_luna_voice = init_chat_model(
+    "openai:gpt-6-luna",
     use_responses_api=True,
     verbosity="low",
     reasoning={"effort": "none", "mode": "standard", "summary": None},
@@ -290,7 +290,7 @@ rix_30b_a3b_v6 = ChatWandb(
 # at an OpenAI model it would capture a system prompt the adapter is never
 # served.
 chat_llm = rix_30b_a3b_v6
-vision_llm = gpt_5_6_luna
+vision_llm = gpt_6_luna
 
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m

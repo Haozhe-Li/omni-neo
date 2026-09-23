@@ -444,13 +444,13 @@ async def build_message(
 
 
 async def rollout(spec: Spec, q: Query, v: Variant, cache: ToolCache) -> Rollout:
-    from core.llm import gpt_5_6_luna
+    from core.llm import gpt_6_luna
 
     _register_harness_profiles()
     cap = _CaptureSystem()
     agent = create_deep_agent(
         name="omni-eval-pro",
-        model=gpt_5_6_luna,
+        model=gpt_6_luna,
         tools=wrap_tools(AGENT_TOOLS, cache),
         system_prompt=SYSTEM_PROMPT,
         skills=[SKILLS_SOURCE],
