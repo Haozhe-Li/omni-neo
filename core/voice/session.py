@@ -59,6 +59,7 @@ from core.voice.agent import END_CALL_TOOL_NAME, run_voice_turn
 from core.voice.openai_stt import OpenAISTT
 from core.voice.fish_tts import SAMPLE_RATE, FishTTS
 from core.voice.persist import mark_voice_call_end, persist_voice_turn
+from core.voice.tts_text import normalize_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ _CLAUSE_END = set("，,、；;")
 _SOFT_FLUSH_LEN = 14  # min length before a clause boundary alone triggers a flush
 _HARD_FLUSH_LEN = 60  # flush regardless of punctuation past this length
 _TRIVIAL_CHARS = _SENTENCE_END | _CLAUSE_END | set(" \t\r")
+# Split on these only when whitespace follows — see _splits_here.
+_NEEDS_SPACE_AFTER = set(".,;")
 
 
 def _has_speakable_content(text: str) -> bool:
@@ -99,6 +102,27 @@ def _has_speakable_content(text: str) -> bool:
     return any(ch not in _TRIVIAL_CHARS for ch in text)
 
 
+def _splits_here(buffer: str, i: int, *, force: bool) -> str | None:
+    """Whether buffer[i] ends a sentence, a clause, or neither.
+
+    ASCII . , ; only count with whitespace (or the end of the reply) after
+    them: "16.5", "7,006,652", "m/s" and "openweathermap.org" are none of the
+    three, and cutting inside one leaves a fragment that gets read aloud on
+    its own — or half a URL, which core/voice/tts_text.py can only recognize
+    whole. When one is the last character so far, the cut waits for the next
+    token rather than guessing; `force` resolves it at turn end. CJK
+    punctuation is exempt, since Chinese doesn't put spaces after it.
+    """
+    ch = buffer[i]
+    if ch in _NEEDS_SPACE_AFTER:
+        nxt = buffer[i + 1] if i + 1 < len(buffer) else ""
+        if not (nxt.isspace() if nxt else force):
+            return None
+    if ch in _SENTENCE_END:
+        return "sentence"
+    return "clause" if ch in _CLAUSE_END else None
+
+
 def _drain_ready_chunks(buffer: str, *, force: bool = False) -> tuple[list[str], str]:
     """Pull complete sentence/clause chunks off the front of `buffer`.
 
@@ -110,13 +134,27 @@ def _drain_ready_chunks(buffer: str, *, force: bool = False) -> tuple[list[str],
     """
     chunks: list[str] = []
     start = 0
-    for i, ch in enumerate(buffer):
+    i = 0
+    while i < len(buffer):
+        ch = buffer[i]
         length = i + 1 - start
-        if ch in _SENTENCE_END or (ch in _CLAUSE_END and length >= _SOFT_FLUSH_LEN) or length >= _HARD_FLUSH_LEN:
-            piece = buffer[start : i + 1]
-            if _has_speakable_content(piece):
-                chunks.append(piece)
-            start = i + 1
+        end = -1
+        kind = _splits_here(buffer, i, force=force)
+        if kind == "sentence" or (kind == "clause" and length >= _SOFT_FLUSH_LEN):
+            end = i
+        elif length >= _HARD_FLUSH_LEN:
+            # Back off to the last space rather than cut mid-word: splitting
+            # "7,006,652" or a URL leaves a fragment that gets read aloud as
+            # its own chunk. Chinese has no spaces, so there it cuts here.
+            space = max(buffer.rfind(c, start, i + 1) for c in " \n\t")
+            end = space if space > start else i
+        if end < 0:
+            i += 1
+            continue
+        piece = buffer[start : end + 1]
+        if _has_speakable_content(piece):
+            chunks.append(piece)
+        start = i = end + 1
     remaining = buffer[start:]
     if force:
         if remaining and _has_speakable_content(remaining):
@@ -432,7 +470,12 @@ class VoiceSession:
 
         async def emit_ready(chunks: list[str]) -> None:
             for chunk in chunks:
-                await text_queue.put(chunk)
+                # Only what gets spoken is stripped of markup — the text sent
+                # to the client (agent_text, and the saved transcript) keeps
+                # the model's own formatting, which the thread view renders.
+                spoken = normalize_for_tts(chunk)
+                if spoken:
+                    await text_queue.put(spoken)
 
         async def agent_loop() -> None:
             buffer = ""
