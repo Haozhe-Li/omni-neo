@@ -75,7 +75,7 @@ voice_text_agent = None
 
 def _build_agent(tools: list, system_prompt: str):
     return create_agent(
-        model=gpt_6_luna_voice,
+        model=gpt_oss_120b_low,
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=_db.checkpointer,
