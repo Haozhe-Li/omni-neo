@@ -46,7 +46,7 @@ SAMPLE_RATE = 24000
 
 # The specific Fish Audio voice model to speak with, not whatever the backend
 # would default to.
-_REFERENCE_ID = "8a572772da4d4ee4a37332ddf89ab9fa"
+_REFERENCE_ID = "43a3b4034d564a11bdadee7c6f6c7039"
 
 _FLUSH_EVENT = ormsgpack.packb({"event": "flush"})
 
