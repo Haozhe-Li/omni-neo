@@ -17,7 +17,10 @@ schemas and fails loudly if either drifts; run it after touching this file.
 Skills are surfaced via progressive disclosure — only their name + description
 sit in the prompt; full instructions are read on demand. Charts and reports
 stream inline (```echarts fences / `<report>…</report>` blocks), and so do email
-drafts (`<textblock type="email">`, owned by the draft-email skill). Ordinary
+drafts (`<textblock type="email">`, owned by the draft-email skill) and proposed
+recurring tasks (`<scheduled-research title="…" frequency="…" time="…">`, owned
+by the scheduled-research skill — the frontend renders it as a confirm/decline
+card and only calls the backend itself once the user confirms). Ordinary
 rewrite/translation/polish deliverables stream as a plain ```text fence, taught
 directly in `_S_WRITING_FORMAT` below since it applies on essentially every
 "polish this" or "translate this" turn.
@@ -457,7 +460,7 @@ SYSTEM_PROMPT = _compose(
 # interactive-only policies (artifact/chart-in-chat framing), so it gets its
 # own prompt written for exactly what it does.
 #
-# Skills: everything the interactive agent gets, minus four:
+# Skills: everything the interactive agent gets, minus five:
 # - ask-question: no user present to answer a clarifying question in an
 #   unattended cron run, so the agent must assume and proceed instead of
 #   stalling the turn on it.
@@ -469,6 +472,11 @@ SYSTEM_PROMPT = _compose(
 #   convention, which doesn't apply here — the report is a schema field, not
 #   something written inline and pulled out of the text after the fact (see
 #   <output_contract> below).
+# - scheduled-research: proposes a NEW recurring task via a `<scheduled-research>`
+#   card the chat frontend renders with a confirm/decline button. Same reason as
+#   draft-email — no chat surface to render the card on in an unattended run —
+#   plus this product has no notion of a scheduled run spawning further
+#   scheduled runs.
 # - web-research: its plan/gather/reflect workflow is exactly what a
 #   scheduled run needs, but being an optional, progressively-disclosed skill
 #   made it easy for the agent to under-invest — a couple of shallow searches
@@ -480,6 +488,7 @@ SCHEDULED_SKILL_FILES = {
     if not path.startswith("/skills/ask-question/")
     and not path.startswith("/skills/draft-email/")
     and not path.startswith("/skills/report-writing/")
+    and not path.startswith("/skills/scheduled-research/")
     and not path.startswith("/skills/web-research/")
 }
 
