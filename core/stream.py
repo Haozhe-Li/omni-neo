@@ -48,8 +48,13 @@ written inline as ```echarts fences). The frontend parses the block out of the
 answer and renders it live in the side reader. Email drafts use the same trick
 with a `<textblock type="email" subject="…">` block, taught by the draft-email
 skill — also not a distinct event, also parsed out of `text` by the frontend.
-Ordinary rewrite/translation/polish deliverables are plain ```text fences (see
-`_S_WRITING_FORMAT` in core/agent.py) and need no parsing at all.
+A proposed recurring task is the same trick again, via a
+`<scheduled-research title="…" frequency="…" time="…">` block (taught by the
+scheduled-research skill): the frontend renders it as a confirm/decline card
+and only calls `POST /schedule_task` itself, client-side, once the user
+confirms — the backend never sees this block as anything but plain streamed
+text. Ordinary rewrite/translation/polish deliverables are plain ```text
+fences (see `_S_WRITING_FORMAT` in core/agent.py) and need no parsing at all.
 """
 
 from __future__ import annotations
