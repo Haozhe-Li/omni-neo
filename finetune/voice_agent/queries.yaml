@@ -1,0 +1,112 @@
+# 100 spoken-style queries for distilling the voice agent: 50 zh + 50 en.
+# cat: chat | bye | weather | stock | search | omni | calc
+# `answer:` is a hand-written reply that replaces the teacher's (no model call,
+# no tool call) — used where the teacher can't know the truth, i.e. what Omni
+# Voice is built on and by whom.
+# `loc: none` sends no user_location (weather with no city is a real case).
+- {id: zh-chat-01, lang: zh, cat: chat, text: "嗨，你好呀"}
+- {id: zh-chat-02, lang: zh, cat: chat, text: "今天好累啊，工作了一整天"}
+- {id: zh-chat-03, lang: zh, cat: chat, text: "给我讲个笑话吧"}
+- {id: zh-chat-04, lang: zh, cat: chat, text: "我周末不知道干什么，有什么建议吗"}
+- {id: zh-chat-05, lang: zh, cat: chat, text: "晚饭吃什么好呢，我有点纠结"}
+- {id: zh-chat-06, lang: zh, cat: chat, text: "我最近总是睡不着，怎么办"}
+- {id: zh-chat-07, lang: zh, cat: chat, text: "你觉得早起真的有好处吗"}
+- {id: zh-chat-08, lang: zh, cat: chat, text: "我明天要面试，有点紧张"}
+- {id: zh-chat-09, lang: zh, cat: chat, text: "推荐一部适合今晚看的电影吧"}
+- {id: zh-chat-10, lang: zh, cat: chat, text: "我想学吉他，从哪儿开始比较好"}
+- {id: zh-chat-11, lang: zh, cat: chat, text: "猫和狗你更喜欢哪个"}
+- {id: zh-chat-12, lang: zh, cat: chat, text: "帮我想个给朋友的生日祝福"}
+- {id: zh-bye-01, lang: zh, cat: bye, text: "好了，就聊到这儿吧，拜拜"}
+- {id: zh-bye-02, lang: zh, cat: bye, text: "谢谢你，我先去忙了，再见"}
+- {id: zh-weather-01, lang: zh, cat: weather, text: "今天天气怎么样"}
+- {id: zh-weather-02, lang: zh, cat: weather, text: "明天会下雨吗"}
+- {id: zh-weather-03, lang: zh, cat: weather, text: "北京现在多少度"}
+- {id: zh-weather-04, lang: zh, cat: weather, text: "上海这周末天气如何"}
+- {id: zh-weather-05, lang: zh, cat: weather, text: "东京明天冷不冷"}
+- {id: zh-weather-06, lang: zh, cat: weather, text: "我等下要出门，需要带伞吗"}
+- {id: zh-weather-07, lang: zh, cat: weather, text: "广州最近一周天气怎么样"}
+- {id: zh-weather-08, lang: zh, cat: weather, text: "纽约现在是什么天气"}
+- {id: zh-weather-09, lang: zh, cat: weather, text: "今天适合跑步吗", loc: none}
+- {id: zh-weather-10, lang: zh, cat: weather, text: "成都后天会不会很热"}
+- {id: zh-stock-01, lang: zh, cat: stock, text: "英伟达的股价现在多少"}
+- {id: zh-stock-02, lang: zh, cat: stock, text: "特斯拉今天涨了还是跌了"}
+- {id: zh-stock-03, lang: zh, cat: stock, text: "苹果公司现在股价多少钱"}
+- {id: zh-stock-04, lang: zh, cat: stock, text: "微软的股票最近表现怎么样"}
+- {id: zh-stock-05, lang: zh, cat: stock, text: "标普500今天收盘多少点"}
+- {id: zh-stock-06, lang: zh, cat: stock, text: "比特币现在什么价"}
+- {id: zh-stock-07, lang: zh, cat: stock, text: "阿里巴巴的股价怎么样"}
+- {id: zh-stock-08, lang: zh, cat: stock, text: "纳斯达克指数今天走势如何"}
+- {id: zh-search-01, lang: zh, cat: search, text: "最近有什么科技新闻"}
+- {id: zh-search-02, lang: zh, cat: search, text: "谁是今年诺贝尔物理学奖得主"}
+- {id: zh-search-03, lang: zh, cat: search, text: "最新的iPhone是哪一款"}
+- {id: zh-search-04, lang: zh, cat: search, text: "世界杯上一届冠军是谁"}
+- {id: zh-search-05, lang: zh, cat: search, text: "珠穆朗玛峰有多高"}
+- {id: zh-search-06, lang: zh, cat: search, text: "最近有什么好看的电影上映"}
+- {id: zh-search-07, lang: zh, cat: search, text: "美元兑人民币汇率现在多少"}
+- {id: zh-search-08, lang: zh, cat: search, text: "今年的中秋节是哪一天"}
+- {id: zh-search-09, lang: zh, cat: search, text: "光速是多少"}
+- {id: zh-search-10, lang: zh, cat: search, text: "最近NBA比赛谁赢了"}
+- {id: zh-omni-01, lang: zh, cat: omni, text: "你是谁"}
+- {id: zh-omni-02, lang: zh, cat: omni, text: "你能帮我做些什么"}
+- {id: zh-omni-03, lang: zh, cat: omni, text: "你是由什么模型驱动的", answer: "我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-04, lang: zh, cat: omni, text: "Omni Voice到底是什么，详细介绍一下"}
+- {id: zh-omni-05, lang: zh, cat: omni, text: "是谁开发了你", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-06, lang: zh, cat: omni, text: "我在通话里说的话，之后还能用文字接着聊吗"}
+- {id: zh-omni-07, lang: zh, cat: omni, text: "你的底层技术是怎么工作的，给我讲讲"}
+- {id: zh-omni-08, lang: zh, cat: omni, text: "你会查天气和股票吗"}
+- {id: zh-omni-09, lang: zh, cat: omni, text: "你背后用的是哪个模型", answer: "我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-calc-01, lang: zh, cat: calc, text: "一千二百三十四乘以五百六十七等于多少"}
+- {id: zh-calc-02, lang: zh, cat: calc, text: "三十八摄氏度是多少华氏度"}
+- {id: en-chat-01, lang: en, cat: chat, text: "Hey, how's it going?"}
+- {id: en-chat-02, lang: en, cat: chat, text: "I'm so tired today, work was brutal"}
+- {id: en-chat-03, lang: en, cat: chat, text: "Tell me a joke"}
+- {id: en-chat-04, lang: en, cat: chat, text: "I have no idea what to do this weekend, any ideas?"}
+- {id: en-chat-05, lang: en, cat: chat, text: "What should I make for dinner tonight?"}
+- {id: en-chat-06, lang: en, cat: chat, text: "I can't fall asleep lately, what should I do?"}
+- {id: en-chat-07, lang: en, cat: chat, text: "Do you think waking up early is actually worth it?"}
+- {id: en-chat-08, lang: en, cat: chat, text: "I have an interview tomorrow and I'm kind of nervous"}
+- {id: en-chat-09, lang: en, cat: chat, text: "Recommend me a movie for tonight"}
+- {id: en-chat-10, lang: en, cat: chat, text: "I want to learn guitar, where do I start?"}
+- {id: en-chat-11, lang: en, cat: chat, text: "Cats or dogs, which do you like better?"}
+- {id: en-chat-12, lang: en, cat: chat, text: "Help me come up with a birthday message for my friend"}
+- {id: en-bye-01, lang: en, cat: bye, text: "Alright, that's all for now, bye"}
+- {id: en-bye-02, lang: en, cat: bye, text: "Thanks a lot, I gotta go, see you later"}
+- {id: en-weather-01, lang: en, cat: weather, text: "What's the weather like today?"}
+- {id: en-weather-02, lang: en, cat: weather, text: "Is it going to rain tomorrow?"}
+- {id: en-weather-03, lang: en, cat: weather, text: "How hot is it in Los Angeles right now?"}
+- {id: en-weather-04, lang: en, cat: weather, text: "What's the weekend forecast for Seattle?"}
+- {id: en-weather-05, lang: en, cat: weather, text: "Is it cold in London right now?"}
+- {id: en-weather-06, lang: en, cat: weather, text: "Do I need an umbrella if I head out soon?"}
+- {id: en-weather-07, lang: en, cat: weather, text: "What's the weather going to be like in Tokyo this week?"}
+- {id: en-weather-08, lang: en, cat: weather, text: "What's it like outside in Singapore?"}
+- {id: en-weather-09, lang: en, cat: weather, text: "Is it a good day for a run?", loc: none}
+- {id: en-weather-10, lang: en, cat: weather, text: "Will it be windy in Chicago on Friday?"}
+- {id: en-stock-01, lang: en, cat: stock, text: "What's Nvidia trading at right now?"}
+- {id: en-stock-02, lang: en, cat: stock, text: "Is Tesla up or down today?"}
+- {id: en-stock-03, lang: en, cat: stock, text: "How much is one Apple share?"}
+- {id: en-stock-04, lang: en, cat: stock, text: "How has Microsoft stock been doing lately?"}
+- {id: en-stock-05, lang: en, cat: stock, text: "Where did the S&P 500 close today?"}
+- {id: en-stock-06, lang: en, cat: stock, text: "What's the price of Bitcoin right now?"}
+- {id: en-stock-07, lang: en, cat: stock, text: "How's Amazon stock looking?"}
+- {id: en-stock-08, lang: en, cat: stock, text: "How's the Nasdaq doing today?"}
+- {id: en-search-01, lang: en, cat: search, text: "Any big tech news lately?"}
+- {id: en-search-02, lang: en, cat: search, text: "Who won this year's Nobel Prize in Physics?"}
+- {id: en-search-03, lang: en, cat: search, text: "What's the newest iPhone?"}
+- {id: en-search-04, lang: en, cat: search, text: "Who won the last World Cup?"}
+- {id: en-search-05, lang: en, cat: search, text: "How tall is Mount Everest?"}
+- {id: en-search-06, lang: en, cat: search, text: "What movies just came out in theaters?"}
+- {id: en-search-07, lang: en, cat: search, text: "What's the euro to dollar exchange rate?"}
+- {id: en-search-08, lang: en, cat: search, text: "When is Thanksgiving this year?"}
+- {id: en-search-09, lang: en, cat: search, text: "How fast does light travel?"}
+- {id: en-search-10, lang: en, cat: search, text: "Who won the NBA game last night?"}
+- {id: en-omni-01, lang: en, cat: omni, text: "Who are you?"}
+- {id: en-omni-02, lang: en, cat: omni, text: "What can you help me with?"}
+- {id: en-omni-03, lang: en, cat: omni, text: "What model powers you?", answer: "I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-04, lang: en, cat: omni, text: "What exactly is Omni Voice? Explain it in detail"}
+- {id: en-omni-05, lang: en, cat: omni, text: "Who built you?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-06, lang: en, cat: omni, text: "Can I keep chatting by text after we talk on a call?"}
+- {id: en-omni-07, lang: en, cat: omni, text: "How do you work under the hood? Walk me through it"}
+- {id: en-omni-08, lang: en, cat: omni, text: "Can you check the weather and stock prices?"}
+- {id: en-omni-09, lang: en, cat: omni, text: "Which model is behind you?", answer: "I'm Omni Voice, powered by the Rix model."}
+- {id: en-calc-01, lang: en, cat: calc, text: "What's 1,234 times 567?"}
+- {id: en-calc-02, lang: en, cat: calc, text: "What's 38 degrees Celsius in Fahrenheit?"}
