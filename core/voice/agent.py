@@ -24,19 +24,15 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict
 
 import core.database.checkpointer as _db
-from core.llm import gpt_oss_120b_low,gpt_6_luna_voice
+from core.llm import rix_voice_v2
 from core.stream import _tagged_block, _text_of
 from core.tools.adapters import python_exec, web_search, weather_current, weather_forecast
 from core.utils.data_model import Personalization
 from core.utils.utils import format_system_reminder
+from core.voice.knowledge import INTERNAL_KNOWLEDGE
 from core.voice.prompt import VOICE_CALL_PROMPT_ADDENDUM, VOICE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
-
-# Bare callables — create_agent converts these into StructuredTools itself
-# (schema from the type hints + docstring), the same functions core/agent.py
-# hands its own agents.
-VOICE_TOOLS = [web_search, weather_current, weather_forecast, python_exec]
 
 END_CALL_TOOL_NAME = "end_call"
 
@@ -45,6 +41,20 @@ class _NoArgs(BaseModel):
     # additionalProperties: false — gpt-oss makes a real call with this a
     # little more often than with the bare empty schema a no-arg function gets.
     model_config = ConfigDict(extra="forbid")
+
+
+@tool("get_internal_knowledge", args_schema=_NoArgs)
+def get_internal_knowledge() -> str:
+    """Look up detailed internal information about yourself — what Omni Voice
+    is, what powers it, what it can do. Only for a question about you that's
+    too involved to answer from what you already know."""
+    return INTERNAL_KNOWLEDGE
+
+
+# The first four are bare callables — create_agent converts those into
+# StructuredTools itself (schema from the type hints + docstring), the same
+# functions core/agent.py hands its own agents.
+VOICE_TOOLS = [web_search, weather_current, weather_forecast, python_exec, get_internal_knowledge]
 
 
 @tool(END_CALL_TOOL_NAME, return_direct=True, args_schema=_NoArgs)
@@ -75,7 +85,7 @@ voice_text_agent = None
 
 def _build_agent(tools: list, system_prompt: str):
     return create_agent(
-        model=gpt_oss_120b_low,
+        model=rix_voice_v2,
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=_db.checkpointer,
@@ -166,6 +176,82 @@ def _is_cjk(ch: str) -> bool:
 _LEAK_START = ("{", "<")
 
 
+class _ThinkBlockStripper:
+    """Drop Gemma's empty thinking block from streamed text.
+
+    The Gemma-based voice fine-tune (core/llm.py `rix_voice_v2`) opens a
+    thinking channel before its answer on the turn after a tool result, and W&B
+    serves it as plain text. Two shapes were seen: `<|channel>thought\n<channel|>`
+    and, when the server swallows the opener, a bare `thought\n<channel|>`.
+    Unfiltered it would be spoken, and on a live call `_LEAK_START` would treat
+    its `<` as a leak and cut the whole reply off.
+
+    Markers arrive split across chunks, so a possible partial marker is held
+    back. The bare form is only recognised at the *start* of a model message
+    (`new_message()` marks each one), so an answer that merely contains the word
+    "thought" is untouched. One instance per turn.
+    """
+
+    OPEN, CLOSE, BARE = "<|channel>", "<channel|>", "thought\n"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._mode = "head"  # head: start of a model message | normal | inside: in a block
+
+    def new_message(self) -> str:
+        """A new model message begins; returns any text still held from the last."""
+        out = self.flush()
+        self._mode = "head"
+        return out
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        out = ""
+        while True:
+            if self._mode == "head":
+                for opener in (self.OPEN, self.BARE):
+                    if self._buf.startswith(opener):
+                        self._buf, self._mode = self._buf[len(opener):], "inside"
+                        break
+                else:
+                    if any(o.startswith(self._buf) for o in (self.OPEN, self.BARE)):
+                        return out  # could still become an opener — wait
+                    self._mode = "normal"
+                continue
+            if self._mode == "inside":
+                i = self._buf.find(self.CLOSE)
+                if i >= 0:
+                    self._buf, self._mode = self._buf[i + len(self.CLOSE):], "normal"
+                    continue
+                self._buf = self._buf[len(self._buf) - self._hold(self.CLOSE):]
+                return out
+            # normal: cut out an opener anywhere; a stray closer is just dropped.
+            hit = min((i for i in (self._buf.find(self.OPEN), self._buf.find(self.CLOSE)) if i >= 0), default=-1)
+            if hit >= 0:
+                out += self._buf[:hit]
+                if self._buf.startswith(self.OPEN, hit):
+                    self._buf, self._mode = self._buf[hit + len(self.OPEN):], "inside"
+                else:
+                    self._buf = self._buf[hit + len(self.CLOSE):]
+                continue
+            keep = max(self._hold(self.OPEN), self._hold(self.CLOSE))
+            out += self._buf[: len(self._buf) - keep]
+            self._buf = self._buf[len(self._buf) - keep:]
+            return out
+
+    def _hold(self, marker: str) -> int:
+        """Length of the longest buffer tail that is a proper prefix of `marker`
+        (`_buf[len - k:]`), i.e. what has to be kept back."""
+        n = next((k for k in range(min(len(marker) - 1, len(self._buf)), 0, -1)
+                  if marker.startswith(self._buf[-k:])), 0)
+        return n
+
+    def flush(self) -> str:
+        out = "" if self._mode == "inside" else self._buf
+        self._buf = ""
+        return out
+
+
 def _goodbye_for(user_text: str) -> str:
     return "好的，再见！" if any(_is_cjk(ch) for ch in user_text) else "Okay, bye!"
 
@@ -221,6 +307,7 @@ async def run_voice_turn(
     # A live call's reply from its first `{`/`<` on, kept out of speech — see
     # _LEAK_START.
     withheld = ""
+    strip_think = _ThinkBlockStripper()
 
     def spoken(delta: str) -> str:
         nonlocal new_message, last_char, spoke_in_message
@@ -238,6 +325,8 @@ async def run_voice_turn(
             # The Responses API streams content as a list of blocks, not a
             # plain string — everything downstream appends deltas as str.
             delta = _text_of(chunk.content) if isinstance(chunk, AIMessageChunk) else ""
+            if delta:
+                delta = strip_think.feed(delta)
             if live_call and delta:
                 if withheld:
                     withheld += delta
@@ -265,11 +354,18 @@ async def run_voice_turn(
                                 end_call_announced = True
                                 if not spoke_in_message:
                                     yield {"type": "text", "delta": spoken(_goodbye_for(text))}
+                            held = strip_think.new_message()
+                            if held:
+                                yield {"type": "text", "delta": spoken(held)}
                             new_message = True
                             spoke_in_message = False
                             yield {"type": "tool_start", "name": call["name"], "args": call["args"]}
                     if getattr(msg, "type", None) == "tool":
                         yield {"type": "tool_end", "name": msg.name}
+
+    tail = strip_think.flush()
+    if tail:
+        yield {"type": "text", "delta": spoken(tail)}
 
     if withheld:
         logger.warning("voice reply cut off at non-speech text: %r", withheld[:200])

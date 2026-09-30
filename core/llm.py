@@ -275,6 +275,25 @@ rix_30b_a3b_v6 = ChatWandb(
     max_tokens=8192,
 )
 
+# The voice fine-tune: Gemma 4 26B-A4B distilled from gpt-6-luna on the live-call
+# voice agent (finetune/voice_agent). 90 rows, 3 epochs, 270 steps, final loss
+# 0.009. Trained on the live-call system prompt and tool schemas
+# (`VOICE_SYSTEM_PROMPT + VOICE_CALL_PROMPT_ADDENDUM`, with end_call), and on
+# hand-written answers for "who built you / what model are you" — so a change to
+# that prompt or those tools means re-collecting and re-training, not just
+# editing core/voice/prompt.py.
+#
+# max_tokens is small on purpose: every reply is spoken and the training set
+# caps them at 75 words/characters.
+rix_voice_v2 = ChatWandb(
+    model=(
+        "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
+        "/omni-voice-agent/omni-voice-v2:v1"
+    ),
+    temperature=0.2,
+    max_tokens=1024,
+)
+
 # The chat fine-tune, and the model an image turn is served on.
 #
 # `best` used to be exactly these two — the adapter on text, `vision_llm`
