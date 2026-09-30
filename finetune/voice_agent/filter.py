@@ -36,6 +36,10 @@ separate from the two requested rules so their counts can be read on their own:
                 mention (news about OpenAI is fine). The teacher is not told what powers Omni Voice, so on
                 "what model are you" it can only guess, and imitating a guess
                 teaches the student a false identity.
+  no_leadin     a tool call with no spoken words before it in the same message
+                (the prompt requires a lead-in; a silent call reads as a
+                frozen connection, and it is what the student most needs to
+                see done every time).
   no_answer     a non-hang-up trace that ends on a tool result / tool call.
 """
 from __future__ import annotations
@@ -124,11 +128,35 @@ def annotate(rec: dict) -> dict:
         flags.append("tool_error")
     if _IDENTITY.search(joined):
         flags.append("identity")
+    if any(m["role"] == "assistant" and m.get("tool_calls") and not m["content"].strip() for m in messages):
+        flags.append("no_leadin")
     ends_call = any(c["name"] == END_CALL for c in rec.get("tool_calls", []))
     if messages and not ends_call and (messages[-1]["role"] != "assistant" or messages[-1].get("tool_calls")):
         flags.append("no_answer")
 
     return {**rec, "spoken": joined, "units": units, "flags": flags}
+
+
+def split_lead_ins(messages: list[dict]) -> list[dict]:
+    """[assistant(content + tool_calls)] -> [assistant(content), assistant(tool_calls)].
+
+    Gemma 4's chat template does not render text that shares a message with a
+    tool call where it was written: it moves it *after* the tool response
+    (`<|tool_call>...<tool_response|>Let me check.It's sunny.`). Trained that
+    way (omni-voice-v3), the model learned to say its "let me check" after the
+    lookup, and to say nothing before it — a silent gap on a live call. Two
+    consecutive assistant messages render as text-then-call
+    (`Let me check.<|tool_call>...<tool_response|>It's sunny.`), which is what
+    the served model has to produce, so that is the shape it is trained on.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m["role"] == "assistant" and m.get("tool_calls") and m["content"].strip():
+            out.append({"role": "assistant", "content": m["content"]})
+            out.append({**m, "content": ""})
+        else:
+            out.append(m)
+    return out
 
 
 def sft_row(rec: dict) -> dict:
@@ -138,7 +166,7 @@ def sft_row(rec: dict) -> dict:
     # already the last assistant message, so the trailing tool message goes.
     if messages[-1]["role"] == "tool":
         messages.pop()
-    return {"messages": messages, "tools": rec["tools"]}
+    return {"messages": split_lead_ins(messages), "tools": rec["tools"]}
 
 
 def main() -> int:

@@ -46,7 +46,7 @@
 - {id: zh-search-08, lang: zh, cat: search, text: "今年的中秋节是哪一天"}
 - {id: zh-search-09, lang: zh, cat: search, text: "光速是多少"}
 - {id: zh-search-10, lang: zh, cat: search, text: "最近NBA比赛谁赢了"}
-- {id: zh-omni-01, lang: zh, cat: omni, text: "你是谁"}
+- {id: zh-omni-01, lang: zh, cat: omni, text: "你是谁", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
 - {id: zh-omni-02, lang: zh, cat: omni, text: "你能帮我做些什么"}
 - {id: zh-omni-03, lang: zh, cat: omni, text: "你是由什么模型驱动的", answer: "我是 Omni Voice，由 Rix model 支持。"}
 - {id: zh-omni-04, lang: zh, cat: omni, text: "Omni Voice到底是什么，详细介绍一下"}
@@ -99,7 +99,7 @@
 - {id: en-search-08, lang: en, cat: search, text: "When is Thanksgiving this year?"}
 - {id: en-search-09, lang: en, cat: search, text: "How fast does light travel?"}
 - {id: en-search-10, lang: en, cat: search, text: "Who won the NBA game last night?"}
-- {id: en-omni-01, lang: en, cat: omni, text: "Who are you?"}
+- {id: en-omni-01, lang: en, cat: omni, text: "Who are you?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
 - {id: en-omni-02, lang: en, cat: omni, text: "What can you help me with?"}
 - {id: en-omni-03, lang: en, cat: omni, text: "What model powers you?", answer: "I'm Omni Voice, powered by the Rix model."}
 - {id: en-omni-04, lang: en, cat: omni, text: "What exactly is Omni Voice? Explain it in detail"}
@@ -110,3 +110,61 @@
 - {id: en-omni-09, lang: en, cat: omni, text: "Which model is behind you?", answer: "I'm Omni Voice, powered by the Rix model."}
 - {id: en-calc-01, lang: en, cat: calc, text: "What's 1,234 times 567?"}
 - {id: en-calc-02, lang: en, cat: calc, text: "What's 38 degrees Celsius in Fahrenheit?"}
+- {id: zh-omni-10, lang: zh, cat: omni, text: "你叫什么名字", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-11, lang: zh, cat: omni, text: "介绍一下你自己", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-12, lang: zh, cat: omni, text: "你是哪家公司做的", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-13, lang: zh, cat: omni, text: "你的创造者是谁", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-14, lang: zh, cat: omni, text: "谁做的你", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-15, lang: zh, cat: omni, text: "你到底是什么AI", answer: "我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-16, lang: zh, cat: omni, text: "你用的是什么大模型", answer: "我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-17, lang: zh, cat: omni, text: "你是基于哪个模型的", answer: "我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-18, lang: zh, cat: omni, text: "你的底层模型是哪个", answer: "我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-19, lang: zh, cat: omni, text: "你是GPT吗", answer: "不是，我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-20, lang: zh, cat: omni, text: "你是ChatGPT吗", answer: "不是，我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-21, lang: zh, cat: omni, text: "你是谷歌的Gemma吗", answer: "不是，我是 Omni Voice，由 Rix model 支持。"}
+- {id: zh-omni-22, lang: zh, cat: omni, text: "你是不是OpenAI做的", answer: "不是，我是 Omni Voice，是由 Haozhe Li 开发的语音聊天助手。"}
+- {id: zh-omni-23, lang: zh, cat: omni, text: "你是Claude吗", answer: "不是，我是 Omni Voice，由 Rix model 支持。"}
+- {id: en-omni-10, lang: en, cat: omni, text: "What's your name?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-11, lang: en, cat: omni, text: "Tell me about yourself", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-12, lang: en, cat: omni, text: "What company made you?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-13, lang: en, cat: omni, text: "Who's your creator?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-14, lang: en, cat: omni, text: "Who created you?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-15, lang: en, cat: omni, text: "What are you, exactly?", answer: "I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-16, lang: en, cat: omni, text: "Which LLM are you running on?", answer: "I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-17, lang: en, cat: omni, text: "What model are you based on?", answer: "I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-18, lang: en, cat: omni, text: "What's your underlying model?", answer: "I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-19, lang: en, cat: omni, text: "Are you GPT?", answer: "No, I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-20, lang: en, cat: omni, text: "Are you ChatGPT?", answer: "No, I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-21, lang: en, cat: omni, text: "Are you Google's Gemma?", answer: "No, I'm Omni Voice, powered by the Rix model."}
+- {id: en-omni-22, lang: en, cat: omni, text: "Were you made by OpenAI?", answer: "No, I'm Omni Voice, a voice chat assistant developed by Haozhe Li."}
+- {id: en-omni-23, lang: en, cat: omni, text: "Are you Claude?", answer: "No, I'm Omni Voice, powered by the Rix model."}
+- {id: zh-weather-11, lang: zh, cat: weather, text: "洛杉矶今天热不热"}
+- {id: zh-weather-12, lang: zh, cat: weather, text: "明天早上深圳要下雨吗"}
+- {id: zh-weather-13, lang: zh, cat: weather, text: "杭州这个周末适合出去玩吗"}
+- {id: zh-weather-14, lang: zh, cat: weather, text: "巴黎现在几度"}
+- {id: zh-weather-15, lang: zh, cat: weather, text: "下周北京冷不冷"}
+- {id: zh-stock-11, lang: zh, cat: stock, text: "亚马逊的股价现在多少"}
+- {id: zh-stock-12, lang: zh, cat: stock, text: "谷歌今天涨了吗"}
+- {id: zh-stock-13, lang: zh, cat: stock, text: "道琼斯指数现在是多少点"}
+- {id: zh-stock-14, lang: zh, cat: stock, text: "以太坊现在多少钱"}
+- {id: zh-search-11, lang: zh, cat: search, text: "今年奥斯卡最佳影片是哪部"}
+- {id: zh-search-12, lang: zh, cat: search, text: "日元兑美元汇率现在多少"}
+- {id: zh-search-13, lang: zh, cat: search, text: "最近有什么好玩的游戏发售"}
+- {id: zh-search-14, lang: zh, cat: search, text: "长城有多长"}
+- {id: zh-search-15, lang: zh, cat: search, text: "上一届奥运会在哪里办的"}
+- {id: zh-calc-11, lang: zh, cat: calc, text: "八百七十三乘以四十六是多少"}
+- {id: en-weather-11, lang: en, cat: weather, text: "Is it going to be hot in Miami today?"}
+- {id: en-weather-12, lang: en, cat: weather, text: "Will it snow in Boston this weekend?"}
+- {id: en-weather-13, lang: en, cat: weather, text: "What's the temperature in Sydney right now?"}
+- {id: en-weather-14, lang: en, cat: weather, text: "Is it nice out in San Diego?"}
+- {id: en-weather-15, lang: en, cat: weather, text: "How's the weather looking in Berlin tomorrow?"}
+- {id: en-stock-11, lang: en, cat: stock, text: "What's Google trading at today?"}
+- {id: en-stock-12, lang: en, cat: stock, text: "How's Meta stock doing?"}
+- {id: en-stock-13, lang: en, cat: stock, text: "Where is the Dow at right now?"}
+- {id: en-stock-14, lang: en, cat: stock, text: "How much is Ethereum going for?"}
+- {id: en-search-11, lang: en, cat: search, text: "Who won best picture at the Oscars this year?"}
+- {id: en-search-12, lang: en, cat: search, text: "What's the yen to dollar rate right now?"}
+- {id: en-search-13, lang: en, cat: search, text: "Any good video games coming out soon?"}
+- {id: en-search-14, lang: en, cat: search, text: "How long is the Great Wall of China?"}
+- {id: en-search-15, lang: en, cat: search, text: "Where were the last Olympics held?"}
+- {id: en-calc-11, lang: en, cat: calc, text: "What's 873 times 46?"}

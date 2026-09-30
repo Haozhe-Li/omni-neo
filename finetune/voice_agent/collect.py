@@ -55,10 +55,11 @@ sys.path.insert(0, str(HERE))
 from filter import annotate, read_jsonl  # noqa: E402
 
 DATA = HERE / "dataset"
-# The flags a --ids re-sample tries to clear. Length is left out: a re-sample
-# is for characters and identity the model shouldn't have produced, not for
-# re-rolling until the answer happens to be short.
-RESAMPLE_ON = {"markup", "identity", "tool_error", "empty"}
+# The flags a --ids re-sample tries to clear: an identity claim, a failed tool,
+# an empty reply, a tool call with no spoken lead-in. Not length, and not markup
+# (left to the TTS cleaner) — a re-sample is not for re-rolling until the answer
+# happens to look nicer.
+RESAMPLE_ON = {"identity", "tool_error", "empty", "no_leadin"}
 SYSTEM_PROMPT = VOICE_SYSTEM_PROMPT + VOICE_CALL_PROMPT_ADDENDUM
 
 # What a client would report. Chinese queries lean towards Chinese cities.
