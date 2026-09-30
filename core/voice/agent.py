@@ -24,7 +24,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict
 
 import core.database.checkpointer as _db
-from core.llm import rix_voice_v2
+from core.llm import rix_voice
 from core.stream import _tagged_block, _text_of
 from core.tools.adapters import python_exec, web_search, weather_current, weather_forecast
 from core.utils.data_model import Personalization
@@ -85,7 +85,7 @@ voice_text_agent = None
 
 def _build_agent(tools: list, system_prompt: str):
     return create_agent(
-        model=rix_voice_v2,
+        model=rix_voice,
         tools=tools,
         system_prompt=system_prompt,
         checkpointer=_db.checkpointer,
@@ -179,24 +179,32 @@ _LEAK_START = ("{", "<")
 class _ThinkBlockStripper:
     """Drop Gemma's empty thinking block from streamed text.
 
-    The Gemma-based voice fine-tune (core/llm.py `rix_voice_v2`) opens a
-    thinking channel before its answer on the turn after a tool result, and W&B
-    serves it as plain text. Two shapes were seen: `<|channel>thought\n<channel|>`
-    and, when the server swallows the opener, a bare `thought\n<channel|>`.
-    Unfiltered it would be spoken, and on a live call `_LEAK_START` would treat
-    its `<` as a leak and cut the whole reply off.
+    The Gemma-based voice fine-tune (core/llm.py `rix_voice`) opens a
+    thinking channel before its answer, and W&B serves it as plain text, with
+    the special tokens surviving unpredictably. Three shapes were seen at the
+    start of a model message: `<|channel>thought\n<channel|>`, a bare
+    `thought\n<channel|>` when the opener is swallowed, and `:thought\n` with
+    no closer at all. Unfiltered it would be spoken, and on a live call
+    `_LEAK_START` would treat a `<` in it as a leak and cut the reply off.
+
+    Only the explicit `<|channel>` form is treated as a block that runs to its
+    closer. The other two strip just the `thought\n` label (and a closer, if one
+    follows), so a missing closer can never swallow the answer.
 
     Markers arrive split across chunks, so a possible partial marker is held
-    back. The bare form is only recognised at the *start* of a model message
+    back. The label forms are only recognised at the *start* of a model message
     (`new_message()` marks each one), so an answer that merely contains the word
     "thought" is untouched. One instance per turn.
     """
 
-    OPEN, CLOSE, BARE = "<|channel>", "<channel|>", "thought\n"
+    OPEN, CLOSE = "<|channel>", "<channel|>"
+    LABELS = (":thought\n", "thought\n")
 
     def __init__(self) -> None:
         self._buf = ""
-        self._mode = "head"  # head: start of a model message | normal | inside: in a block
+        # head: start of a model message | label: just after a `thought\n` label
+        # | normal | inside: within an explicit <|channel> ... <channel|> block
+        self._mode = "head"
 
     def new_message(self) -> str:
         """A new model message begins; returns any text still held from the last."""
@@ -209,14 +217,23 @@ class _ThinkBlockStripper:
         out = ""
         while True:
             if self._mode == "head":
-                for opener in (self.OPEN, self.BARE):
-                    if self._buf.startswith(opener):
-                        self._buf, self._mode = self._buf[len(opener):], "inside"
-                        break
-                else:
-                    if any(o.startswith(self._buf) for o in (self.OPEN, self.BARE)):
-                        return out  # could still become an opener — wait
-                    self._mode = "normal"
+                if self._buf.startswith(self.OPEN):
+                    self._buf, self._mode = self._buf[len(self.OPEN):], "inside"
+                    continue
+                label = next((l for l in self.LABELS if self._buf.startswith(l)), None)
+                if label:
+                    self._buf, self._mode = self._buf[len(label):], "label"
+                    continue
+                if any(c.startswith(self._buf) for c in (self.OPEN, *self.LABELS)):
+                    return out  # could still become one of them — wait
+                self._mode = "normal"
+                continue
+            if self._mode == "label":
+                if self._buf.startswith(self.CLOSE):
+                    self._buf = self._buf[len(self.CLOSE):]
+                elif self.CLOSE.startswith(self._buf):
+                    return out  # empty so far, or a partial closer — wait
+                self._mode = "normal"
                 continue
             if self._mode == "inside":
                 i = self._buf.find(self.CLOSE)
@@ -241,10 +258,9 @@ class _ThinkBlockStripper:
 
     def _hold(self, marker: str) -> int:
         """Length of the longest buffer tail that is a proper prefix of `marker`
-        (`_buf[len - k:]`), i.e. what has to be kept back."""
-        n = next((k for k in range(min(len(marker) - 1, len(self._buf)), 0, -1)
-                  if marker.startswith(self._buf[-k:])), 0)
-        return n
+        — what has to be kept back in case the next chunk completes it."""
+        return next((k for k in range(min(len(marker) - 1, len(self._buf)), 0, -1)
+                     if marker.startswith(self._buf[-k:])), 0)
 
     def flush(self) -> str:
         out = "" if self._mode == "inside" else self._buf
