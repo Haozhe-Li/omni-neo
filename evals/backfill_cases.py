@@ -77,17 +77,12 @@ MUTATED_FIELDS = (
 
 def target_runs(label: str, models: list[str] | None) -> dict[str, dict]:
     """The newest finished run per model carrying `label`."""
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
-    rows = (
-        supabase.table("eval_runs")
-        .select(",".join(("run_id", "model_label", "started_at") + MUTATED_FIELDS))
-        .eq("label", label)
-        .eq("status", "done")
-        .order("started_at", desc=True)
-        .execute()
-        .data
-        or []
+    cols = ", ".join(("run_id", "model_label", "started_at") + MUTATED_FIELDS)
+    rows = pg.fetch_all(
+        f"SELECT {cols} FROM eval_runs WHERE label = %s AND status = 'done' ORDER BY started_at DESC",
+        (label,),
     )
     newest: dict[str, dict] = {}
     for r in rows:  # ordered newest first, so first wins
@@ -115,15 +110,11 @@ def recompute(run_id: str) -> dict:
     they are two implementations of one definition, which is a real cost and
     the reason this is the only place that duplicates it.
     """
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
-    rows = (
-        supabase.table("eval_case_scores")
-        .select("case_id,suite,score_mean,pass_rate,n_errors")
-        .eq("run_id", run_id)
-        .execute()
-        .data
-        or []
+    rows = pg.fetch_all(
+        "SELECT case_id, suite, score_mean, pass_rate, n_errors FROM eval_case_scores WHERE run_id = %s",
+        (run_id,),
     )
     if not rows:
         raise SystemExit(f"run {run_id} has no case scores — refusing to write a summary")
@@ -153,17 +144,9 @@ def clear_prior_attempt(run_id: str, case_ids: list[str]) -> int:
     `eval_checks.result_id` is ON DELETE CASCADE, so the checks go with them.
     `eval_case_scores` needs no cleanup: it upserts on (run_id, case_id).
     """
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
-    existing = (
-        supabase.table("eval_results").select("result_id")
-        .eq("run_id", run_id).in_("case_id", case_ids).execute().data or []
-    )
-    if existing:
-        supabase.table("eval_results").delete().eq("run_id", run_id).in_(
-            "case_id", case_ids
-        ).execute()
-    return len(existing)
+    return len(pg.delete("eval_results", {"run_id": run_id, "case_id": case_ids}))
 
 
 def _runner_args(args, case_ids: list[str], run_id: str):
@@ -178,7 +161,7 @@ def _runner_args(args, case_ids: list[str], run_id: str):
     ns.tool_cache = args.tool_cache
     ns.judge = args.judge
     ns.judge_model = args.judge_model
-    ns.no_supabase = False
+    ns.no_db = False
     ns.label = None
     ns.attach_run_id = run_id
     return ns
@@ -226,7 +209,7 @@ async def main_async(args) -> int:
     from evals.pricing import load_pricing as load_pricing_yaml
 
     pricing_version = load_pricing_yaml().version
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
     note = (
         f"{date.today().isoformat()}: backfilled {len(cases)} case(s) "
@@ -269,7 +252,7 @@ async def main_async(args) -> int:
                 patch["total_cost_usd"] = round(
                     float(before["total_cost_usd"] or 0) + out["cost_usd"], 6
                 )
-        supabase.table("eval_runs").update(patch).eq("run_id", run["run_id"]).execute()
+        pg.update("eval_runs", patch, {"run_id": run["run_id"]})
 
         print(f"  score  {before['score']} -> {summary['score']}   "
               f"n_cases {before['n_cases']} -> {summary['n_cases']}")
@@ -312,13 +295,13 @@ async def main_async(args) -> int:
 
 
 def restore(path: str) -> int:
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
     with open(path, "r", encoding="utf-8") as f:
         snap = json.load(f)
     for label, row in snap["runs"].items():
         patch = {f: row.get(f) for f in MUTATED_FIELDS}
-        supabase.table("eval_runs").update(patch).eq("run_id", row["run_id"]).execute()
+        pg.update("eval_runs", patch, {"run_id": row["run_id"]})
         print(f"restored {label:<24} score={patch['score']} n_cases={patch['n_cases']}")
     print("\nNOTE: eval_results / eval_checks / eval_case_scores rows written by the "
           "backfill are NOT removed — only the run summary is restored. Delete them "

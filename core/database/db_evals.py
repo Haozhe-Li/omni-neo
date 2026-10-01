@@ -5,9 +5,8 @@ only by `python -m evals.cli`, never by a request, so this module exposes
 selects and nothing else. Even if the dashboard is compromised there is no
 handler here that can mutate a result.
 
-All access is over PostgREST via the async client, since every caller is an
-async FastAPI handler on the event loop (the sync client would block it for a
-full round trip — see supabase_client.py).
+All access goes through the async pool in pg.py, since every caller is an
+async FastAPI handler on the event loop.
 
 ## Column projection
 
@@ -27,7 +26,7 @@ import redis.asyncio as aioredis
 
 from core.utils.redis_client import get_async_redis
 
-from core.database.supabase_client import get_async_supabase
+from core.database import pg
 from core.utils.redis_cache import l1cache
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ── caching ─────────────────────────────────────────────────────────────────
 # Eval rows are written by a CLI a few times a day and read by a dashboard on
 # every page view, so almost every request would otherwise re-run the same
-# PostgREST queries against unchanged data. A week is safe as a TTL because the
+# queries against unchanged data. A week is safe as a TTL because the
 # rows are append-only: a finished run's results and checks never change.
 #
 # What a long TTL cannot handle on its own is a *new* run landing — the
@@ -93,7 +92,7 @@ def bump_cache_epoch() -> None:
 # How often a viewer-triggered refresh may actually invalidate the cache.
 # The dashboard is public, so its refresh button is reachable by anyone; without
 # a cooldown, holding it down would turn one click into an unbounded stream of
-# uncached Supabase queries. 30s is short enough that a human waiting on a run
+# uncached queries. 30s is short enough that a human waiting on a run
 # they just finished still feels the button work.
 _REFRESH_COOLDOWN_SECONDS = 30
 _REFRESH_LOCK_KEY = "evals:refresh_lock"
@@ -165,66 +164,57 @@ async def _list_runs_cached(_epoch: int, *,
     limit: int = 50,
     offset: int = 0,) -> list[dict]:
     """Runs, newest first. One row per (model, batch)."""
-    sb = await get_async_supabase()
-    q = sb.table("eval_runs").select(_RUN_COLUMNS)
-    if model_label:
-        q = q.eq("model_label", model_label)
-    if label:
-        q = q.eq("label", label)
-    if status:
-        q = q.eq("status", status)
-    if since:
-        q = q.gte("started_at", since)
-    res = await (
-        q.order("started_at", desc=True)
-        .range(offset, offset + _clamp(limit) - 1)
-        .execute()
+    conds, params = [], {}
+    for col, val, op in (
+        ("model_label", model_label, "="), ("label", label, "="),
+        ("status", status, "="), ("started_at", since, ">="),
+    ):
+        if val:
+            conds.append(f"{col} {op} %({col})s")
+            params[col] = val
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    return await pg.afetch_all(
+        f"SELECT {_RUN_COLUMNS} FROM eval_runs {where} "
+        "ORDER BY started_at DESC LIMIT %(limit)s OFFSET %(offset)s",
+        {**params, "limit": _clamp(limit), "offset": offset},
     )
-    return res.data or []
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _get_run_cached(_epoch: int, run_id: str) -> dict | None:
-    sb = await get_async_supabase()
-    res = await sb.table("eval_runs").select(_RUN_COLUMNS).eq("run_id", run_id).limit(1).execute()
-    return res.data[0] if res.data else None
+    return await pg.afetch_one(f"SELECT {_RUN_COLUMNS} FROM eval_runs WHERE run_id = %s", (run_id,))
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _get_case_scores_cached(_epoch: int, run_id: str) -> list[dict]:
     """Per-case rollups across repeats for one run."""
-    sb = await get_async_supabase()
-    res = await (
-        sb.table("eval_case_scores")
-        .select("*")
-        .eq("run_id", run_id)
-        .order("suite")
-        .order("case_id")
-        .execute()
+    return await pg.afetch_all(
+        "SELECT * FROM eval_case_scores WHERE run_id = %s ORDER BY suite, case_id", (run_id,)
     )
-    return res.data or []
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _list_results_cached(_epoch: int, run_id: str, *, case_id: str | None = None, status: str | None = None) -> list[dict]:
     """Individual executions for a run, without the heavy payload columns."""
-    sb = await get_async_supabase()
-    q = sb.table("eval_results").select(_RESULT_LIST_COLUMNS).eq("run_id", run_id)
+    conds, params = ["run_id = %(run_id)s"], {"run_id": run_id}
     if case_id:
-        q = q.eq("case_id", case_id)
+        conds.append("case_id = %(case_id)s")
+        params["case_id"] = case_id
     if status:
-        q = q.eq("status", status)
-    res = await q.order("case_id").order("repeat_idx").execute()
-    return res.data or []
+        conds.append("status = %(status)s")
+        params["status"] = status
+    return await pg.afetch_all(
+        f"SELECT {_RESULT_LIST_COLUMNS} FROM eval_results WHERE {' AND '.join(conds)} "
+        "ORDER BY case_id, repeat_idx",
+        params,
+    )
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _get_result_cached(_epoch: int, result_id: str, *, include_trace: bool = True) -> dict | None:
     """One execution in full — this is the only place the big columns load."""
-    sb = await get_async_supabase()
     columns = "*" if include_trace else _RESULT_LIST_COLUMNS
-    res = await sb.table("eval_results").select(columns).eq("result_id", result_id).limit(1).execute()
-    return res.data[0] if res.data else None
+    return await pg.afetch_one(f"SELECT {columns} FROM eval_results WHERE result_id = %s", (result_id,))
 
 
 @l1cache(ttl=CACHE_TTL)
@@ -234,75 +224,63 @@ async def _get_checks_cached(_epoch: int, result_id: str) -> list[dict]:
     Ordering puts failures at the top within each layer, since that is what
     anyone opening a result is looking for.
     """
-    sb = await get_async_supabase()
-    res = await (
-        sb.table("eval_checks")
-        .select("*")
-        .eq("result_id", result_id)
-        .order("kind")
-        .order("passed")
-        .order("weight", desc=True)
-        .execute()
+    return await pg.afetch_all(
+        "SELECT * FROM eval_checks WHERE result_id = %s ORDER BY kind, passed, weight DESC",
+        (result_id,),
     )
-    return res.data or []
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _list_cases_cached(_epoch: int, suite: str | None = None) -> list[dict]:
     """The case registry: prompts and rubric definitions, mirrored from
     cases.yaml on every run so the dashboard never parses the config itself."""
-    sb = await get_async_supabase()
-    q = sb.table("eval_cases").select("*")
     if suite:
-        q = q.eq("suite", suite)
-    res = await q.order("suite").order("case_id").execute()
-    return res.data or []
+        return await pg.afetch_all(
+            "SELECT * FROM eval_cases WHERE suite = %s ORDER BY suite, case_id", (suite,)
+        )
+    return await pg.afetch_all("SELECT * FROM eval_cases ORDER BY suite, case_id")
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _leaderboard_cached(_epoch: int, *, label: str | None = None, since: str | None = None) -> list[dict]:
     """Quality next to latency and cost, one row per run."""
-    sb = await get_async_supabase()
-    q = sb.table("v_eval_model_leaderboard").select("*")
+    conds, params = [], {}
     if label:
-        q = q.eq("label", label)
+        # The view itself has no label column; filter through the run.
+        conds.append("run_id IN (SELECT run_id FROM eval_runs WHERE label = %(label)s)")
+        params["label"] = label
     if since:
-        q = q.gte("started_at", since)
-    res = await q.order("score", desc=True).execute()
-    return res.data or []
+        conds.append("started_at >= %(since)s")
+        params["since"] = since
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    return await pg.afetch_all(
+        f"SELECT * FROM v_eval_model_leaderboard {where} ORDER BY score DESC NULLS LAST", params
+    )
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _family_grid_cached(_epoch: int, family: str | None = None) -> list[dict]:
     """provider x reasoning_effort cells, for the gpt-oss-120b 2x3 and gemma pair."""
-    sb = await get_async_supabase()
-    q = sb.table("v_eval_family_grid").select("*")
-    if family:
-        q = q.eq("model_family", family)
-    res = await q.order("model_family").order("provider").order("reasoning_effort").execute()
-    return res.data or []
+    where, params = ("WHERE model_family = %s", (family,)) if family else ("", None)
+    return await pg.afetch_all(
+        f"SELECT * FROM v_eval_family_grid {where} ORDER BY model_family, provider, reasoning_effort",
+        params,
+    )
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _check_failures_cached(_epoch: int, *, min_evaluated: int = 1, limit: int = 50) -> list[dict]:
     """Which rubric items fail most often, across every run."""
-    sb = await get_async_supabase()
-    res = await (
-        sb.table("v_eval_check_failures")
-        .select("*")
-        .gte("n_evaluated", min_evaluated)
-        .order("failure_rate", desc=True)
-        .limit(_clamp(limit))
-        .execute()
+    return await pg.afetch_all(
+        "SELECT * FROM v_eval_check_failures WHERE n_evaluated >= %s "
+        "ORDER BY failure_rate DESC NULLS LAST LIMIT %s",
+        (min_evaluated, _clamp(limit)),
     )
-    return res.data or []
 
 
 @l1cache(ttl=CACHE_TTL)
 async def _run_summary_cached(_epoch: int, run_id: str) -> list[dict]:
-    sb = await get_async_supabase()
-    res = await sb.table("v_eval_run_summary").select("*").eq("run_id", run_id).execute()
-    return res.data or []
+    return await pg.afetch_all("SELECT * FROM v_eval_run_summary WHERE run_id = %s", (run_id,))
 
 
 async def resolve_run_ids(
@@ -318,9 +296,9 @@ async def resolve_run_ids(
     also serve an explicit run-id selection.
     """
     if run_ids:
-        sb = await get_async_supabase()
-        res = await sb.table("eval_runs").select(_RUN_COLUMNS).in_("run_id", run_ids).execute()
-        return res.data or []
+        return await pg.afetch_all(
+            f"SELECT {_RUN_COLUMNS} FROM eval_runs WHERE run_id = ANY(%s)", (list(run_ids),)
+        )
 
     runs = await list_runs(label=label, status="done", limit=MAX_LIMIT)
     if not latest_per_model:
@@ -333,9 +311,7 @@ async def resolve_run_ids(
 
 @l1cache(ttl=CACHE_TTL)
 async def _case_scores_for_runs(_epoch: int, run_ids: tuple[str, ...]) -> list[dict]:
-    sb = await get_async_supabase()
-    res = await sb.table("eval_case_scores").select("*").in_("run_id", list(run_ids)).execute()
-    return res.data or []
+    return await pg.afetch_all("SELECT * FROM eval_case_scores WHERE run_id = ANY(%s)", (list(run_ids),))
 
 
 async def case_matrix(
@@ -353,7 +329,7 @@ async def case_matrix(
 
     by_run = {r["run_id"]: r for r in runs}
     # Sorted so the cache key is stable: `resolve_run_ids` returns rows in
-    # whatever order PostgREST produced, and an unsorted list would mint a new
+    # whatever order the database produced, and an unsorted list would mint a new
     # cache entry for the same set of runs on every call.
     rows = await _case_scores_for_runs(await cache_epoch(), tuple(sorted(by_run)))
 

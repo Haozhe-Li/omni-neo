@@ -13,7 +13,7 @@ straight into whatever is handing them out.
     # user by any number of users:
     python3 scripts/gen_redeem_codes.py --code OMNIKNOWSXYZ --max-uses 0 --note "default code"
 
-Requires the same SUPABASE_URL / SUPABASE_KEY the backend uses (loaded from
+Requires the same DATABASE_URL the backend uses (loaded from
 .env, as main.py does).
 """
 
@@ -25,7 +25,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-from core.database.supabase_client import supabase  # noqa: E402  (after load_dotenv)
+from core.database import pg  # noqa: E402  (after load_dotenv)
 # Same normalization the redeem endpoint applies, and the same code-format
 # generator core/database/db_free_credit.py uses for self-serve grants —
 # imported rather than reimplemented so every code in the system is minted
@@ -73,7 +73,7 @@ def main() -> int:
 
     if not args.dry_run:
         try:
-            supabase.table("redeem_codes").insert(rows).execute()
+            pg.insert("redeem_codes", rows)
         except Exception as e:
             print(f"insert failed: {e}", file=sys.stderr)
             return 1

@@ -431,7 +431,7 @@ C 族里几条(`number_from_tool`、`chart_data_real`、`no_mental_math`)判的�
 
 leaderboard 的两个细节:latency 分位只统计 `status='ok'` 的行(一个 300s 超时会毁掉整列分位数),但 `error_rate` 单独列出来 —— 一个模型在它没崩的那三分之一 case 上考得好,不叫考得好。
 
-写入走现有 `core/database/supabase_client.py` 的 sync client(需 service_role key)。
+写入走 `core/database/pg.py` 的 Postgres 连接池(`DATABASE_URL`)。
 
 ---
 
@@ -493,7 +493,7 @@ metrics 放进阶段 0 而不是往后排,有个实际理由:它是唯一一个*
 
 ```bash
 python -m evals.cli --list                       # 列出 case 和模型,不跑
-python -m evals.cli --case general/chitchat --repeats 1 --no-judge --no-supabase
+python -m evals.cli --case general/chitchat --repeats 1 --no-judge --no-db
 python -m evals.cli --suites language --models gemma-4-31b-high
 python -m evals.cli --smoke --models all --out smoke.json
 ```
@@ -508,7 +508,7 @@ python -m evals.cli --smoke --models all --out smoke.json
 | `--repeats N` | 覆盖 case 自己的 repeats |
 | `--no-tool-cache` | 关掉工具缓存,打真实网络(线上健康度用) |
 | `--no-judge` | 只跑确定性检查,不花 judge 的钱 |
-| `--no-supabase` | 本地评分不入库 |
+| `--no-db` | 本地评分不入库 |
 | `--out FILE` | 额外把逐 check 明细写成 JSON |
 
 跑之前先在 Supabase SQL editor 里执行 `evals/schema_evals.sql`,并往 `eval_pricing` 插价格行 ——

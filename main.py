@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.agent import SYSTEM_PROMPTS, initialize_agents
+from core.database import pg
 from core.database.checkpointer import setup_checkpointer, teardown_checkpointer
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.redis_client import close_async_redis
@@ -17,17 +18,17 @@ from core.routers import chat, uploads, threads, users, misc, memories, schedule
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Table schema is now managed directly in Supabase (see schema.sql) — DDL
-    # can't run over the PostgREST HTTP API, so there are no setup_*_table()
-    # calls here anymore. The checkpointer does open a connection and create its
-    # two RediSearch indices here, which is why it is awaited rather than built
-    # at import.
+    # Open the Postgres pools now so a bad DATABASE_URL fails the deploy instead of
+    # the first user request. Schema is applied separately (python -m scripts.init_db).
+    await pg.apool()
+    pg.pool()
     await setup_checkpointer()
     initialize_agents()
     initialize_voice_agent()
     yield
     await teardown_checkpointer()
     await close_async_redis()
+    await pg.aclose_pools()
 
 
 app = FastAPI(title="Omni Agent API", lifespan=lifespan)

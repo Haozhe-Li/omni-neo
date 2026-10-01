@@ -1,8 +1,7 @@
-"""Persist eval results to Supabase over PostgREST.
+"""Persist eval results to Postgres.
 
-Reuses the app's existing sync client (`core/database/supabase_client.py`),
-which needs a service_role key — these tables are written by a CLI, never by a
-request handler, so there is no user JWT to scope them with.
+Reuses the app's Postgres pool (`core/database/pg.py`, `DATABASE_URL`). These
+tables are written by a CLI, never by a request handler.
 
 Every write is best-effort in the sense that a Supabase outage must not destroy
 a run that already cost real money in model calls: failures are reported and
@@ -17,7 +16,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.database.supabase_client import supabase, utcnow_iso
+from core.database import pg
 from evals.config import Case, Suite
 from evals.models import ModelSpec
 from evals.scoring import CaseScore, RepeatRollup, RunSummary, ScoredCheck
@@ -25,7 +24,7 @@ from evals.trace import RunTrace
 
 log = logging.getLogger("evals.store")
 
-# Trace rows are capped before they hit PostgREST: a 30-step pro run with full
+# Trace rows are capped before they are stored: a 30-step pro run with full
 # page bodies is megabytes, and the dashboard only ever renders the heads.
 _MAX_TRACE_STEPS = 60
 
@@ -40,7 +39,7 @@ class RunContext:
     def note(self, what: str, err: Exception) -> None:
         msg = f"{what}: {type(err).__name__}: {err}"
         self.failures.append(msg)
-        log.warning("supabase write failed — %s", msg)
+        log.warning("database write failed — %s", msg)
 
 
 def git_sha() -> str | None:
@@ -86,12 +85,12 @@ def upsert_cases(suite: Suite, ctx: RunContext) -> None:
             "is_negative": c.is_negative,
             "weight": c.weight,
             "enabled": True,
-            "updated_at": utcnow_iso(),
+            "updated_at": pg.utcnow(),
         }
         for c in suite.cases
     ]
     try:
-        supabase.table("eval_cases").upsert(rows, on_conflict="case_id").execute()
+        pg.upsert("eval_cases", rows, "case_id")
     except Exception as e:
         ctx.note("upsert eval_cases", e)
 
@@ -153,11 +152,10 @@ def start_run(
         "tool_cache": tool_cache,
         "suites": suites,
         "status": "running",
-        "started_at": utcnow_iso(),
+        "started_at": pg.utcnow(),
     }
     try:
-        res = supabase.table("eval_runs").insert(row).execute()
-        ctx.run_id = res.data[0]["run_id"]
+        ctx.run_id = pg.insert("eval_runs", row)[0]["run_id"]
     except Exception as e:
         ctx.note("insert eval_runs", e)
         ctx.enabled = False
@@ -219,8 +217,7 @@ def save_result(
         "trace": trace.as_trace_json()[:_MAX_TRACE_STEPS],
     }
     try:
-        res = supabase.table("eval_results").insert(row).execute()
-        result_id = res.data[0]["result_id"]
+        result_id = pg.insert("eval_results", row)[0]["result_id"]
     except Exception as e:
         ctx.note(f"insert eval_results ({case.id})", e)
         return
@@ -252,7 +249,7 @@ def _save_checks(result_id: str, case: Case, checks: list[ScoredCheck], ctx: Run
     if not rows:
         return
     try:
-        supabase.table("eval_checks").insert(rows).execute()
+        pg.insert("eval_checks", rows)
     except Exception as e:
         ctx.note(f"insert eval_checks ({case.id})", e)
 
@@ -280,7 +277,7 @@ def save_case_scores(rollups: list[RepeatRollup], metrics: dict[str, dict], ctx:
             }
         )
     try:
-        supabase.table("eval_case_scores").upsert(rows, on_conflict="run_id,case_id").execute()
+        pg.upsert("eval_case_scores", rows, ["run_id", "case_id"])
     except Exception as e:
         ctx.note("upsert eval_case_scores", e)
 
@@ -297,7 +294,8 @@ def finish_run(
     if not ctx.enabled or not ctx.run_id:
         return
     try:
-        supabase.table("eval_runs").update(
+        pg.update(
+            "eval_runs",
             {
                 "status": "done",
                 "score": summary.score,
@@ -309,9 +307,10 @@ def finish_run(
                 "total_cost_usd": total_cost_usd,
                 "pricing_version": pricing_version,
                 "notes": notes,
-                "finished_at": utcnow_iso(),
-            }
-        ).eq("run_id", ctx.run_id).execute()
+                "finished_at": pg.utcnow(),
+            },
+            {"run_id": ctx.run_id},
+        )
     except Exception as e:
         ctx.note("finish eval_runs", e)
         return
@@ -382,7 +381,7 @@ def upsert_pricing_mirror(ctx: RunContext) -> int | None:
             }
         )
     try:
-        supabase.table("eval_pricing").upsert(rows, on_conflict="version,model_label").execute()
+        pg.upsert("eval_pricing", rows, ["version", "model_label"])
     except Exception as e:
         ctx.note("upsert eval_pricing mirror", e)
     return table.version

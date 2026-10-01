@@ -120,7 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-judge", dest="judge", action="store_false")
     p.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     p.add_argument("--judge-repeats", type=int, default=1)
-    p.add_argument("--no-supabase", action="store_true", help="score locally, write nothing")
+    p.add_argument("--no-db", action="store_true", help="score locally, write nothing")
     p.add_argument("--out", default=None, help="also dump results to this JSON file")
     p.add_argument("--label", default=None, help="human name for this run")
     p.add_argument("--list", action="store_true", help="list cases and models, then exit")
@@ -155,7 +155,7 @@ async def _score(
 async def run_model(
     model: ModelSpec, cases: list[Case], suite, args, pricing_version: int | None
 ) -> dict:
-    ctx = store.RunContext(enabled=not args.no_supabase)
+    ctx = store.RunContext(enabled=not args.no_db)
     store.start_run(
         model,
         suites=sorted({c.suite for c in cases}),
@@ -260,7 +260,7 @@ async def run_model(
         "summary": asdict(summary),
         "rollups": [asdict(r) for r in rollups],
         "results": detail,
-        "supabase_failures": ctx.failures,
+        "db_failures": ctx.failures,
         "cache": cache.stats.as_dict(),
         "cost_usd": round(total_cost, 6) if have_cost else None,
     }
@@ -281,13 +281,13 @@ async def main_async(args) -> int:
             print(f"  {m.label:<26} {m.provider:<13} effort={m.reasoning_effort or '-'}")
         return 0
 
-    ctx = store.RunContext(enabled=not args.no_supabase)
+    ctx = store.RunContext(enabled=not args.no_db)
     store.upsert_cases(suite, ctx)
 
     from evals.pricing import load_pricing as load_pricing_yaml
 
     pricing_table = load_pricing_yaml()
-    pricing_version = store.upsert_pricing_mirror(ctx) if not args.no_supabase else pricing_table.version
+    pricing_version = store.upsert_pricing_mirror(ctx) if not args.no_db else pricing_table.version
     unpriced = sorted({m.label for m in models if pricing_table.get(m.provider, m.family) is None})
     if unpriced:
         print(f"! no price in pricing.yaml for: {', '.join(unpriced)} — cost will be recorded as NULL\n",
@@ -322,7 +322,7 @@ async def main_async(args) -> int:
         cost = f"${r['cost_usd']:.4f}" if r["cost_usd"] is not None else "n/a"
         print(f"{r['model']:<26} score={s['score']:.3f}  pass={s['pass_rate']:.3f}  "
               f"errors={s['n_errors']}  cost={cost}")
-    failures = [f for r in reports for f in r["supabase_failures"]]
+    failures = [f for r in reports for f in r["db_failures"]]
     if failures:
         print(f"\n! {len(failures)} Supabase write(s) failed; first: {failures[0]}", file=sys.stderr)
 

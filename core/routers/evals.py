@@ -19,7 +19,7 @@ these endpoints.
 
 What being public does expose is request volume, since anyone can now call
 these. That is handled by the week-long Redis cache in `db_evals` rather than
-by an auth wall: a cold query costs several PostgREST round trips, a warm one
+by an auth wall: a cold query costs several database round trips, a warm one
 costs a single Redis GET, and the data changes a few times a day at most.
 """
 from __future__ import annotations

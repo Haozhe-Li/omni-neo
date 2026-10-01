@@ -29,9 +29,9 @@ langchain-cerebras
 
 # For persisting agent state — LangGraph checkpoints in Redis (TCP, needs
 # RedisJSON + RediSearch: Redis 8.0+ or Redis Stack),
-# app data in Supabase over PostgREST (HTTP). No direct Postgres/TCP anymore.
+# app data in PostgreSQL over a direct connection (psycopg 3 + connection pool)
 langgraph-checkpoint-redis
-supabase
+psycopg[binary,pool]
 
 # For fetching data
 spider-client

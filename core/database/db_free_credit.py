@@ -15,6 +15,7 @@ approve every check, first time and every repeat after cooldown. Real signals
 here later without touching request_free_credit or the router.
 """
 
+import asyncio
 import json
 import logging
 
@@ -67,7 +68,9 @@ async def request_free_credit(user_id: str) -> dict:
         await r.set(key, json.dumps(payload), ex=_DENY_COOLDOWN_S)
         return payload
 
-    minted = create_restricted_code(user_id, FREE_CREDIT_AMOUNT, FREE_CREDIT_EXPIRES_DAYS)
+    minted = await asyncio.to_thread(
+        create_restricted_code, user_id, FREE_CREDIT_AMOUNT, FREE_CREDIT_EXPIRES_DAYS
+    )
     if minted is None:
         # Deliberately not cached: a DB hiccup shouldn't cost the user their
         # once-a-day check, and there's no code/denial to replay anyway.

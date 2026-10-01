@@ -1,19 +1,8 @@
 """
 Database operations for the user_usage table — a unified credit ledger for
-both guests and signed-in users, replacing the old pro-only `guest_usage`
-table.
+both guests and signed-in users.
 
-Table schema (see schema.sql):
-    CREATE TABLE IF NOT EXISTS user_usage (
-        user_id VARCHAR(255) PRIMARY KEY,
-        day DATE NOT NULL DEFAULT CURRENT_DATE,
-        day_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-        month VARCHAR(7) NOT NULL DEFAULT to_char(CURRENT_DATE, 'YYYY-MM'),
-        month_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-        extra_granted NUMERIC(10,2) NOT NULL DEFAULT 0,
-        extra_used NUMERIC(10,2) NOT NULL DEFAULT 0,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
+Table schema: see schema.sql.
 
 Model:
     - Every /chat or /rewind call spends credits, priced by the model the user
@@ -36,10 +25,9 @@ Model:
       either counter over its limit, nothing is charged at all (the request
       should be rejected outright, not partially billed).
 
-Note: NUMERIC values can come back over PostgREST as strings (to preserve
-precision), so every value read from a day_used/month_used column is cast to
-float immediately (see _rolled_over_usage) so the rest of this module and its
-callers can treat usage as plain floats throughout.
+Atomicity: a charge is one transaction that locks the user's row
+(SELECT ... FOR UPDATE), decides, and writes. Two concurrent charges for the same
+user therefore serialise instead of overwriting each other.
 """
 
 import asyncio
@@ -49,7 +37,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
-from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
+from core.database import pg
 
 logger = logging.getLogger(__name__)
 
@@ -158,87 +146,24 @@ def _extra_balance(row: dict | None) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Reading the row. Two shapes, because DDL here is applied by hand in the
-# Supabase SQL editor (see schema.sql) and therefore does NOT land atomically
-# with a deploy. If code that selects extra_granted/extra_used ships before the
-# ALTER runs, PostgREST answers every read with 42703 (undefined_column) — and
-# since a read failure fails OPEN, that would silently hand every user
-# unlimited free usage until someone noticed. So: try the wide select, and on
-# 42703 fall back to the pre-migration columns for the rest of the process's
-# life (a restart after the migration picks the wide shape back up).
+# Reading and writing the row
 # ---------------------------------------------------------------------------
-_USAGE_COLUMNS_WITH_EXTRA = "day, day_used, month, month_used, extra_granted, extra_used"
-_USAGE_COLUMNS_LEGACY = "day, day_used, month, month_used"
-_extra_columns_present = True
-
-
-def _usage_columns() -> str:
-    return _USAGE_COLUMNS_WITH_EXTRA if _extra_columns_present else _USAGE_COLUMNS_LEGACY
-
-
-def _is_missing_extra_columns(e: Exception) -> bool:
-    """Whether this error is 'the extra_* columns aren't in the DB yet'."""
-    if not _extra_columns_present:
-        return False
-    code = getattr(e, "code", None)
-    text = str(e)
-    return (code == "42703" or "42703" in text) and "extra_" in text
-
-
-def _note_missing_extra_columns() -> None:
-    global _extra_columns_present
-    if _extra_columns_present:
-        _extra_columns_present = False
-        logger.warning(
-            "[db_user_usage] extra_granted/extra_used missing from user_usage — "
-            "falling back to legacy columns. Run the ALTER TABLE statements in "
-            "schema.sql; redeemed credits are inert until then."
-        )
+_USAGE_COLUMNS = "day, day_used, month, month_used, extra_granted, extra_used"
+_ENSURE_ROW = "INSERT INTO user_usage (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING"
+_LOCK_ROW = f"SELECT {_USAGE_COLUMNS} FROM user_usage WHERE user_id = %s FOR UPDATE"
+_WRITE_ROW = (
+    "UPDATE user_usage SET day = %(day)s, day_used = %(day_used)s, month = %(month)s, "
+    "month_used = %(month_used)s, extra_used = %(extra_used)s, updated_at = now() "
+    "WHERE user_id = %(user_id)s"
+)
 
 
 def _read_usage_row(user_id: str) -> dict | None:
-    """Blocking read of a user's ledger row, with the column fallback above."""
-    try:
-        res = (
-            supabase.table("user_usage").select(_usage_columns())
-            .eq("user_id", user_id).limit(1).execute()
-        )
-    except Exception as e:
-        if not _is_missing_extra_columns(e):
-            raise
-        _note_missing_extra_columns()
-        res = (
-            supabase.table("user_usage").select(_usage_columns())
-            .eq("user_id", user_id).limit(1).execute()
-        )
-    return res.data[0] if res.data else None
+    return pg.fetch_one(f"SELECT {_USAGE_COLUMNS} FROM user_usage WHERE user_id = %s", (user_id,))
 
 
 async def _read_usage_row_async(user_id: str) -> dict | None:
-    """Async twin of `_read_usage_row`."""
-    sb = await get_async_supabase()
-    try:
-        res = (
-            await sb.table("user_usage").select(_usage_columns())
-            .eq("user_id", user_id).limit(1).execute()
-        )
-    except Exception as e:
-        if not _is_missing_extra_columns(e):
-            raise
-        _note_missing_extra_columns()
-        res = (
-            await sb.table("user_usage").select(_usage_columns())
-            .eq("user_id", user_id).limit(1).execute()
-        )
-    return res.data[0] if res.data else None
-
-
-def _strip_extra(write: dict | None) -> dict | None:
-    """Drop extra_used from a write payload when the column doesn't exist yet —
-    otherwise the write would fail the same way the read did."""
-    if write is None or _extra_columns_present:
-        return write
-    return {k: v for k, v in write.items() if k != "extra_used"}
+    return await pg.afetch_one(f"SELECT {_USAGE_COLUMNS} FROM user_usage WHERE user_id = %s", (user_id,))
 
 
 def _charge_context(user_id: str, mode: str) -> dict:
@@ -291,7 +216,6 @@ def _charge_decision(user_id: str, row: dict | None, ctx: dict) -> tuple[dict | 
             "day": ctx["today_iso"], "day_used": new_day,
             "month": ctx["month"], "month_used": new_month,
             "extra_used": new_extra_used,
-            "updated_at": utcnow_iso(),
         }
         return write, {"charged": True, "day_used": new_day, "month_used": new_month,
                        "extra_used": new_extra_used,
@@ -322,68 +246,56 @@ def charge_credits(user_id: str, mode: str) -> dict:
     Charge `mode`'s credit cost against user_id's daily and monthly usage,
     charging only if BOTH limits still hold after the charge (rollover-aware).
 
-    Over PostgREST there is no single-statement atomic upsert-with-guard the
-    way the old psycopg version had, so this is read-modify-write: read the
-    row, decide, then write. The window is tiny and same-user charges are
-    effectively never concurrent (a user's requests are serialized by the UI),
-    so worst case is a bounded, self-correcting over-count, never a hard fail.
-    Sync variant — use `charge_credits_async` from the async chat path.
+    One transaction: make sure the row exists, lock it, decide, write. Sync
+    variant — use `charge_credits_async` from the async chat path.
     """
     ctx = _charge_context(user_id, mode)
     try:
-        write, result = _charge_decision(user_id, _read_usage_row(user_id), ctx)
-        write = _strip_extra(write)
-        if write is not None:
-            supabase.table("user_usage").upsert(write, on_conflict="user_id").execute()
+        with pg.pool().connection() as conn, conn.transaction():
+            conn.execute(_ENSURE_ROW, (user_id,))
+            row = conn.execute(_LOCK_ROW, (user_id,)).fetchone()
+            write, result = _charge_decision(user_id, row, ctx)
+            if write is not None:
+                conn.execute(_WRITE_ROW, write)
         return result
     except Exception as e:
         logger.error(f"[db_user_usage] charge_credits error for {user_id}: {e}")
         return _charge_failopen(ctx)
 
 
-async def evaluate_charge_async(user_id: str, mode: str) -> tuple[dict, dict | None]:
-    """Read usage + decide, WITHOUT committing the write. Returns
-    ``(result, write_payload)`` where `write_payload` is None when nothing
-    should be written (not charged, or fail-open).
-
-    Splitting the read from the write lets the chat handler fold the read into
-    one concurrent batch with the other pre-LLM lookups, then defer the write
-    off the critical path — or skip it entirely (e.g. on a reconnect, which
-    must not charge)."""
+async def charge_credits_async(user_id: str, mode: str) -> dict:
+    """Async twin of `charge_credits`: same single locking transaction, without
+    blocking the event loop."""
     ctx = _charge_context(user_id, mode)
     try:
-        write, result = _charge_decision(user_id, await _read_usage_row_async(user_id), ctx)
-        return result, _strip_extra(write)
+        async with (await pg.apool()).connection() as conn, conn.transaction():
+            await conn.execute(_ENSURE_ROW, (user_id,))
+            cur = await conn.execute(_LOCK_ROW, (user_id,))
+            write, result = _charge_decision(user_id, await cur.fetchone(), ctx)
+            if write is not None:
+                await conn.execute(_WRITE_ROW, write)
+        return result
+    except Exception as e:
+        logger.error(f"[db_user_usage] charge_credits_async error for {user_id}: {e}")
+        return _charge_failopen(ctx)
+
+
+async def evaluate_charge_async(user_id: str, mode: str) -> dict:
+    """Read usage and decide, WITHOUT writing anything. Used to gate a request on
+    a snapshot miss; the actual charge is `charge_credits_async`."""
+    ctx = _charge_context(user_id, mode)
+    try:
+        _, result = _charge_decision(user_id, await _read_usage_row_async(user_id), ctx)
+        return result
     except Exception as e:
         logger.error(f"[db_user_usage] evaluate_charge_async error for {user_id}: {e}")
-        return _charge_failopen(ctx), None
-
-
-async def commit_charge_async(write: dict | None) -> None:
-    """Persist a charge decided by evaluate_charge_async. Safe to fire-and-forget
-    (usage accuracy is best-effort); a no-op when `write` is None."""
-    if not write:
-        return
-    try:
-        sb = await get_async_supabase()
-        await sb.table("user_usage").upsert(write, on_conflict="user_id").execute()
-    except Exception as e:
-        logger.error(f"[db_user_usage] commit_charge_async error: {e}")
-
-
-async def charge_credits_async(user_id: str, mode: str) -> dict:
-    """True-async read-decide-write charge for callers that want it in one shot
-    (the read/write don't block the event loop). The chat handler instead uses
-    evaluate_charge_fast + commit_charge_fast to keep the DB off the hot path."""
-    result, write = await evaluate_charge_async(user_id, mode)
-    await commit_charge_async(write)
-    return result
+        return _charge_failopen(ctx)
 
 
 # ---------------------------------------------------------------------------
 # Latency-first charge path: gate on a local usage snapshot, reconcile in the
 # background. Limits become approximate — a burst within the snapshot window can
-# slip over — which is an accepted trade for keeping Supabase off the /chat
+# slip over — which is an accepted trade for keeping the database off the /chat
 # critical path (usage accounting is best-effort here).
 # ---------------------------------------------------------------------------
 _USAGE_SNAPSHOT_TTL = 60.0
@@ -448,11 +360,11 @@ async def evaluate_charge_fast(user_id: str, mode: str) -> dict:
     if row is not None:
         _, result = _charge_decision(user_id, row, ctx)
         # Optimistic local bump so a rapid burst sees rising usage; the
-        # background reconcile re-anchors to DB truth right after.
+        # background charge re-anchors to DB truth right after.
         if result["charged"]:
             _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
         return result
-    result, _write = await evaluate_charge_async(user_id, mode)
+    result = await evaluate_charge_async(user_id, mode)
     _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
     return result
 
@@ -464,16 +376,15 @@ def usage_snapshot_hit(user_id: str) -> bool:
 
 
 def commit_charge_fast(user_id: str, mode: str) -> None:
-    """Fire-and-forget reconcile: do the real read+increment+write against the
-    DB, then re-anchor the local snapshot to the post-write truth."""
+    """Fire-and-forget: do the real, atomic charge against the DB, then re-anchor
+    the local snapshot to the post-write truth."""
     async def _run():
         try:
             ctx = _charge_context(user_id, mode)
-            result, write = await evaluate_charge_async(user_id, mode)
-            await commit_charge_async(write)
+            result = await charge_credits_async(user_id, mode)
             _snapshot_put(user_id, ctx["today_iso"], ctx["month"], result)
         except Exception as e:
-            logger.error(f"[db_user_usage] commit_charge_fast reconcile error for {user_id}: {e}")
+            logger.error(f"[db_user_usage] commit_charge_fast error for {user_id}: {e}")
 
     asyncio.create_task(_run())
 
@@ -513,8 +424,7 @@ def get_usage(user_id: str) -> dict:
 def delete_user_usage(user_id: str) -> bool:
     """Delete a user's usage row (account purge / guest-merge cleanup)."""
     try:
-        res = supabase.table("user_usage").delete().eq("user_id", user_id).execute()
-        return bool(res.data)
+        return pg.execute("DELETE FROM user_usage WHERE user_id = %s", (user_id,)) > 0
     except Exception as e:
         logger.error(f"[db_user_usage] delete_user_usage error: {e}")
         return False

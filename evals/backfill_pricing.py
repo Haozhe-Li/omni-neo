@@ -31,25 +31,24 @@ def main() -> int:
     p.add_argument("--run-id", default=None, help="restrict to one run")
     args = p.parse_args()
 
-    from core.database.supabase_client import supabase
+    from core.database import pg
 
     by_label = {m.label: m for m in discover_models()}
     table = load_pricing()
     print(f"pricing.yaml version={table.version}, cache_hit_ratio={table.cache_hit_ratio}\n")
 
-    runs_q = supabase.table("eval_runs").select("run_id,model_label")
-    if args.run_id:
-        runs_q = runs_q.eq("run_id", args.run_id)
-    runs = {r["run_id"]: r["model_label"] for r in runs_q.execute().data or []}
+    run_filter = " WHERE run_id = %s" if args.run_id else ""
+    run_params = (args.run_id,) if args.run_id else None
+    runs = {
+        r["run_id"]: r["model_label"]
+        for r in pg.fetch_all(f"SELECT run_id, model_label FROM eval_runs{run_filter}", run_params)
+    }
 
-    results_q = (
-        supabase.table("eval_results")
-        .select("result_id,run_id,input_tokens,output_tokens,peak_context_tokens,cost_usd")
-        .eq("status", "ok")
+    results = pg.fetch_all(
+        "SELECT result_id, run_id, input_tokens, output_tokens, peak_context_tokens, cost_usd "
+        "FROM eval_results WHERE status = 'ok'" + (" AND run_id = %s" if args.run_id else ""),
+        run_params,
     )
-    if args.run_id:
-        results_q = results_q.eq("run_id", args.run_id)
-    results = results_q.execute().data or []
 
     n_priced = n_unpriced = n_unchanged = n_updated = 0
     per_run_costs: dict[str, list[float]] = {}
@@ -60,8 +59,7 @@ def main() -> int:
     # it in the same query set rather than a second round trip per row.
     case_ids = {
         r["result_id"]: r["case_id"]
-        for r in supabase.table("eval_results").select("result_id,case_id")
-        .eq("status", "ok").execute().data or []
+        for r in pg.fetch_all("SELECT result_id, case_id FROM eval_results WHERE status = 'ok'")
     }
 
     for row in results:
@@ -86,9 +84,7 @@ def main() -> int:
         else:
             n_updated += 1
             if not args.dry_run:
-                supabase.table("eval_results").update({"cost_usd": new_cost}).eq(
-                    "result_id", row["result_id"]
-                ).execute()
+                pg.update("eval_results", {"cost_usd": new_cost}, {"result_id": row["result_id"]})
 
         per_run_costs.setdefault(row["run_id"], []).append(new_cost)
         case_id = case_ids.get(row["result_id"])
@@ -100,13 +96,17 @@ def main() -> int:
 
     if not args.dry_run:
         for run_id, costs in per_run_costs.items():
-            supabase.table("eval_runs").update(
-                {"total_cost_usd": round(sum(costs), 6), "pricing_version": table.version}
-            ).eq("run_id", run_id).execute()
+            pg.update(
+                "eval_runs",
+                {"total_cost_usd": round(sum(costs), 6), "pricing_version": table.version},
+                {"run_id": run_id},
+            )
         for (run_id, case_id), costs in per_case_costs.items():
-            supabase.table("eval_case_scores").update(
-                {"cost_usd_mean": round(statistics.fmean(costs), 6)}
-            ).eq("run_id", run_id).eq("case_id", case_id).execute()
+            pg.update(
+                "eval_case_scores",
+                {"cost_usd_mean": round(statistics.fmean(costs), 6)},
+                {"run_id": run_id, "case_id": case_id},
+            )
         print(f"updated total_cost_usd on {len(per_run_costs)} run(s), "
               f"cost_usd_mean on {len(per_case_costs)} case row(s)")
 

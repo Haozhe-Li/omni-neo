@@ -1,45 +1,17 @@
--- Omni evaluation schema (Supabase / PostgREST).
+-- Omni evaluation schema (PostgreSQL).
 --
--- Same conventions as the main schema.sql: DDL is applied by hand in the
--- Supabase SQL editor, the backend only reads/writes rows over PostgREST.
--- Kept in its own file because eval data has a different lifecycle from
--- product data — it is append-only, safe to truncate, and only ever written
--- by `python -m evals.cli`, never by a request handler.
+-- Applied by `python -m scripts.init_db` together with the main schema.sql.
+-- Kept in its own file because eval data has a different lifecycle from product
+-- data — it is append-only, safe to truncate, and only ever written by
+-- `python -m evals.cli`, never by a request handler.
 --
 -- Read path is the frontend eval dashboard; the views at the bottom exist so
 -- that dashboard never has to aggregate client-side.
 --
--- ---------------------------------------------------------------------------
--- Applying this file
--- ---------------------------------------------------------------------------
--- Paste the whole thing into the Supabase SQL editor and run it once. Order
--- matters (tables, then views) and is already correct, so run it top to bottom
--- rather than in pieces.
---
--- Re-running: tables use CREATE TABLE IF NOT EXISTS and are safe to re-apply.
--- The views are NOT: `CREATE OR REPLACE VIEW` fails if a view's column list or
--- types changed, since it can only replace a view with an identical output
--- shape. If a view definition here has changed since you last applied it,
--- DROP VIEW that one first:
---
---   DROP VIEW IF EXISTS v_eval_model_leaderboard;
---   DROP VIEW IF EXISTS v_eval_family_grid;
---   DROP VIEW IF EXISTS v_eval_run_summary;
---   DROP VIEW IF EXISTS v_eval_check_failures;
---
--- After the DDL, PostgREST needs to see the new tables. Supabase usually
--- reloads on its own within a few seconds; if the first write 404s with
--- "relation does not exist", force it:
---
---   NOTIFY pgrst, 'reload schema';
---
--- RLS: plain CREATE TABLE leaves row-level security OFF, which is what the
--- writer needs (it uses the service_role key and writes arbitrary rows). It
--- also leaves these tables readable by the anon key — fine for an internal
--- dashboard, but decide that deliberately before pointing a public frontend at
--- them. To lock reads down instead, enable RLS per table and add a read policy
--- for whichever role the dashboard authenticates as; the service_role writer
--- bypasses RLS either way and needs no policy.
+-- Re-running: tables use CREATE TABLE IF NOT EXISTS and views CREATE OR REPLACE
+-- VIEW, so the whole file is safe to re-apply. (CREATE OR REPLACE VIEW can only
+-- replace a view with an identical output shape; if a view's column list has
+-- changed, DROP VIEW that one first.)
 --
 -- Cost stays NULL until eval_pricing has rows — see the seed template at the
 -- bottom of this file.
@@ -133,8 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_runs_model   ON eval_runs(model_label, start
 -- `final_text` / `report_md` are stored raw so the dashboard can show exactly
 -- what the model produced next to the checks that graded it. `trace` is the
 -- compacted step list (tool name, arg summary, truncated result), not the raw
--- LangGraph messages — full messages routinely exceed a megabyte per pro run
--- and PostgREST would choke on them.
+-- LangGraph messages — full messages routinely exceed a megabyte per pro run.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS eval_results (
     result_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -476,3 +447,30 @@ GROUP BY r.model_family, r.provider, r.reasoning_effort;
 --   SELECT * FROM v_eval_family_grid;
 --   SELECT * FROM v_eval_run_summary;
 --   SELECT * FROM v_eval_check_failures;
+
+-- ---------------------------------------------------------------------------
+-- eval_oracle: best-of-everything analysis artifact (see evals/oracle.py)
+-- ---------------------------------------------------------------------------
+-- Analysis artifact, not a measurement. Deliberately NOT in eval_runs: nothing
+-- that ranks models should be able to reach it.
+CREATE TABLE IF NOT EXISTS eval_oracle (
+    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    family         TEXT NOT NULL,          -- "rix"
+    scope          TEXT NOT NULL,          -- "case" | "suite" | "overall"
+    key            TEXT NOT NULL,          -- case_id, suite name, or "OVERALL"
+    suite          TEXT,
+    -- Best value and the run that produced it, per metric.
+    best_score     NUMERIC,
+    score_from     TEXT,
+    best_pass_rate NUMERIC,
+    pass_from      TEXT,
+    best_ttft_ms   NUMERIC,
+    ttft_from      TEXT,
+    best_latency_ms NUMERIC,
+    latency_from   TEXT,
+    best_cost_usd  NUMERIC,
+    cost_from      TEXT,
+    -- TRUE when the winning run predates the personalization harness fix.
+    stale_harness  BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (family, scope, key)
+);
