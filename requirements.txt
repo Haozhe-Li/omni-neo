@@ -86,8 +86,10 @@ upstash-redis
 firecrawl-anydoc
 langchain-text-splitters
 
-# semantic source search (backs /check_source)
-upstash-search
+# semantic source search (backs /check_source): self-hosted Qdrant for storage,
+# the self-hosted embedding service (plain HTTP) for dense + BM25 vectors
+qdrant-client
+httpx
 
 # scheduled research tasks: email delivery + cron scheduling
 resend

@@ -7,7 +7,7 @@ by). This module persists every citation a thread has ever produced to Redis,
 verbatim, so numbering survives across turns.
 
 Semantic lookup for `/check_source` (chunking + similarity search) now lives
-in `vector_sources.py` (Upstash Search) — this module is pure storage of the
+in `vector_sources.py` (Qdrant) — this module is pure storage of the
 full, unchunked source record.
 """
 from __future__ import annotations

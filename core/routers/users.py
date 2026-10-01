@@ -127,7 +127,7 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
     """
     Permanently erase every piece of data associated with this user_id:
     all threads (LangGraph checkpoints, cached citations in Redis, and the
-    Upstash vector index), every uploaded file (DB rows + S3 objects), the
+    Qdrant vector index), every uploaded file (DB rows + S3 objects), the
     long-term memory document.
 
     Irreversible. Published "pages" live in the frontend's own Redis (Upstash)

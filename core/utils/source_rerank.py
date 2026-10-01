@@ -1,7 +1,7 @@
 """LLM excerpt-extraction pass for `/check_source`.
 
-Vector search already restricts candidates to chunks that score above a high
-similarity threshold (see `vector_sources._MIN_SCORE`), so every candidate
+Vector search already restricts candidates to chunks whose dense similarity
+clears a threshold (see `vector_sources._MIN_SCORE`), so every candidate
 handed here is presumed relevant — this module no longer decides keep/drop.
 It makes one gpt-oss-20b call with every candidate chunk and asks it to copy
 out the exact supporting phrase for each one verbatim. The frontend

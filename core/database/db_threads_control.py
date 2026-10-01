@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from core.database.supabase_client import supabase, get_async_supabase, utcnow_iso
 from core.database.checkpointer import get_sync_checkpointer, delete_rewind_points
 from core.utils import redis_sources, vector_sources
+from core.utils.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -340,11 +341,10 @@ def delete_threads_bulk(thread_ids: list[str]) -> None:
             redis_sources.delete_threads_sources_bulk(thread_ids)
         except Exception as e:
             logger.error(f"[db_threads_control] redis source cleanup error for {thread_ids}: {e}")
-        for thread_id in thread_ids:
-            try:
-                vector_sources.delete_thread_vectors(thread_id)
-            except Exception as e:
-                logger.error(f"[db_threads_control] vector source cleanup error for {thread_id}: {e}")
+        try:
+            vector_sources.delete_threads_vectors(thread_ids)
+        except Exception as e:
+            logger.error(f"[db_threads_control] vector source cleanup error for {thread_ids}: {e}")
     except Exception as e:
         logger.error(f"[db_threads_control] delete_threads_bulk error for {thread_ids}: {e}")
 
@@ -402,3 +402,65 @@ def cleanup_old_threads() -> None:
         )
     except Exception as e:
         logger.error(f"[db_threads_control] cleanup_old_threads error: {e}")
+        return
+
+    # Expiry deletes rows directly, so the vector index has to be told separately:
+    # drop the chunks of exactly the threads that were just removed...
+    try:
+        expired = [
+            row["thread_id"]
+            for row in (guest_res.data or []) + (user_res.data or [])
+            if row.get("thread_id")
+        ]
+        vector_sources.delete_threads_vectors(expired)
+    except Exception as e:
+        logger.error(f"[db_threads_control] vector cleanup after expiry failed: {e}")
+    # ...and reconcile, which catches anything that step (or any other path) missed.
+    reconcile_vector_index()
+
+
+# Chunks younger than this are never treated as orphans: a thread's first sources can
+# be indexed before its threads_control row is visible.
+_VECTOR_ORPHAN_GRACE_SECONDS = 3600
+_VECTOR_RECONCILE_INTERVAL_SECONDS = 3600
+
+
+def reconcile_vector_index() -> int:
+    """Delete the vector chunks of every thread that no longer exists in
+    threads_control. Returns the number of orphaned threads removed.
+
+    This is what guarantees the index cannot leak: a thread's chunks live exactly
+    as long as its row, whichever way the row went away (expiry, explicit delete,
+    a failed cleanup call). It runs from cleanup_old_threads, which fires on every
+    GET /health, so it is throttled with a Redis lock to once per interval across
+    all instances.
+    """
+    try:
+        if not get_redis().set(
+            "omni:vector_reconcile", "1", nx=True, ex=_VECTOR_RECONCILE_INTERVAL_SECONDS
+        ):
+            return 0
+        indexed = vector_sources.list_indexed_thread_ids(_VECTOR_ORPHAN_GRACE_SECONDS)
+        alive: set[str] = set()
+        for i in range(0, len(indexed), 200):
+            batch = indexed[i : i + 200]
+            rows = (
+                supabase.table("threads_control")
+                .select("thread_id")
+                .in_("thread_id", batch)
+                .execute()
+                .data
+                or []
+            )
+            alive.update(r["thread_id"] for r in rows)
+        orphans = [t for t in indexed if t not in alive]
+        if orphans:
+            vector_sources.delete_threads_vectors(orphans)
+        logger.info(
+            f"[db_threads_control] vector reconcile: {len(indexed)} indexed threads, "
+            f"{len(orphans)} orphaned and removed"
+        )
+        return len(orphans)
+    except Exception as e:
+        logger.error(f"[db_threads_control] vector reconcile failed: {e}")
+        return 0

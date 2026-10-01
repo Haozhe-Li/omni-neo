@@ -898,7 +898,7 @@ async def check_source(
     """
     Find every source passage that supports a piece of highlighted answer text.
 
-    1. Semantic search (Upstash Search) over every chunk this thread has ever
+    1. Hybrid search (dense + BM25, Qdrant) over every chunk this thread has ever
        produced, filtered to `turn <= request.turn` so a claim from an early
        turn can never resolve to a source that only appeared later — see
        `core/utils/citations.py` for how `turn` gets stamped onto a source.
