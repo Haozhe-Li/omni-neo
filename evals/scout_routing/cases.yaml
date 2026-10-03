@@ -1,0 +1,320 @@
+# Scout 路由评测集 —— 评的是 core/context_enrichment.py 的「第一轮该做什么」
+#
+# gold 取值（与 scout prompt 的 7 个 action 对应，两个天气 action 合并为 weather）：
+#   web_search | weather | stock | currency | about_omni | direct_response
+#
+# gold 的定义是「理想行为」，依据 _SCOUT_PROMPT 里写的规则，不是任何一版实现的输出：
+#   - 有可核查答案的事实问题 -> web_search（再有名的主体也一样）
+#   - 翻译/改写/润色/总结用户给的文本/创作/闲聊/写代码/心算/太模糊 -> direct_response
+#   - 加密货币、私有公司、「哪种货币最强」、历史/气候/旅行类天气 -> web_search
+#   - 问 Omni 自己（身份/能力/模型/作者/账号/积分/记忆/上传/定时调研）-> about_omni
+#
+# 字段：
+#   q     query 原文
+#   gold  期望路由
+#   tags  adv  = 专门为难关键词匹配而设计的（字面像 A 类，实际是 B 类）
+#         low  = 我对这条 gold 把握不高，换个人标可能不同；报告里可单独排除
+#   args  仅 weather/stock/currency：期望的参数（只在 --llm 时用来评参数抽取）
+#   ctx   可选，注入 scout 的用户上下文，{location: "..."}；隐式地点（「今天多少度」）用
+#
+# 这批 query 是人写的，不是线上流量。它能回答「关键词层在哪些句式上会错」，不能回答
+# 「线上占比是多少」——后者需要用真实 scout 日志另做一份。
+
+version: 1
+
+cases:
+  # ───────────────────────── about_omni ─────────────────────────
+  - {q: "who are you", gold: about_omni}
+  - {q: "What are you?", gold: about_omni}
+  - {q: "what can you do", gold: about_omni}
+  - {q: "Tell me about yourself", gold: about_omni}
+  - {q: "what model are you using", gold: about_omni}
+  - {q: "who built you", gold: about_omni}
+  - {q: "Are you ChatGPT?", gold: about_omni}
+  - {q: "what's Omni", gold: about_omni}
+  - {q: "how does the credit system work in Omni", gold: about_omni}
+  - {q: "can I schedule research to run every morning", gold: about_omni}
+  - {q: "does Omni remember my previous conversations", gold: about_omni}
+  - {q: "can I upload PDFs to Omni", gold: about_omni}
+  - {q: "what tech stack is Omni built on", gold: about_omni}
+  - {q: "hey, what exactly are you", gold: about_omni}
+  - {q: "who is the author of Omni", gold: about_omni}
+  - {q: "你是谁", gold: about_omni}
+  - {q: "你是什么模型", gold: about_omni}
+  - {q: "介绍一下你自己", gold: about_omni}
+  - {q: "你能做什么", gold: about_omni}
+  - {q: "Omni 是谁开发的", gold: about_omni}
+  - {q: "你背后用的是哪家的大模型", gold: about_omni}
+  - {q: "你有记忆功能吗", gold: about_omni}
+  - {q: "怎么给 Omni 充值积分", gold: about_omni}
+  - {q: "可以上传文件让你分析吗", gold: about_omni}
+  - {q: "你们的定时调研功能怎么用", gold: about_omni}
+  - {q: "你叫啥", gold: about_omni}
+  - {q: "你是不是GPT", gold: about_omni}
+  - {q: "你的作者是谁", gold: about_omni}
+  - {q: "你和ChatGPT有什么区别", gold: about_omni, tags: [low]}
+  - {q: "how do you work", gold: about_omni, tags: [low]}
+
+  # ───────────────────────── weather ─────────────────────────
+  - {q: "what's the weather in Tokyo", gold: weather, args: {location: Tokyo}}
+  - {q: "is it raining in London right now", gold: weather, args: {location: London}}
+  - {q: "will it rain tomorrow in Seattle", gold: weather, args: {location: Seattle}}
+  - {q: "weather this weekend in Chicago", gold: weather, args: {location: Chicago}}
+  - {q: "should I bring an umbrella to Paris tomorrow", gold: weather, args: {location: Paris}}
+  - {q: "how hot is it in Dubai today", gold: weather, args: {location: Dubai}}
+  - {q: "current temperature in New York", gold: weather, args: {location: New York}}
+  - {q: "forecast for Berlin next week", gold: weather, args: {location: Berlin}}
+  - {q: "is it going to snow in Denver tonight", gold: weather, args: {location: Denver}}
+  - {q: "how cold is it in Moscow", gold: weather, args: {location: Moscow}}
+  - {q: "weather in Hong Kong", gold: weather, args: {location: Hong Kong}}
+  - {q: "uv index in Sydney today", gold: weather, args: {location: Sydney}}
+  - {q: "will it be windy in San Francisco tomorrow", gold: weather, args: {location: San Francisco}}
+  - {q: "what's the weather like outside", gold: weather, args: {location: Austin}, ctx: {location: "Austin, TX"}}
+  - {q: "do I need a jacket today", gold: weather, args: {location: Austin}, ctx: {location: "Austin, TX"}, tags: [low]}
+  - {q: "东京今天天气怎么样", gold: weather, args: {location: Tokyo}}
+  - {q: "明天上海会下雨吗", gold: weather, args: {location: Shanghai}}
+  - {q: "北京这周末天气", gold: weather, args: {location: Beijing}}
+  - {q: "今天多少度", gold: weather, args: {location: Austin}, ctx: {location: "Austin, TX"}}
+  - {q: "深圳现在气温多少", gold: weather, args: {location: Shenzhen}}
+  - {q: "明天出门要带伞吗", gold: weather, args: {location: Austin}, ctx: {location: "Austin, TX"}}
+  - {q: "杭州未来一周天气预报", gold: weather, args: {location: Hangzhou}}
+  - {q: "今天冷不冷", gold: weather, args: {location: Austin}, ctx: {location: "Austin, TX"}}
+  - {q: "成都这两天会降温吗", gold: weather, args: {location: Chengdu}}
+
+  # ───────────────────────── stock ─────────────────────────
+  - {q: "how is AMD doing", gold: stock, args: {ticker: AMD}}
+  - {q: "nvidia earnings", gold: stock, args: {ticker: NVDA}}
+  - {q: "AAPL stock price", gold: stock, args: {ticker: AAPL}}
+  - {q: "what's Tesla's stock price today", gold: stock, args: {ticker: TSLA}}
+  - {q: "is Microsoft stock up or down today", gold: stock, args: {ticker: MSFT}}
+  - {q: "Tencent share price", gold: stock, args: {ticker: 0700.HK}}
+  - {q: "how did Amazon stock do after earnings", gold: stock, args: {ticker: AMZN}}
+  - {q: "TSMC market cap", gold: stock, args: {ticker: TSM}}
+  - {q: "Meta stock", gold: stock, args: {ticker: META}}
+  - {q: "how is Palantir performing lately", gold: stock, args: {ticker: PLTR}}
+  - {q: "S&P 500 today", gold: stock, args: {ticker: SPY}}
+  - {q: "how did the Nasdaq do today", gold: stock, args: {ticker: QQQ}}
+  - {q: "BYD stock", gold: stock, args: {ticker: 1211.HK}}
+  - {q: "Alibaba quarterly results", gold: stock, args: {ticker: BABA}, tags: [low]}
+  - {q: "英伟达股价多少", gold: stock, args: {ticker: NVDA}}
+  - {q: "特斯拉今天涨了吗", gold: stock, args: {ticker: TSLA}}
+  - {q: "腾讯最近股价", gold: stock, args: {ticker: 0700.HK}}
+  - {q: "阿里巴巴财报怎么样", gold: stock, args: {ticker: BABA}}
+  - {q: "苹果市值多少", gold: stock, args: {ticker: AAPL}}
+  - {q: "比亚迪股价", gold: stock, args: {ticker: 1211.HK}}
+  - {q: "标普500今天涨跌", gold: stock, args: {ticker: SPY}}
+  - {q: "台积电最近表现怎么样", gold: stock, args: {ticker: TSM}, tags: [low]}
+
+  # ───────────────────────── currency ─────────────────────────
+  - {q: "100 dollars in yen", gold: currency, args: {base: USD, target: JPY}}
+  - {q: "USD to EUR", gold: currency, args: {base: USD, target: EUR}}
+  - {q: "how much is 50 euros in pounds", gold: currency, args: {base: EUR, target: GBP}}
+  - {q: "convert 1000 yuan to dollars", gold: currency, args: {base: CNY, target: USD}}
+  - {q: "exchange rate GBP to JPY", gold: currency, args: {base: GBP, target: JPY}}
+  - {q: "what is the euro worth in dollars", gold: currency, args: {base: EUR, target: USD}}
+  - {q: "CAD to USD rate", gold: currency, args: {base: CAD, target: USD}}
+  - {q: "how many rupees is 20 dollars", gold: currency, args: {base: USD, target: INR}}
+  - {q: "AUD to NZD", gold: currency, args: {base: AUD, target: NZD}}
+  - {q: "Swiss franc to USD today", gold: currency, args: {base: CHF, target: USD}}
+  - {q: "日元汇率", gold: currency, args: {base: JPY, target: USD}, ctx: {location: "Austin, TX"}}
+  - {q: "100美元等于多少人民币", gold: currency, args: {base: USD, target: CNY}}
+  - {q: "欧元兑人民币汇率", gold: currency, args: {base: EUR, target: CNY}}
+  - {q: "1000港币换多少韩元", gold: currency, args: {base: HKD, target: KRW}}
+  - {q: "人民币兑美元", gold: currency, args: {base: CNY, target: USD}}
+  - {q: "现在英镑对日元多少", gold: currency, args: {base: GBP, target: JPY}}
+  - {q: "泰铢兑人民币", gold: currency, args: {base: THB, target: CNY}}
+  - {q: "500欧元能换多少美元", gold: currency, args: {base: EUR, target: USD}}
+  - {q: "今天美元汇率", gold: currency, args: {base: USD, target: CNY}, tags: [low]}
+  - {q: "yen to dollar", gold: currency, args: {base: JPY, target: USD}}
+
+  # ───────────────────────── web_search：疑问句式 ─────────────────────────
+  - {q: "who is Sam Altman", gold: web_search}
+  - {q: "what is retrieval augmented generation", gold: web_search}
+  - {q: "how do I set up a langgraph postgres checkpointer", gold: web_search}
+  - {q: "difference between Qdrant and Pinecone", gold: web_search}
+  - {q: "best noise cancelling headphones", gold: web_search}
+  - {q: "latest news on OpenAI", gold: web_search}
+  - {q: "why is the sky blue", gold: web_search}
+  - {q: "is Rust worth learning", gold: web_search}
+  - {q: "how long does it take to fly to Mars", gold: web_search}
+  - {q: "what happened with Silicon Valley Bank", gold: web_search}
+  - {q: "what is the population of Brazil", gold: web_search}
+  - {q: "who won the 2022 World Cup", gold: web_search}
+  - {q: "how does mRNA vaccine work", gold: web_search}
+  - {q: "pros and cons of electric cars", gold: web_search}
+  - {q: "alternatives to Notion", gold: web_search}
+  - {q: "tell me about the Ottoman Empire", gold: web_search}
+  - {q: "when was the Eiffel Tower built", gold: web_search}
+  - {q: "which is better, Python or Go", gold: web_search}
+  - {q: "what is the capital of Australia", gold: web_search}
+  - {q: "什么是RAG", gold: web_search}
+  - {q: "马斯克是谁", gold: web_search}
+  - {q: "为什么天空是蓝色的", gold: web_search}
+  - {q: "北京有哪些适合带孩子去的博物馆", gold: web_search}
+  - {q: "新能源车和燃油车哪个更划算", gold: web_search}
+  - {q: "怎么在mac上安装docker", gold: web_search}
+  - {q: "乔布斯的传记值得读吗", gold: web_search}
+  - {q: "苹果公司是怎么创立的", gold: web_search}
+  - {q: "中国现在的经济状况怎么样", gold: web_search}
+  - {q: "日本留学签证怎么办理", gold: web_search}
+  - {q: "推荐几本讲贝叶斯统计的书", gold: web_search}
+
+  # ───────────────────────── web_search：非疑问句式 ─────────────────────────
+  - {q: "langgraph postgres checkpointer", gold: web_search}
+  - {q: "Tesla solid state battery", gold: web_search}
+  - {q: "kubernetes vs nomad", gold: web_search}
+  - {q: "pgvector hnsw index tuning", gold: web_search}
+  - {q: "Japan visa requirements for Chinese citizens", gold: web_search}
+  - {q: "Claude 5 release", gold: web_search}
+  - {q: "特斯拉2026年固态电池进展如何", gold: web_search}
+  - {q: "深度研究一下海狮和海豹的区别", gold: web_search}
+  - {q: "量子计算最新进展", gold: web_search}
+  - {q: "做一份关于固态电池的行业调研", gold: web_search}
+  - {q: "langgraph checkpoint 配置", gold: web_search}
+  - {q: "东京三日游行程", gold: web_search}
+  - {q: "OpenAI o3 benchmark results", gold: web_search}
+  - {q: "mac mini m4 开发者评测", gold: web_search}
+
+  # ───────────────────────── web_search：对抗（字面像别的类）─────────────────────────
+  - {q: "hokkaido weather in january", gold: web_search, tags: [adv], note: "scout prompt 明确举例：某月某地气候是旅行问题"}
+  - {q: "what is the best weather app for iphone", gold: web_search, tags: [adv]}
+  - {q: "how does climate change affect rainfall", gold: web_search, tags: [adv]}
+  - {q: "what is a stock option", gold: web_search, tags: [adv]}
+  - {q: "free stock photo sites", gold: web_search, tags: [adv]}
+  - {q: "how to stock a pantry for a month", gold: web_search, tags: [adv]}
+  - {q: "history of the Japanese yen", gold: web_search, tags: [adv]}
+  - {q: "which currency is the strongest", gold: web_search, tags: [adv], note: "scout prompt 明确排除"}
+  - {q: "bitcoin price", gold: web_search, tags: [adv], note: "加密货币不走 currency/stock"}
+  - {q: "what is SpaceX valuation", gold: web_search, tags: [adv], note: "私有公司不走 stock"}
+  - {q: "what is omni-channel marketing", gold: web_search, tags: [adv], note: "含 what is omni 子串"}
+  - {q: "tell me about omnivores", gold: web_search, tags: [adv], note: "含 tell me about omni 子串"}
+  - {q: "Tokyo vs Osaka for a winter trip", gold: web_search, tags: [adv]}
+  - {q: "下雨天适合去哪些景点", gold: web_search, tags: [adv]}
+  - {q: "股票是什么意思", gold: web_search, tags: [adv]}
+  - {q: "汇率是怎么形成的", gold: web_search, tags: [adv]}
+  - {q: "天气预报是怎么做出来的", gold: web_search, tags: [adv]}
+  - {q: "比特币现在什么价格", gold: web_search, tags: [adv]}
+  - {q: "who made the first telescope", gold: web_search, tags: [adv], note: "who made + 非 you"}
+  - {q: "what can you do with a raspberry pi", gold: web_search, tags: [adv], note: "含 what can you do 子串，但问的是树莓派"}
+
+  # ───────────────────────── web_search：长句（>=20 词，关键词层按设计放弃）─────────────────────────
+  - {q: "I am trying to decide between building a RAG pipeline on top of Qdrant or just using a managed vector database, what are the real tradeoffs for a small team", gold: web_search, tags: [long]}
+  - {q: "想把公司后端从 Flask 迁移到 FastAPI，迁移过程中有哪些常见的坑，有没有成熟的经验可以参考", gold: web_search, tags: [long]}
+  - {q: "can you look into how the EU AI Act affects open source model releases and whether small startups need to comply with the general purpose model obligations", gold: web_search, tags: [long]}
+  - {q: "听说固态电池要量产了，哪几家公司走在前面，各自用什么技术路线，什么时候能买到搭载的车", gold: web_search, tags: [long]}
+  - {q: "what is the current state of research on using sparse autoencoders to interpret large language models and how well do the findings generalize across model families", gold: web_search, tags: [long]}
+
+  # ───────────────────────── direct_response：翻译/改写/总结 ─────────────────────────
+  - {q: "translate 'good morning, how are you' into French", gold: direct_response}
+  - {q: "把这句话翻译成英文：我明天下午有空", gold: direct_response}
+  - {q: "how do you say thank you in Japanese?", gold: direct_response, tags: [adv], note: "翻译类，虽然是 how do 句式"}
+  - {q: "rewrite this email to sound more polite: send me the report now", gold: direct_response}
+  - {q: "帮我润色一下这段话：我觉得这个方案不太行", gold: direct_response}
+  - {q: "fix the grammar: he dont like apples", gold: direct_response}
+  - {q: "make this shorter: I just wanted to reach out to let you know that I will be a little late", gold: direct_response}
+  - {q: "summarize the following: The meeting covered Q3 revenue, hiring plans, and the new office lease.", gold: direct_response}
+  - {q: "总结一下下面这段文字：今天会议讨论了预算、排期和人员分工，最终决定下周一启动。", gold: direct_response}
+
+  # ───────────────────────── direct_response：创作/闲聊 ─────────────────────────
+  - {q: "write a haiku about autumn", gold: direct_response}
+  - {q: "写一首关于下雨的诗", gold: direct_response, tags: [adv], note: "含「下雨」，天气词但不是天气问题"}
+  - {q: "tell me a joke", gold: direct_response}
+  - {q: "给我讲个睡前故事", gold: direct_response}
+  - {q: "brainstorm names for a coffee shop", gold: direct_response}
+  - {q: "给我的猫起个名字", gold: direct_response}
+  - {q: "hi", gold: direct_response}
+  - {q: "hello there", gold: direct_response}
+  - {q: "你好", gold: direct_response}
+  - {q: "thanks!", gold: direct_response}
+  - {q: "谢谢", gold: direct_response}
+  - {q: "how are you?", gold: direct_response, tags: [adv], note: "疑问句式但是寒暄"}
+  - {q: "what are you doing this weekend?", gold: direct_response, tags: [adv], note: "含 what are you 子串，是闲聊不是问 Omni"}
+  - {q: "今天心情不好", gold: direct_response}
+  - {q: "i'm bored", gold: direct_response}
+
+  # ───────────────────────── direct_response：代码/计算/文本处理 ─────────────────────────
+  - {q: "write a python function to reverse a linked list", gold: direct_response}
+  - {q: "用python写一个快速排序", gold: direct_response}
+  - {q: "explain this code: x = [i*2 for i in range(5)]", gold: direct_response, tags: [adv], note: "explain 开头，但内容是用户给的代码"}
+  - {q: "what does this regex do? ^\\d{3}-\\d{4}$", gold: direct_response, tags: [adv]}
+  - {q: "refactor this function to use async", gold: direct_response}
+  - {q: "what is 17 times 23?", gold: direct_response, tags: [adv], note: "what is 句式，是心算"}
+  - {q: "2的10次方是多少", gold: direct_response, tags: [adv]}
+  - {q: "convert 5 km to miles", gold: direct_response, tags: [adv], note: "含 convert，单位换算不是汇率"}
+  - {q: 'convert this json to yaml: {"a": 1, "b": [2, 3]}', gold: direct_response, tags: [adv]}
+  - {q: "how do you work out the square root of 2 by hand", gold: direct_response, tags: [adv], note: "含 how do you work 子串，是数学题"}
+
+  # ───────────────────────── direct_response：个人/意见/模糊 ─────────────────────────
+  - {q: "which one should I pick, the blue shirt or the red one?", gold: direct_response, tags: [adv]}
+  - {q: "what do you think about my business plan?", gold: direct_response, tags: [adv]}
+  - {q: "我该不该辞职？", gold: direct_response, tags: [adv]}
+  - {q: "can you help me write a cover letter?", gold: direct_response, tags: [adv]}
+  - {q: "你能帮我写一封请假邮件吗", gold: direct_response, tags: [adv]}
+  - {q: "help", gold: direct_response}
+  - {q: "帮我查一下", gold: direct_response, tags: [low], note: "太模糊，无从搜索"}
+  - {q: "tell me something interesting", gold: direct_response, tags: [adv, low], note: "tell me 句式；可以争论成 web_search"}
+  - {q: "give me a pep talk before my interview", gold: direct_response}
+  - {q: "我最近睡眠不太好，有什么建议吗", gold: web_search, tags: [low], note: "健康建议；可以争论成 direct_response"}
+
+  # ───────────────────────── direct_response：长句 ─────────────────────────
+  - {q: "please rewrite the following paragraph so that it sounds more formal and professional, keeping the meaning the same: hey guys, the thing is broken again, can someone look at it asap", gold: direct_response, tags: [long]}
+  - {q: "帮我看看这段自我介绍有没有语病，语气再亲切一点：大家好，我是新来的同事，负责数据分析。", gold: direct_response, tags: [long]}
+
+  # ───────────────────────── held-out（tag: held）─────────────────────────
+  # 写于第一轮 router 评测、看过失败模式之后；与 anchors 无逐字重合（run.py 断言）。
+  # 它们抽查的是「同一类失败换了主题是否还会错」，不是盲测——盲测只能靠线上日志。
+  - {q: "台风是怎么形成的", gold: web_search, tags: [held, adv]}
+  - {q: "通货膨胀是怎么产生的", gold: web_search, tags: [held, adv]}
+  - {q: "how do hurricanes form", gold: web_search, tags: [held, adv]}
+  - {q: "what is a dividend", gold: web_search, tags: [held, adv]}
+  - {q: "why did the British pound crash in 2022", gold: web_search, tags: [held, adv]}
+  - {q: "what causes El Nino", gold: web_search, tags: [held, adv]}
+  - {q: "how do I read a candlestick chart", gold: web_search, tags: [held, adv]}
+  - {q: "what's a good stock trading app for beginners", gold: web_search, tags: [held, adv]}
+  - {q: "欧元区为什么要统一货币", gold: web_search, tags: [held, adv]}
+  - {q: "最适合冬天旅游的地方", gold: web_search, tags: [held, adv]}
+  - {q: "how do meteorologists predict hurricane paths", gold: web_search, tags: [held, adv]}
+  - {q: "美联储加息对汇率有什么影响", gold: web_search, tags: [held, adv]}
+  - {q: "climate of Iceland by month", gold: web_search, tags: [held, adv]}
+  - {q: "who invented the telephone", gold: web_search, tags: [held]}
+  - {q: "葡萄牙的首都是哪里", gold: web_search, tags: [held]}
+  - {q: "react vs svelte performance", gold: web_search, tags: [held]}
+  - {q: "how does a heat pump work", gold: web_search, tags: [held]}
+  - {q: "新加坡留学费用", gold: web_search, tags: [held]}
+  - {q: "side effects of ibuprofen", gold: web_search, tags: [held]}
+  - {q: "SpaceX Starship latest launch", gold: web_search, tags: [held]}
+  - {q: "最近有什么好看的电影", gold: web_search, tags: [held]}
+  - {q: "你周末有什么计划吗", gold: direct_response, tags: [held]}
+  - {q: "can you rewrite this tweet to be funnier", gold: direct_response, tags: [held]}
+  - {q: "帮我把这句话改成更正式的语气：谢谢你的帮忙", gold: direct_response, tags: [held]}
+  - {q: "what is 12% of 850?", gold: direct_response, tags: [held]}
+  - {q: "给我出三道关于分数的数学题", gold: direct_response, tags: [held]}
+  - {q: "write a limerick about a cat", gold: direct_response, tags: [held]}
+  - {q: "how do you pronounce quinoa?", gold: direct_response, tags: [held]}
+  - {q: "我今天好累", gold: direct_response, tags: [held]}
+  - {q: "what do you think is the meaning of life", gold: direct_response, tags: [held]}
+  - {q: "what are you up to later?", gold: direct_response, tags: [held, adv]}
+  - {q: "what languages do you support", gold: about_omni, tags: [held]}
+  - {q: "你支持哪些语言", gold: about_omni, tags: [held]}
+  - {q: "how much does Omni cost per month", gold: about_omni, tags: [held]}
+  - {q: "can you browse the internet", gold: about_omni, tags: [held]}
+  - {q: "你能联网搜索吗", gold: about_omni, tags: [held]}
+  - {q: "which company trained your model", gold: about_omni, tags: [held]}
+  - {q: "你的知识截止到什么时候", gold: about_omni, tags: [held]}
+  - {q: "are my chats private on Omni", gold: about_omni, tags: [held]}
+  - {q: "我的对话数据会被保存吗", gold: about_omni, tags: [held]}
+  - {q: "will it be sunny in Lisbon this weekend", gold: weather, tags: [held]}
+  - {q: "巴黎这几天下雨吗", gold: weather, tags: [held]}
+  - {q: "how humid is it in Miami right now", gold: weather, tags: [held]}
+  - {q: "明天会不会很冷", gold: weather, tags: [held]}
+  - {q: "wind chill in Minneapolis today", gold: weather, tags: [held]}
+  - {q: "Intel shares today", gold: stock, tags: [held]}
+  - {q: "how's Netflix stock after the report", gold: stock, tags: [held]}
+  - {q: "阿里巴巴股价今天怎么样", gold: stock, tags: [held]}
+  - {q: "what is Nvidia trading at", gold: stock, tags: [held]}
+  - {q: "小米集团最近股价", gold: stock, tags: [held]}
+  - {q: "convert 250 CAD to euros", gold: currency, tags: [held]}
+  - {q: "人民币对日元的汇率是多少", gold: currency, tags: [held]}
+  - {q: "how much is a pound in rupees", gold: currency, tags: [held]}
+  - {q: "新西兰元兑美元", gold: currency, tags: [held]}
+  - {q: "bitcoin to usd today", gold: web_search, tags: [held, adv]}

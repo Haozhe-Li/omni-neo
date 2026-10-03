@@ -232,6 +232,19 @@ async def _embed_query(text: str) -> tuple[list[float], dict]:
     return d["embeddings"][0], s["embeddings"][0]
 
 
+async def embed_dense(texts: list[str]) -> list[list[float]]:
+    """Dense vectors only, for callers that compare short strings rather than
+    index them (core/intent_router.py). Same service, retries and model check as
+    the indexing path; one request, so the caller batches."""
+    d = await _post_async(
+        "/embed/dense/text",
+        {"texts": [t[:_MAX_TEXT_CHARS] for t in texts], "model": DENSE_MODEL},
+    )
+    if d["model"] != DENSE_MODEL or d["dim"] != DENSE_DIM:
+        raise RuntimeError(f"unexpected dense model from service: {d['model']} {d['dim']}")
+    return d["embeddings"]
+
+
 # ── indexing ────────────────────────────────────────────────────────────────
 
 

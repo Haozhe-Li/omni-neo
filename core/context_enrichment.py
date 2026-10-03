@@ -7,6 +7,9 @@ the result into the ``<context_enrichment>`` block of the user message (see
 
 Design constraints, all deliberate:
 
+- **Router first, model second.** The embedding intent router (core/intent_router.py)
+  decides outright when it is sure; only "unsure" and the labels that need arguments
+  extracted (weather, stock, currency) reach the model — see `route_intent`.
 - **Single call, no ReAct.** The model emits one JSON object and nothing else;
   *this* module matches it to a tool and calls it. The tool result is never fed
   back to the scout — there is no loop to run away.
@@ -56,6 +59,7 @@ from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.agent import SKILL_FILES
+from core.intent_router import RouteResult, get_ready_router
 from core.llm import context_enrich_llm
 from core.utils.redis_client import get_async_redis
 from core.tools.adapters import (
@@ -359,23 +363,17 @@ _ACTIONS: dict[str, _Action] = {
 
 # ── Result ──────────────────────────────────────────────────────────────────
 
-# ── Deterministic shortcut ──────────────────────────────────────────────────
-# A short question is the one query shape whose routing needs no judgement: it
-# is a lookup, the search query is the question itself, and the scout model has
-# never decided otherwise on one. Skipping the classification call takes ~0.4s
-# off the front of the turn — and this sits on the critical path, so that is
-# 0.4s the user spends watching an empty screen.
+# ── Keyword shortcut (retired) ──────────────────────────────────────────────
+# Everything from here down to `shortcut_decision` is the keyword router that used
+# to sit in front of the scout. `enrich_context` no longer calls it: it is replaced
+# by the embedding intent router (core/intent_router.py, see `route_intent` below),
+# which measured 85% vs the keyword stage's 58% precision on evals/scout_routing.
+# It stays only because `evals/scout_routing/run.py` scores it as the baseline the
+# router has to beat. Delete it together with that baseline.
 #
-# The phrase lists below are deliberately broad. A false positive costs one
-# search on a query that did not need one; a miss costs every user asking that
-# phrasing the full classification latency, forever. The two are not
-# symmetric, so the lists are tuned for recall and the blockers below carry the
-# precision.
-#
-# What still goes through the model: anything the blockers catch, and anything
-# no phrase matches. The shape of a weather, stock or FX request is not safely
-# decidable by pattern *for argument extraction*, and a wrong deterministic
-# answer there is worse than a slower right one.
+# Original rationale, kept for the record: a short question is a lookup, the search
+# query is the question itself, and skipping the classification call took ~0.4s off
+# the front of the turn.
 
 _ASK_PATTERNS = re.compile(
     r"""(?ix)
@@ -538,6 +536,50 @@ def shortcut_decision(query: str) -> EnrichmentDecision | None:
     ):
         return None
     return EnrichmentDecision(action="web_search", search_query=q)
+
+
+# ── Intent router ───────────────────────────────────────────────────────────
+# One embedding request (~80-100ms) replaces the scout LLM call (~300ms) whenever it
+# is sure. Its timeout is deliberately tight: it is a shortcut, and a slow shortcut
+# is worse than none — on timeout or any error the turn simply goes to the LLM.
+_ROUTER_TIMEOUT_S = 0.4
+
+
+async def route_intent(query: str) -> tuple[EnrichmentDecision | None, RouteResult | None]:
+    """A decision the router can make on its own, plus what it saw; (None, ...) means
+    "ask the LLM scout".
+
+    The router answers *which kind of turn this is*. That is the whole decision for
+    three labels. It is not enough for the other two cases, which go to the LLM:
+
+    - weather / stock / currency: the tool needs a city, a ticker, a currency pair,
+      and extracting those is the scout's job.
+    - web_search on a long query: the search string should be a short, broad
+      reformulation, not the user's paragraph pasted in.
+
+    The router unavailable (still building, timed out, embedding service down) is
+    the same as "unsure": never an error, always the LLM.
+    """
+    router = get_ready_router()
+    if router is None:
+        return None, None
+    try:
+        r = await asyncio.wait_for(router.route(query), timeout=_ROUTER_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning("[context_enrichment] intent router timed out after %ss", _ROUTER_TIMEOUT_S)
+        return None, None
+    except Exception as exc:
+        logger.warning("[context_enrichment] intent router failed: %r", exc)
+        return None, None
+
+    q = query.strip()
+    if r.label == "about_omni":
+        return EnrichmentDecision(action="about_omni"), r
+    if r.label == "direct_response":
+        return EnrichmentDecision(action="direct_response"), r
+    if r.label == "web_search" and word_count(q) < _SHORTCUT_WORD_LIMIT:
+        return EnrichmentDecision(action="web_search", search_query=q), r
+    return None, r
 
 
 @dataclass
@@ -737,13 +779,14 @@ async def enrich_context(
         return Enrichment()
 
     t0 = time.monotonic()
-    decision = shortcut_decision(query)
-    shortcut = decision is not None
+    decision, routed = await route_intent(query)
+    via = "router" if decision is not None else "llm"
     if decision is None:
         decision = await classify(query, user_location, user_local_datetime)
     if decision is None:
         return Enrichment()
     t_classify = time.monotonic() - t0
+    seen = f"{routed.top_label}:{routed.score:.2f}" if routed else "n/a"
 
     # `about_omni` short-circuits here: no tool, no citations, no widget — just
     # the skill file's own text, so it skips the `_ACTIONS` whitelist (which
@@ -754,8 +797,8 @@ async def enrich_context(
             logger.warning("[context_enrichment] about-omni skill file missing — ignored")
             return Enrichment()
         logger.info(
-            "[context_enrichment] %.2fs (%s %.2fs) action=about_omni",
-            time.monotonic() - t0, "shortcut" if shortcut else "classify", t_classify,
+            "[context_enrichment] %.2fs (%s %.2fs) action=about_omni router=%s",
+            time.monotonic() - t0, via, t_classify, seen,
         )
         return Enrichment(action="about_omni", text=f"{_PREAMBLE_ABOUT_OMNI}\n\n{body}")
 
@@ -766,7 +809,9 @@ async def enrich_context(
     if action is None:
         if decision.action != "direct_response":
             logger.warning("[context_enrichment] unknown action %r — ignored", decision.action)
-        logger.info("[context_enrichment] %.2fs action=direct_response", t_classify)
+        logger.info(
+            "[context_enrichment] %.2fs (%s) action=direct_response router=%s", t_classify, via, seen
+        )
         return Enrichment()
     if not action.ready(decision):
         logger.warning(
@@ -820,8 +865,7 @@ async def enrich_context(
         events.append({"type": "widget", **widget})
 
     logger.info(
-        "[context_enrichment] %.2fs (%s %.2fs) action=%s tool=%s args=%s sources=%d",
-        time.monotonic() - t0, "shortcut" if shortcut else "classify",
-        t_classify, decision.action, action.tool, args, len(sources),
+        "[context_enrichment] %.2fs (%s %.2fs) action=%s tool=%s args=%s sources=%d router=%s",
+        time.monotonic() - t0, via, t_classify, decision.action, action.tool, args, len(sources), seen,
     )
     return Enrichment(action=decision.action, text=text, events=events, sources=sources)

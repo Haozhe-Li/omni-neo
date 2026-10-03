@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.agent import SYSTEM_PROMPTS, initialize_agents
 from core.database import pg
 from core.database.checkpointer import setup_checkpointer, teardown_checkpointer
+from core.intent_router import warm_intent_router
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.redis_client import close_async_redis
 from core.voice.agent import initialize_voice_agent
@@ -25,6 +26,10 @@ async def lifespan(app: FastAPI):
     await setup_checkpointer()
     initialize_agents()
     initialize_voice_agent()
+    # Build the context-enrichment intent router now, so no request pays the 1-2s.
+    # Bounded and non-fatal: if the embedding service is down the app still starts
+    # and every turn uses the LLM scout until the router builds (core/intent_router.py).
+    await warm_intent_router()
     yield
     await teardown_checkpointer()
     await close_async_redis()
