@@ -167,9 +167,9 @@ cases:
   - {q: "Japan visa requirements for Chinese citizens", gold: web_search}
   - {q: "Claude 5 release", gold: web_search}
   - {q: "特斯拉2026年固态电池进展如何", gold: web_search}
-  - {q: "深度研究一下海狮和海豹的区别", gold: web_search}
+  - {q: "深度研究一下海狮和海豹的区别", gold: skill:web-research}
   - {q: "量子计算最新进展", gold: web_search}
-  - {q: "做一份关于固态电池的行业调研", gold: web_search}
+  - {q: "做一份关于固态电池的行业调研", gold: skill:web-research}
   - {q: "langgraph checkpoint 配置", gold: web_search}
   - {q: "东京三日游行程", gold: web_search}
   - {q: "OpenAI o3 benchmark results", gold: web_search}
@@ -318,3 +318,24 @@ cases:
   - {q: "how much is a pound in rupees", gold: currency, tags: [held]}
   - {q: "新西兰元兑美元", gold: currency, tags: [held]}
   - {q: "bitcoin to usd today", gold: web_search, tags: [held, adv]}
+
+  # ───────────────────────── skill:web-research ─────────────────────────
+  # 明确要求「深入/系统/全面」研究的多步调研任务 -> 自动加载 web-research skill，
+  # 效果等同于用户在 skill picker 里手动勾选。与 web_search 的区别是「要求深度」而非话题；
+  # 同话题的一句话提问仍是 web_search（见下方 hard negatives，tags: adv）。
+  - {q: "deep research on the commercial viability of fusion energy", gold: skill:web-research}
+  - {q: "do an in-depth investigation of the BNPL industry", gold: skill:web-research}
+  - {q: "I want a comprehensive, sourced report on the gig economy", gold: skill:web-research}
+  - {q: "thoroughly research the pros and cons of heat pumps vs gas furnaces", gold: skill:web-research}
+  - {q: "dig deep into how Netflix's recommendation system evolved", gold: skill:web-research}
+  - {q: "深入研究一下欧洲碳关税对中国出口的影响", gold: skill:web-research}
+  - {q: "帮我系统调研一下国内咖啡连锁品牌的竞争格局", gold: skill:web-research}
+  - {q: "对印度制造业崛起做一份详细的分析报告", gold: skill:web-research}
+  - {q: "深度调研：生成式AI在医疗影像领域的应用现状", gold: skill:web-research}
+  - {q: "全面研究一下房地产税对房价的影响，需要引用来源", gold: skill:web-research}
+  - {q: "what does the research say about creatine and memory", gold: web_search, tags: [adv]}
+  - {q: "is there a good study on four-day work weeks", gold: web_search, tags: [adv]}
+  - {q: "who is the lead researcher on the CRISPR patent case", gold: web_search, tags: [adv]}
+  - {q: "我想研究生毕业后去哪个城市发展好", gold: web_search, tags: [adv, low]}
+  - {q: "帮我查一下深度学习入门要看哪些书", gold: web_search, tags: [adv]}
+  - {q: "写一份研究计划的开头段落，主题是城市热岛效应", gold: direct_response, tags: [adv]}

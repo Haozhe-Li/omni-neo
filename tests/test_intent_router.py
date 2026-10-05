@@ -127,7 +127,8 @@ def test_rejects_label_with_fewer_than_three_examples():
 
 def test_shipped_examples_are_well_formed():
     assert set(INTENT_EXAMPLES) == {
-        "about_omni", "weather", "stock", "currency", "web_search", "direct_response"
+        "about_omni", "weather", "stock", "currency", "web_search", "direct_response",
+        "skill:web-research",
     }
     seen: dict[str, str] = {}
     for label, items in INTENT_EXAMPLES.items():

@@ -10,6 +10,9 @@ Design constraints, all deliberate:
 - **Router first, model second.** The embedding intent router (core/intent_router.py)
   decides outright when it is sure; only "unsure" and the labels that need arguments
   extracted (weather, stock, currency) reach the model — see `route_intent`.
+- **Skills can be routed to.** A ``skill:<name>`` label means the request is the kind
+  a skill exists for ("深度研究一下…" -> web-research). The router alone decides, and the
+  result is identical to the user having picked that skill — see `requested_skill_enrichment`.
 - **Single call, no ReAct.** The model emits one JSON object and nothing else;
   *this* module matches it to a tool and calls it. The tool result is never fed
   back to the scout — there is no loop to run away.
@@ -59,6 +62,7 @@ from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.agent import SKILL_FILES
+from core.intent_examples import SKILL_LABEL_PREFIX
 from core.intent_router import RouteResult, get_ready_router
 from core.llm import context_enrich_llm
 from core.utils.redis_client import get_async_redis
@@ -597,6 +601,9 @@ class Enrichment:
     text: str = ""
     events: list[dict] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
+    # Set when a skill was loaded into ``text`` (picked or routed): the caller
+    # also names it in `<requested_skill>`, so the turn reads the same either way.
+    skill: str | None = None
 
 
 # The tool call is folded into the first line rather than printed under its own
@@ -642,6 +649,13 @@ _PREAMBLE_REQUESTED_SKILL = (
     "picked it before asking. Follow its instructions for this turn — no need "
     "to read_file it again."
 )
+# Same, when the intent router matched the request to the skill instead. Worded
+# on what the request *is*, not on a pick that never happened.
+_PREAMBLE_ROUTED_SKILL = (
+    "The {skill} skill was already loaded for you, because this request is the "
+    "kind it exists for. Follow its instructions for this turn — no need to "
+    "read_file it again."
+)
 # The skill file runs ~8k chars today; this leaves headroom for it to grow
 # before silently chopping an FAQ answer in half. Well above `_MAX_JSON_CHARS`
 # because this is prose, not a terse payload — a truncated sentence here is
@@ -670,8 +684,9 @@ def _about_omni_text() -> str:
     return _skill_body(_ABOUT_OMNI_SKILL_PATH)
 
 
-def requested_skill_enrichment(skill: str) -> Enrichment:
-    """Eagerly load an explicitly-picked skill instead of running the scout.
+def requested_skill_enrichment(skill: str, *, routed: bool = False) -> Enrichment:
+    """Eagerly load a skill instead of running the scout: one the user explicitly
+    picked, or (``routed=True``) one the intent router matched to the request.
 
     Two things this replaces:
 
@@ -695,12 +710,18 @@ def requested_skill_enrichment(skill: str) -> Enrichment:
     downstream as "no enrichment") if `skill` doesn't resolve to a real skill
     file — the `<requested_skill>` tag is still there either way, so the
     model can fall back to reading it itself.
+
+    The two callers differ only in the sentence that says why it was loaded.
+    The events, the block and the `<requested_skill>` tag the caller adds are
+    the same, which is the point: a routed skill must be indistinguishable to
+    the frontend and the agent from a picked one.
     """
     path = f"/skills/{skill}/SKILL.md"
     body = _skill_body(path)
     if not body:
         return Enrichment()
-    text = f"{_PREAMBLE_REQUESTED_SKILL.format(skill=skill)}\n\n{body}"
+    preamble = _PREAMBLE_ROUTED_SKILL if routed else _PREAMBLE_REQUESTED_SKILL
+    text = f"{preamble.format(skill=skill)}\n\n{body}"
     # Deliberately shaped as a plain `read_file` call, not a distinct event
     # type of its own — this stands in for the model reading the skill
     # itself (see the module's docstring above), so on the frontend it must
@@ -711,7 +732,10 @@ def requested_skill_enrichment(skill: str) -> Enrichment:
     # any step the agent's own tool loop produces, same as an early
     # self-initiated read would appear.
     events = [{"type": "tool_call", "tool": "read_file", "args": {"file_path": path}}]
-    return Enrichment(action="requested_skill", text=text, events=events)
+    return Enrichment(
+        action="routed_skill" if routed else "requested_skill",
+        text=text, events=events, skill=skill,
+    )
 
 
 # Long enough that a still-active thread never sees a spurious re-inject; short
@@ -741,6 +765,13 @@ async def skill_already_delivered(thread_id: str, skill: str) -> bool:
     key = f"skill_delivered:{thread_id}:{skill}"
     is_new = await r.set(key, "1", nx=True, ex=_SKILL_DELIVERED_TTL_S)
     return not is_new
+
+
+def routed_skill(routed: RouteResult | None) -> str | None:
+    """The skill a router result decided on, or None for any other outcome."""
+    if routed is not None and routed.label and routed.label.startswith(SKILL_LABEL_PREFIX):
+        return routed.label[len(SKILL_LABEL_PREFIX):]
+    return None
 
 
 _llm = context_enrich_llm.with_structured_output(EnrichmentDecision, method="json_schema")
@@ -780,13 +811,28 @@ async def enrich_context(
 
     t0 = time.monotonic()
     decision, routed = await route_intent(query)
+    seen = f"{routed.top_label}:{routed.score:.2f}" if routed else "n/a"
+
+    # A skill label is the router's whole answer (no arguments to extract), so it
+    # never reaches the scout. A skill whose file is missing falls through to the
+    # scout like an unsure router, rather than losing the turn's enrichment.
+    skill = routed_skill(routed)
+    if skill:
+        skilled = requested_skill_enrichment(skill, routed=True)
+        if skilled.text:
+            logger.info(
+                "[context_enrichment] %.2fs (router) action=routed_skill skill=%s router=%s",
+                time.monotonic() - t0, skill, seen,
+            )
+            return skilled
+        logger.warning("[context_enrichment] routed skill %r has no skill file — asking the scout", skill)
+
     via = "router" if decision is not None else "llm"
     if decision is None:
         decision = await classify(query, user_location, user_local_datetime)
     if decision is None:
         return Enrichment()
     t_classify = time.monotonic() - t0
-    seen = f"{routed.top_label}:{routed.score:.2f}" if routed else "n/a"
 
     # `about_omni` short-circuits here: no tool, no citations, no widget — just
     # the skill file's own text, so it skips the `_ACTIONS` whitelist (which

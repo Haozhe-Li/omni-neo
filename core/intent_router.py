@@ -59,7 +59,7 @@ from typing import Awaitable, Callable
 
 import numpy as np
 
-from core.intent_examples import INTENT_EXAMPLES
+from core.intent_examples import INTENT_EXAMPLES, SKILL_LABEL_PREFIX
 from core.utils import vector_sources
 from core.utils.redis_client import get_async_redis
 
@@ -85,10 +85,19 @@ MIN_PROB_BY_LABEL: dict[str, float] = {
 # a 0.8 probability bar a floor of 0.5 removed one error and 21 correct decisions,
 # which is inside the noise of a set this size.
 MIN_COSINE = float(os.getenv("INTENT_ROUTER_MIN_COSINE", "0.0"))
+# Skill labels (`skill:<name>`, see core/intent_examples.py) get the highest bar of
+# all: a false positive loads a ~12k-char workflow and sends the agent off on a
+# multi-step research run for what was a one-shot question, while a miss costs
+# nothing — the agent can still load the skill itself. Not yet calibrated: there
+# are too few skill cases in evals/scout_routing to read a threshold off, so this
+# is a conservative guess; re-run `run.py --router` before lowering it.
+MIN_PROB_SKILL = float(os.getenv("INTENT_ROUTER_MIN_PROB_SKILL", "0.8"))
 
 
 def min_prob_for(label: str) -> float:
     """The probability the head must reach before a decision for `label` stands."""
+    if label.startswith(SKILL_LABEL_PREFIX):
+        return MIN_PROB_SKILL
     return MIN_PROB_BY_LABEL.get(label, MIN_PROB)
 
 
