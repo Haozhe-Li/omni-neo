@@ -11,6 +11,12 @@ LLM's job):
 
     about_omni | weather | stock | currency | web_search | direct_response
 
+plus one label per auto-triggerable skill, named ``skill:<skill-dir-name>``
+(``SKILL_LABEL_PREFIX``). A skill label is decided by the router alone and loads
+that skill exactly as if the user had picked it in the skill picker
+(`requested_skill_enrichment` in core/context_enrichment.py). To make another skill
+auto-triggerable, add a ``"skill:<name>"`` key here — nothing else changes.
+
 Writing good anchors:
 
 - Narrow labels (weather, stock, currency, about_omni) form tight clusters, so a
@@ -27,6 +33,8 @@ Writing good anchors:
 """
 
 from __future__ import annotations
+
+SKILL_LABEL_PREFIX = "skill:"
 
 INTENT_EXAMPLES: dict[str, list[str]] = {
     "about_omni": [
@@ -143,6 +151,43 @@ INTENT_EXAMPLES: dict[str, list[str]] = {
         "the economy of Germany explained",
         "best time to visit Thailand",
         "冬天适合去哪里旅游",
+        # Hard negatives for skill:web-research: they borrow its vocabulary
+        # (research, study, analysis, 研究) but ask a one-shot question.
+        "what does the research say about coffee and sleep",
+        "is there a study linking screen time to myopia",
+        "quick search: who won the 2022 world cup",
+        "just look up the population of Brazil",
+        "what is the difference between a literature review and a survey",
+        "how do I do research for a school project",
+        "哪里可以查到上市公司的年报",
+        "帮我查一下今年高考时间",
+        "研究表明咖啡对身体有害吗",
+        "什么是深度学习",
+    ],
+    # Explicit asks for a multi-step research job — the same turns a user would
+    # reach for the "web research" skill picker on. The signal is the *request
+    # for depth* ("deeply research", "comprehensive report", "调研"), never the
+    # topic, so the topics here are deliberately all over the place. A plain
+    # question about a topic stays web_search; its hard negatives live there.
+    "skill:web-research": [
+        "do a deep dive on the state of solid-state batteries",
+        "deeply research the EV charging market for me",
+        "I need a thorough, well-sourced investigation into microplastics and health",
+        "research this topic in depth and write me a full report",
+        "give me a comprehensive analysis of the global semiconductor supply chain",
+        "investigate how the major cloud providers compare on pricing and lock-in",
+        "can you do some serious research on remote work productivity",
+        "put together an in-depth research report on the history of cryptography",
+        "do a deep research on vector databases",
+        "run a multi-source literature review on intermittent fasting",
+        "深度研究一下固态电池的技术路线",
+        "帮我深入调研一下新能源汽车市场",
+        "做一份关于人工智能芯片行业的详细调研报告",
+        "请对量子计算的商业化前景做一次全面的研究",
+        "我想系统地了解一下东南亚电商格局，帮我做个深度分析",
+        "深度调研一下国内大模型创业公司的竞争格局",
+        "帮我全面调查一下远程办公对生产力的影响，要有来源",
+        "deep research: 日本老龄化对经济的影响",
     ],
     "direct_response": [
         "translate this sentence into Spanish",

@@ -156,3 +156,79 @@ def test_empty_query_is_a_no_op(monkeypatch):
     router = FakeRouter(result("web_search"))
     Harness(monkeypatch, router)
     assert run(ce.enrich_context("   ")).text == "" and router.calls == 0
+
+
+# ── skill labels ────────────────────────────────────────────────────────────
+
+SKILL_BODY = "WEB RESEARCH WORKFLOW"
+
+
+def with_skill_file(monkeypatch, path="/skills/web-research/SKILL.md"):
+    monkeypatch.setattr(
+        ce, "SKILL_FILES", {path: {"content": f"---\nname: web-research\n---\n\n{SKILL_BODY}"}}
+    )
+
+
+def test_skill_label_loads_the_skill_without_the_llm_or_a_search(monkeypatch):
+    with_skill_file(monkeypatch)
+    h = Harness(monkeypatch, FakeRouter(result("skill:web-research")))
+    out = run(ce.enrich_context("深度研究一下固态电池"))
+    assert h.llm_calls == [] and h.tool_calls == []
+    assert out.action == "routed_skill" and out.skill == "web-research"
+    assert SKILL_BODY in out.text and "kind it exists for" in out.text
+    assert out.sources == []
+
+
+def test_routed_skill_emits_the_same_read_file_event_as_a_picked_one(monkeypatch):
+    with_skill_file(monkeypatch)
+    Harness(monkeypatch, FakeRouter(result("skill:web-research")))
+    routed = run(ce.enrich_context("deep research on vector databases"))
+    picked = ce.requested_skill_enrichment("web-research")
+    assert routed.events == picked.events == [
+        {"type": "tool_call", "tool": "read_file", "args": {"file_path": "/skills/web-research/SKILL.md"}}
+    ]
+    assert picked.skill == "web-research" and "explicitly picked" in picked.text
+    # Same body either way; only the sentence saying why differs.
+    assert routed.text.split("\n\n", 1)[1] == picked.text.split("\n\n", 1)[1]
+
+
+def test_unsure_skill_route_is_not_a_skill(monkeypatch):
+    with_skill_file(monkeypatch)
+    decision = ce.EnrichmentDecision(action="web_search", search_query="vector databases")
+    h = Harness(monkeypatch, FakeRouter(result(None, top="skill:web-research", score=0.5)), scout_decision=decision)
+    out = run(ce.enrich_context("tell me about vector databases"))
+    assert h.llm_calls == ["tell me about vector databases"]
+    assert out.skill is None and out.action == "web_search"
+
+
+def test_skill_label_with_a_missing_skill_file_falls_back_to_the_scout(monkeypatch):
+    monkeypatch.setattr(ce, "SKILL_FILES", {})
+    decision = ce.EnrichmentDecision(action="web_search", search_query="solid state batteries")
+    h = Harness(monkeypatch, FakeRouter(result("skill:web-research")), scout_decision=decision)
+    out = run(ce.enrich_context("deep research solid state batteries"))
+    assert h.llm_calls == ["deep research solid state batteries"]
+    assert out.skill is None and out.action == "web_search"
+
+
+def test_routed_skill_only_reads_skill_labels():
+    assert ce.routed_skill(result("skill:web-research")) == "web-research"
+    for r in (result("web_search"), result(None, top="skill:web-research"), None):
+        assert ce.routed_skill(r) is None
+
+
+def test_skill_labels_have_their_own_higher_probability_bar():
+    from core import intent_router as ir
+
+    assert ir.min_prob_for("skill:web-research") == ir.MIN_PROB_SKILL
+    assert ir.MIN_PROB_SKILL >= ir.min_prob_for("web_search") > ir.MIN_PROB
+
+
+def test_the_shipped_anchors_define_a_web_research_skill_that_exists_on_disk():
+    from pathlib import Path
+
+    from core.intent_examples import INTENT_EXAMPLES, SKILL_LABEL_PREFIX
+
+    skills = [k[len(SKILL_LABEL_PREFIX):] for k in INTENT_EXAMPLES if k.startswith(SKILL_LABEL_PREFIX)]
+    assert "web-research" in skills
+    for name in skills:
+        assert (Path(__file__).parent.parent / "skills" / name / "SKILL.md").is_file(), name

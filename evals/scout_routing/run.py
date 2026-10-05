@@ -57,7 +57,7 @@ logging.disable(logging.WARNING)
 import yaml  # noqa: E402
 
 HERE = Path(__file__).parent
-INTENTS = ["web_search", "weather", "stock", "currency", "about_omni", "direct_response"]
+INTENTS = ["web_search", "weather", "stock", "currency", "about_omni", "direct_response", "skill:web-research"]
 WIDGET_INTENTS = {"weather", "stock", "currency"}
 # What the keyword stage is able to say. Everything else is, by design, a defer.
 KEYWORD_DECIDES = {"web_search", "about_omni"}
@@ -318,6 +318,10 @@ def router_error_kind(gold: str, pred: str) -> str:
         return "wrong-widget"
     if pred == "about_omni":
         return "wrong-omni-block"
+    if pred.startswith("skill:"):
+        return "wrong-skill"  # loads a workflow and a research run nobody asked for
+    if gold.startswith("skill:"):
+        return "missed-skill"  # benign-ish: the agent can still load the skill itself
     if pred == "web_search":
         return "wasted-search"
     return "lost-enrichment"  # pred direct_response on a query that wanted a lookup

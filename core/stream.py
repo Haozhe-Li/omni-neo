@@ -684,7 +684,8 @@ async def _stream_agent(
         #    first turn *this skill* is active for *this thread*; see
         #    `skill_already_delivered`.
         # 3. The pre-flight scout (`enrich_context`), first turn only — see
-        #    below.
+        #    below. Its router may answer with a skill instead of a lookup
+        #    (`Enrichment.skill`), which is then treated as case 2.
         #
         # The scout is on the critical path by necessity: whatever it finds
         # has to be inside the user message the agent is about to read, so
@@ -717,6 +718,16 @@ async def _stream_agent(
                 user_location=user_location,
                 user_local_datetime=user_local_datetime,
             )
+            # The router may have matched the request to a skill ("深度研究一下…"
+            # -> web-research). From here on that is the same as the user having
+            # picked it: `<requested_skill>` names it, the content is already in
+            # `<context_enrichment>`, and the read_file event was emitted above.
+            # Recorded as delivered too, so picking the same skill on a later
+            # turn doesn't inject it a second time.
+            if enrichment.skill:
+                skill = enrichment.skill
+                if thread_id is not None:
+                    await skill_already_delivered(thread_id, skill)
         content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             query,
