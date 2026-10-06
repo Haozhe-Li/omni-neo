@@ -51,6 +51,7 @@ from core.database.db_threads_control import (
 )
 from core.utils.timing import Timing
 from core.database.db_user_memories import get_user_memory, save_user_memory
+from core.database.db_sft_examples import adelete_examples_from_turn
 from core.memories_update_llm import get_update_memories
 from core.routers.state import (
     db_executor,
@@ -801,6 +802,13 @@ async def api_rewind_thread(
     target, target_turn = await _find_rewind_target(agent, thread_id, body.turn)
     if target is None:
         raise HTTPException(status_code=404, detail="No rewindable checkpoint found.")
+
+    # The answer for this turn (and every later one) is about to be replaced or
+    # discarded, so any thumbs-up training example captured from it is stale.
+    try:
+        await adelete_examples_from_turn(thread_id, user_id, target_turn)
+    except Exception as e:
+        logger.warning(f"[rewind] could not clear training examples for {thread_id}: {e}")
 
     # Resolved up front: an edited message is rebuilt through
     # build_message_content below and must carry the same context blocks a

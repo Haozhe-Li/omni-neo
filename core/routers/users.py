@@ -12,6 +12,7 @@ from core.database.db_threads_control import (
     delete_threads_bulk as delete_threads_state_bulk,
 )
 from core.database.db_user_memories import migrate_guest_memory, delete_user_memory
+from core.database.db_sft_examples import delete_user_examples, reassign_examples_user
 from core.database.db_user_files import get_user_file_buckets, delete_user_files
 from core.database.db_user_usage import get_usage, delete_user_usage
 from core.database.db_redeem_codes import redeem_code
@@ -116,6 +117,7 @@ def api_merge_guest(
     # Mirror the reassignment in threads_control so retention rules apply correctly
     reassign_threads_user(body.guest_id, user_id)
     migrate_guest_memory(user_id, body.guest_id)
+    reassign_examples_user(body.guest_id, user_id)
     # Signing in is an upgrade, not a punishment: drop the guest's usage
     # rather than carrying its (much lower) tier's counters over.
     delete_user_usage(body.guest_id)
@@ -128,7 +130,7 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
     Permanently erase every piece of data associated with this user_id:
     all threads (LangGraph checkpoints, cached citations in Redis, and the
     Qdrant vector index), every uploaded file (DB rows + S3 objects), the
-    long-term memory document.
+    long-term memory document, and any thumbs-up training examples.
 
     Irreversible. Published "pages" live in the frontend's own Redis (Upstash)
     and are purged separately by the Next.js /api/unpublish-all route.
@@ -143,6 +145,8 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
     objects_deleted = delete_user_uploads_from_s3(user_id, buckets) if buckets else 0
 
     memory_deleted = delete_user_memory(user_id)
+    # Thumbs-up training examples hold the user's conversations verbatim.
+    examples_deleted = delete_user_examples(user_id)
 
     # important: do not delete usage tracking, otherwise the user will be able to create a new account and get a fresh usage allowance.
     # delete_user_usage(user_id)
@@ -153,4 +157,5 @@ def api_delete_all_user_data(user_id: str = Depends(get_current_user)):
         "files_deleted": files_deleted,
         "s3_objects_deleted": objects_deleted,
         "memory_deleted": memory_deleted,
+        "training_examples_deleted": examples_deleted,
     }

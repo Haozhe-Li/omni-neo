@@ -210,3 +210,72 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task
 -- create_run insert hits this unique index and is treated as a no-op.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_task_runs_qstash_msg
     ON scheduled_task_runs (qstash_message_id) WHERE qstash_message_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- sft_examples / harness_snapshots / sft_images: thumbs-up -> distillation data
+-- ---------------------------------------------------------------------------
+-- A thumbs-up on a teacher-model (luna) answer captures the whole conversation
+-- up to and including that turn, already in the shape the fine-tune consumes
+-- (OpenAI-style messages; see core/sft_capture.py). finetune/rix_gemma/
+-- build_dataset.py turns the rows into the training JSONL.
+--
+-- Deliberately NOT tied to threads_control/user_threads: deleting a thread does
+-- not delete the example. Erasing a user (DELETE /user-data) does.
+--
+-- harness_snapshots: the assembled system prompt + tool schemas the turn was
+-- served under. A LoRA is keyed to exactly one prompt, so every example records
+-- which one; the text is stored once per hash rather than once per example.
+CREATE TABLE IF NOT EXISTS harness_snapshots (
+    harness_hash       VARCHAR(32) PRIMARY KEY,
+    system_prompt      TEXT NOT NULL,
+    tools              JSONB NOT NULL,
+    deepagents_version VARCHAR(32),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- sft_images: image bytes pulled out of the stored messages (which reference
+-- them as omni-image://<sha256>) so a multi-turn thread's repeated image is one
+-- row, and so the example survives the S3 upload being deleted.
+CREATE TABLE IF NOT EXISTS sft_images (
+    sha256     VARCHAR(64) PRIMARY KEY,
+    mime       VARCHAR(100) NOT NULL,
+    data       BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sft_examples (
+    id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    thread_id         VARCHAR(255) NOT NULL,
+    -- The frontend's turn number for the *user* message of this exchange
+    -- (1-indexed, odd) — the same value QueryRequest.turn carries.
+    turn              INTEGER NOT NULL,
+    user_id           VARCHAR(255) NOT NULL,
+    harness_hash      VARCHAR(32) NOT NULL REFERENCES harness_snapshots (harness_hash),
+    -- Model names reported (response_metadata.model_name) by every assistant
+    -- message in the captured prefix. The thumbed turn itself is always the
+    -- teacher — the endpoint refuses otherwise — but earlier turns of a thread
+    -- may have come from another model, and the loss mask covers every
+    -- assistant turn, so the builder filters on this.
+    models_seen       TEXT[] NOT NULL DEFAULT '{}',
+    -- [{role: user|assistant|tool, ...}], no system message (that is the
+    -- snapshot's). Ends on the thumbed assistant answer.
+    messages          JSONB NOT NULL,
+    n_assistant_turns INTEGER NOT NULL DEFAULT 0,
+    n_tool_calls      INTEGER NOT NULL DEFAULT 0,
+    tools_used        TEXT[] NOT NULL DEFAULT '{}',
+    approx_chars      INTEGER NOT NULL DEFAULT 0,
+    -- Privacy / trainability flags, so the builder can exclude without parsing.
+    has_image         BOOLEAN NOT NULL DEFAULT FALSE,
+    has_memory        BOOLEAN NOT NULL DEFAULT FALSE,   -- <user_memory> block present
+    has_attachments   BOOLEAN NOT NULL DEFAULT FALSE,   -- <attached_files> block present
+    compacted         BOOLEAN NOT NULL DEFAULT FALSE,   -- deepagents summarised history: the model saw less than `messages`
+    -- A thumbs-up is a noisy label; this is where a human overrules it.
+    status            VARCHAR(16) NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'accepted', 'rejected')),
+    status_note       TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (thread_id, turn)
+);
+CREATE INDEX IF NOT EXISTS idx_sft_examples_user ON sft_examples (user_id);
+CREATE INDEX IF NOT EXISTS idx_sft_examples_build ON sft_examples (harness_hash, status);

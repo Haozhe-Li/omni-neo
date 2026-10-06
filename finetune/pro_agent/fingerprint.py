@@ -44,98 +44,28 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 dotenv.load_dotenv(ROOT / ".env")
 
-from deepagents import create_deep_agent  # noqa: E402
-from langchain.agents.middleware import AgentMiddleware, ToolCallLimitMiddleware  # noqa: E402
-from langchain_core.utils.function_calling import convert_to_openai_tool  # noqa: E402
-from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
-
-from core.agent import (  # noqa: E402
-    SYSTEM_PROMPT,
-    SKILL_FILES,
-    AGENT_TOOLS,
-    SKILLS_SOURCE,
-    _register_harness_profiles,
-)
+from core.agent import SYSTEM_PROMPT, SKILL_FILES  # noqa: E402
+from core.harness_snapshot import acapture, canonical_tools  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 BLESSED = HERE / "fingerprint.json"
 
 
-class _Captured(Exception):
-    """Raised from the middleware to stop before any model call is made."""
-
-
-class _Capture(AgentMiddleware):
-    """Intercept the fully-assembled request and abort.
-
-    Sits in `wrap_model_call` because that is the last point where the prompt
-    and tool list are exactly what the provider will receive.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.system = ""
-        self.tools: list[dict] = []
-
-    def _grab(self, request) -> None:
-        system = getattr(request, "system_prompt", None)
-        if not system:
-            messages = list(getattr(request, "messages", []) or [])
-            if messages and getattr(messages[0], "type", "") == "system":
-                system = messages[0].content
-        self.system = system or ""
-        specs = []
-        for tool in getattr(request, "tools", None) or []:
-            try:
-                specs.append(convert_to_openai_tool(tool))
-            except Exception:
-                specs.append({"function": {"name": getattr(tool, "name", str(tool))}})
-        self.tools = specs
-        raise _Captured
-
-    def wrap_model_call(self, request, handler):
-        self._grab(request)
-
-    async def awrap_model_call(self, request, handler):
-        self._grab(request)
-
-
 def capture() -> tuple[str, list[dict]]:
     """Assemble the pro agent and return `(system_prompt, tool_schemas)`.
 
-    Uses the real `chat_llm`, not a stub: deepagents resolves its harness profile
-    from the model's `ls_provider`, and an unregistered provider would restore
-    `BASE_AGENT_PROMPT` — fingerprinting a prompt nothing is ever served. No
-    request is made; the middleware aborts first.
+    The assembly itself lives in `core/harness_snapshot.py`, shared with the
+    thumbs-up capture so both read the harness through one implementation.
+    Uses the real `chat_llm`, not a stub — see `acapture` for why.
     """
     import asyncio
 
     from core.llm import chat_llm
 
-    _register_harness_profiles()
-    cap = _Capture()
-    agent = create_deep_agent(
-        name="omni-eval-pro",
-        model=chat_llm,
-        tools=AGENT_TOOLS,
-        system_prompt=SYSTEM_PROMPT,
-        skills=[SKILLS_SOURCE],
-        checkpointer=InMemorySaver(),
-        middleware=[cap, ToolCallLimitMiddleware(run_limit=30)],
-    )
-
-    async def _drive():
-        state = {"messages": [{"role": "user", "content": "x"}], "files": SKILL_FILES}
-        async for _ in agent.astream(state, config={"configurable": {"thread_id": "fp"}}):
-            pass
-
     try:
-        asyncio.run(_drive())
-    except Exception:
-        pass  # _Captured, possibly wrapped by langgraph
-    if not cap.system:
-        raise SystemExit("fingerprint: captured nothing — middleware never ran")
-    return cap.system, cap.tools
+        return asyncio.run(acapture(chat_llm))
+    except RuntimeError as e:
+        raise SystemExit(f"fingerprint: {e}")
 
 
 def _sha(text: str) -> str:
@@ -146,10 +76,7 @@ def compute() -> dict:
     import deepagents
 
     system, tools = capture()
-    # Sorted and separator-normalised so a reordering of the tool list, which
-    # changes nothing the model sees semantically, does not read as drift.
-    tools_canon = json.dumps(sorted(tools, key=lambda t: json.dumps(t, sort_keys=True)),
-                             sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    tools_canon = canonical_tools(tools)
     return {
         "deepagents_version": getattr(deepagents, "__version__", "unknown"),
         "system_prompt_sha": _sha(system),
