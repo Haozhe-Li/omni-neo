@@ -26,6 +26,7 @@ from core.database.db_threads_control import (
     pin_thread as pin_thread_state,
 )
 from core.routers.state import assert_thread_access
+from core.database.db_shared_threads import aget_fork
 
 router = APIRouter(tags=["threads"])
 
@@ -119,6 +120,9 @@ async def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user
             status_code=404, detail="Thread not found or access denied."
         )
     generating = await stream_is_generating(thread_id)
+    # A thread copied from a shared link: the UI greys out regenerate/edit for the
+    # first `inherited_messages` messages, which have no checkpoint history.
+    fork = await aget_fork(thread_id)
     locked_at = row["locked_at"]
     if hasattr(locked_at, "isoformat"):
         locked_at = locked_at.isoformat()
@@ -129,6 +133,7 @@ async def api_get_thread(thread_id: str, user_id: str = Depends(get_current_user
         "locked_reason": row["locked_reason"],
         "locked_at": locked_at,
         "origin": row.get("origin"),
+        "inherited_messages": fork["inherited_messages"] if fork else 0,
     }
 
 

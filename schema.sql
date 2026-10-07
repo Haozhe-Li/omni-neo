@@ -279,3 +279,43 @@ CREATE TABLE IF NOT EXISTS sft_examples (
 );
 CREATE INDEX IF NOT EXISTS idx_sft_examples_user ON sft_examples (user_id);
 CREATE INDEX IF NOT EXISTS idx_sft_examples_build ON sft_examples (harness_hash, status);
+
+-- ---------------------------------------------------------------------------
+-- shared_threads / thread_forks: share a conversation by link
+-- ---------------------------------------------------------------------------
+-- A share is a frozen, Postgres-only snapshot of a thread (core/sharing.py): what
+-- the UI renders, the serialized agent state, the citations, and attachment
+-- metadata. Viewing one needs nothing else. Continuing one forks it into a
+-- private thread for the viewer, which is when its Redis checkpoint, citation
+-- list and Qdrant chunks are built (POST /api/shared/{share_id}/fork).
+--
+-- Deliberately not tied to the source thread: no foreign key, so the owner
+-- deleting or continuing the original leaves the link intact. Revoking a share
+-- deletes the row; forks already made are independent copies and are not touched.
+-- Guests cannot own shares, so these rows are exempt from the guest/user thread
+-- retention sweep by construction.
+CREATE TABLE IF NOT EXISTS shared_threads (
+    share_id         VARCHAR(64) PRIMARY KEY,           -- random, unguessable
+    owner_id         VARCHAR(255) NOT NULL,
+    source_thread_id VARCHAR(255),                       -- informational only
+    title            VARCHAR(255),
+    ui_messages      JSONB NOT NULL,                     -- what the public page renders
+    agent_state      JSONB NOT NULL,                     -- {"messages": [...], "files": {...}}, memory/location stripped
+    citations        JSONB NOT NULL DEFAULT '[]',
+    files_meta       JSONB NOT NULL DEFAULT '[]',        -- user_files metadata for the attachments
+    n_messages       INTEGER NOT NULL DEFAULT 0,
+    size_bytes       INTEGER NOT NULL DEFAULT 0,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_shared_threads_owner ON shared_threads (owner_id, created_at DESC);
+
+-- thread_forks: marks a thread as a copy of a shared one. `inherited_messages` is
+-- how many ui_messages came with it — the turns before that cannot be
+-- regenerated or edited (a fork has one checkpoint, not a history). Cascades with
+-- the thread; share_id has no foreign key so revoking the share leaves forks alone.
+CREATE TABLE IF NOT EXISTS thread_forks (
+    thread_id          VARCHAR(255) PRIMARY KEY REFERENCES threads_control (thread_id) ON DELETE CASCADE,
+    share_id           VARCHAR(64) NOT NULL,
+    inherited_messages INTEGER NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

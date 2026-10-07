@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from core.agent import get_agent
 from core.auth import get_current_user
 from core.database.db_sft_examples import adelete_example, asave_example
+from core.database.db_shared_threads import aget_fork
 from core.database.db_user_threads import get_thread_row
 from core.harness_snapshot import live_harness
 from core.routers.state import assert_thread_access_async
@@ -78,6 +79,10 @@ async def post_feedback(
     # the turns that came before the one that tripped it.
     if row.get("is_locked"):
         return {"status": "skipped", "reason": "thread_locked"}
+    # A copy of a shared conversation holds another person's words under this
+    # user's id; recording it would file those under the wrong account.
+    if await aget_fork(thread_id):
+        return {"status": "skipped", "reason": "forked_thread"}
 
     # Any model's agent will do: they all share this checkpointer and thread
     # state is not per-model (see get_agent).
