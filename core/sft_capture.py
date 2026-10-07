@@ -301,6 +301,15 @@ def build_capture(
     cap.compacted = compacted
     if cap.approx_chars > MAX_APPROX_CHARS:
         raise CaptureError("too_large", f"{cap.approx_chars:,} chars")
+    # Not recorded at all, rather than recorded and filtered at build time:
+    # a <user_memory> block holds personal facts and an attachment is the user's
+    # own file, and both are meant to get their own dedicated training later.
+    # The memory block is injected on a thread's first turn and stays in the
+    # history, so every thumbed turn of such a thread is skipped, not just the first.
+    if cap.has_memory:
+        raise CaptureError("has_memory", "thread carries a <user_memory> block")
+    if cap.has_attachments:
+        raise CaptureError("has_attachments", "thread carries uploaded files")
     if not is_teacher_turn(cap.turn_models):
         raise CaptureError("not_teacher_model", f"turn served by {cap.turn_models or 'unknown'}")
     return cap

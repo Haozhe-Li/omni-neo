@@ -199,10 +199,28 @@ def test_flags_detect_memory_and_attachments():
     plain = sc.build_capture([human("<user_query>q</user_query>"), ai("a")], 1)
     assert not (plain.has_memory or plain.has_attachments or plain.has_image)
 
-    rich = sc.build_capture(
-        [human("<user_memory>\nlives in Urbana\n</user_memory>\n\n<attached_files>x</attached_files>"), ai("a")], 1
+    rich = sc.convert_messages(
+        [human("<user_memory>\nlives in Urbana\n</user_memory>\n\n<attached_files>x</attached_files>"), ai("a")]
     )
     assert rich.has_memory and rich.has_attachments
+
+
+def test_memory_and_attachment_turns_are_not_recorded():
+    with pytest.raises(sc.CaptureError) as e:
+        sc.build_capture([human("<user_memory>\nfacts\n</user_memory>\n\n<user_query>q</user_query>"), ai("a")], 1)
+    assert e.value.code == "has_memory"
+    with pytest.raises(sc.CaptureError) as e:
+        sc.build_capture([human("<attached_files>f</attached_files>\n\n<user_query>q</user_query>"), ai("a")], 1)
+    assert e.value.code == "has_attachments"
+
+
+def test_a_later_turn_of_a_memory_thread_is_skipped_too():
+    # Memory is injected on turn 1 only, but it stays in the history the row carries.
+    msgs = [human("<user_memory>\nfacts\n</user_memory>\n\n<user_query>one</user_query>"), ai("a1"),
+            human("<user_query>two</user_query>"), ai("a2")]
+    with pytest.raises(sc.CaptureError) as e:
+        sc.build_capture(msgs, 3)
+    assert e.value.code == "has_memory"
 
 
 # ── teacher gating ──────────────────────────────────────────────────────────

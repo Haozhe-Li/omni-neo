@@ -37,7 +37,11 @@ are stored once per `harness_hash` in `harness_snapshots`, not per row.
 
 Not recorded (the endpoint answers `status: "skipped"`, the UI never knows):
 other models, voice / scheduled-research threads, safety-locked threads,
-unfinished turns, a turn interrupted mid-tool, anything over 2M chars. Fails
+unfinished turns, a turn interrupted mid-tool, anything over 2M chars, and any
+thread that carries a `<user_memory>` block or uploaded files — those are meant
+to get their own dedicated training later. The memory block is injected on a
+thread's first turn and stays in the history, so *every* turn of such a thread
+is skipped, not just the first. Fails
 closed: a turn with no model attribution is not assumed to be luna.
 
 Taking the thumb back, or thumbing down, deletes the row. A thumbs-down stores
@@ -83,8 +87,9 @@ dense model `gemma_4_31b` serves on Cerebras.
   behaviour the base model lacks most.
 - **A later turn drags earlier ones in.** Thumbing only turn 3 trains on turn 1's
   answer too, approved or not. Rows with a non-luna earlier turn are dropped.
-- **Privacy defaults.** Rows with `<user_memory>` or uploaded files are excluded
-  by default (a model can repeat what it was trained on); location and local
+- **Privacy defaults.** Memory and uploaded-file threads are not recorded at all
+  (the `has_memory` / `has_attachments` columns and the builder's `--include-*`
+  flags only matter for rows captured before that rule); location and local
   time in `<system_reminder>` remain, as in production. Tool results can still
   contain whatever a fetched page said. Whether users have agreed to their
   conversations being used for training is a product/legal question this code

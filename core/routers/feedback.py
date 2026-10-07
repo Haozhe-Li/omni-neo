@@ -34,7 +34,10 @@ router = APIRouter(tags=["feedback"])
 
 # Capture failures that mean "this turn is just not a candidate" (expected,
 # quiet) versus "the two histories disagree" (a bug worth a warning).
-_EXPECTED_SKIPS = {"not_teacher_model", "turn_incomplete", "unpaired_tool_calls", "too_large"}
+_EXPECTED_SKIPS = {
+    "not_teacher_model", "turn_incomplete", "unpaired_tool_calls", "too_large",
+    "has_memory", "has_attachments",
+}
 
 
 class FeedbackRequest(BaseModel):
