@@ -1,5 +1,5 @@
 import re
-from core.utils.data_model import Personalization
+from core.utils.data_model import Personalization, QueryRequest
 
 
 def smart_split(text):
@@ -54,3 +54,37 @@ def format_user_memory(memory_content: str | None) -> str:
         "Long-term facts about this user. Not all of it is relevant to the "
         f"current turn.\n{memory_content}"
     )
+
+
+def memory_injection_due(request: QueryRequest) -> bool:
+    """Whether this turn carries the `<user_memory>` block.
+
+    Memory is durable, cross-turn context: once injected into a thread's first
+    turn, LangGraph's checkpointer keeps that whole message (memory block
+    included) in history forever, so re-injecting it on every later turn is pure
+    duplication — it only has to go in once. `request.turn` is the frontend's
+    1-indexed per-thread turn counter; `turn is None` is a legacy client that
+    doesn't send it (keep injecting every turn to stay safe), and a thread-less
+    direct-stream request has no persisted history at all, so it always needs
+    its own copy.
+
+    The one definition of this rule: POST /chat and the training-data collector
+    (core/routers/collector.py) both call it, so the collector cannot drift from
+    what production feeds the model.
+    """
+    p = request.personalization
+    memory_enabled = bool(p and p.memory_enabled)
+    return memory_enabled and (
+        request.thread_id is None or request.turn is None or request.turn == 1
+    )
+
+
+def build_turn_context(request: QueryRequest, stored_memory: str | None) -> tuple[str, str]:
+    """-> (system_reminder, user_memory) for one turn, exactly as /chat builds them.
+
+    `stored_memory` is only read when `memory_injection_due`; callers may skip the
+    lookup otherwise. Shared with the collector for the same reason as above.
+    """
+    system_reminder = format_system_reminder(request.personalization)
+    user_memory = format_user_memory(stored_memory) if memory_injection_due(request) else ""
+    return system_reminder, user_memory

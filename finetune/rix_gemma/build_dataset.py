@@ -33,7 +33,9 @@ real user's conversation. So the defaults lean toward leaving rows out:
 - **No `<user_memory>`, no attachments** (`--include-memory`, `--include-attachments`
   to override). Memory blocks are personal facts about a real person and uploaded
   documents are their private files; both would be read into the weights, and a
-  model can later repeat what it was trained on.
+  model can later repeat what it was trained on. The exception is rows from the
+  collector page (`source = 'collector'`): their memory was written by an annotator
+  for the purpose, so those rows keep it — that is the point of collecting them.
 - **No images** until the trainer is known to accept them (`--images keep`).
 - **Not rejected.** Rows a reviewer marked 'rejected' (finetune/rix_gemma/curate.py)
   never come through; `--only-accepted` additionally drops the unreviewed.
@@ -147,7 +149,7 @@ def fetch_examples(statuses: list[str]) -> list[dict]:
     from core.database import pg
 
     return pg.fetch_all(
-        "SELECT e.id, e.thread_id, e.turn, e.user_id, e.harness_hash, e.models_seen, e.messages, "
+        "SELECT e.id, e.thread_id, e.turn, e.user_id, e.harness_hash, e.models_seen, e.messages, e.source, "
         "       e.has_image, e.has_memory, e.has_attachments, e.compacted, e.tools_used, "
         "       h.system_prompt, h.tools "
         "FROM sft_examples e JOIN harness_snapshots h USING (harness_hash) "
@@ -243,7 +245,10 @@ def main() -> int:
             dropped["non-teacher turn in history"] += 1
         elif r["compacted"]:
             dropped["history was summarised (model saw less than the row)"] += 1
-        elif r["has_memory"] and not args.include_memory:
+        # Collector rows (source='collector', written by core/routers/collector.py)
+        # carry memory an annotator invented for the example, not a real person's
+        # stored facts, so the privacy reason for this filter does not apply to them.
+        elif r["has_memory"] and r.get("source") != "collector" and not args.include_memory:
             dropped["has <user_memory>"] += 1
         elif r["has_attachments"] and not args.include_attachments:
             dropped["has attachments"] += 1

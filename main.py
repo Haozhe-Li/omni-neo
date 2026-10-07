@@ -14,7 +14,7 @@ from core.intent_router import warm_intent_router
 from core.prompt_guard import register_sensitive_prompts
 from core.utils.redis_client import close_async_redis
 from core.voice.agent import initialize_voice_agent
-from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks, evals, voice, feedback, shares
+from core.routers import chat, uploads, threads, users, misc, memories, scheduled_tasks, evals, voice, feedback, shares, collector
 
 
 @asynccontextmanager
@@ -60,3 +60,4 @@ app.include_router(evals.router)
 app.include_router(voice.router)
 app.include_router(feedback.router)
 app.include_router(shares.router)
+app.include_router(collector.router)
