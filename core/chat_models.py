@@ -2,7 +2,7 @@
 
 This replaced the fast/pro *mode* switch. A mode was a bundle of prompt, turn
 budget and skill roster; a model is just the weights. Everything else — the
-system prompt, the tools, all 9 skills, the 30-call budget — is identical
+system prompt, the tools, all 9 skills, the tool budget — is identical
 across every entry here. That uniformity was originally what let `rix` be
 served by a LoRA (an adapter has exactly one compatible prompt); `rix` is
 offline pending a retrain against the tool adapter layer, but keeping the

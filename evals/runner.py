@@ -148,6 +148,10 @@ async def _run_turn(
                         if isinstance(message, AIMessage):
                             turn.n_llm_turns += 1
                             turn.usage.add_usage(getattr(message, "usage_metadata", None))
+                            # core/tool_budget.py stamps a message it forced out of a
+                            # model with its tools withheld (a spent budget or a loop).
+                            if (message.response_metadata or {}).get("tool_budget"):
+                                turn.hit_run_limit = True
                             body = _text_of(message.content).strip()
                             if message.tool_calls:
                                 if body:

@@ -5,7 +5,7 @@ budget, two identity skills) and a `pro` one (gemma-4-31b, 30 calls, every
 skill). That split is gone. What the user picks now is a model, not a mode —
 see `core/chat_models.py` for the five entries and what each costs — and every
 one of them is assembled here identically: same `SYSTEM_PROMPT`, same 15 tools,
-same 9 skills, same 30-call budget. Only the weights differ.
+same 9 skills, same tool budget (core/tool_budget.py). Only the weights differ.
 
 The uniformity is load-bearing, not tidiness. `rix_30b_a3b_v1` is a LoRA
 distilled from teacher rollouts of *this* agent, and a LoRA only ever sees one
@@ -53,6 +53,7 @@ from deepagents.backends.utils import create_file_data
 from pydantic import BaseModel, Field
 
 import core.database.checkpointer as _db
+from core.tool_budget import ToolBudgetMiddleware
 from core.tools.adapters import AGENT_TOOLS
 from core.chat_models import CHAT_MODELS, ChatModel, resolve_model
 from core.llm import *
@@ -814,7 +815,11 @@ def build_agent(model: ChatModel):
     _register_harness_profiles()
     middleware = [
         ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
-        ToolCallLimitMiddleware(run_limit=30),
+        # 10 tool calls a turn, 30 once a research skill is loaded; three identical
+        # calls in a row, or a spent budget, take the tools away and force an
+        # answer. See core/tool_budget.py. Outermost of the model-call middleware
+        # on purpose, so the withheld tools stay withheld through a fallback retry.
+        ToolBudgetMiddleware(),
     ]
     if model.vision_fallback is not None:
         # Order matters, and only between these two: `wrap_model_call`

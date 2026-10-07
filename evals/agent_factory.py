@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from deepagents import create_deep_agent
-from langchain.agents.middleware import ToolCallLimitMiddleware, ToolRetryMiddleware
+from langchain.agents.middleware import ToolRetryMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -21,10 +21,9 @@ from core.agent import (
     SKILLS_SOURCE,
     _register_harness_profiles,
 )
+from core.tool_budget import ToolBudgetMiddleware
 from core.utils.data_model import Personalization
 from core.utils.utils import format_system_reminder
-
-RUN_LIMIT = 30
 
 # What production puts in the block when the user has stated no preference —
 # read off the model rather than typed out, so it cannot drift from the value
@@ -79,7 +78,7 @@ def build_eval_agent(
         checkpointer=InMemorySaver(),
         middleware=[
             ToolRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
-            ToolCallLimitMiddleware(run_limit=RUN_LIMIT),
+            ToolBudgetMiddleware(),
         ],
     )
 
