@@ -8,10 +8,10 @@ served by a LoRA (an adapter has exactly one compatible prompt); `rix` is
 offline pending a retrain against the tool adapter layer, but keeping the
 entries uniform is what makes serving the next one a one-line change.
 
-Four entries, one of them open to guests:
+Four entries, two of them open to guests:
 
     best      the default; luna underneath, on both the text and image paths
-    gemma     signed in
+    rix       the fine-tune (offline for now)
     luna      signed in
     gemini    signed in
 
@@ -43,7 +43,6 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from core.llm import (
     gemini_3_6_flash,
-    gemma_4_31b,
     gpt_6_luna,
     rix_30b_a3b_v6,
     vision_llm,
@@ -64,7 +63,7 @@ class ChatModel:
     accepts_images: bool
     # Model to swap in when the conversation contains an image. Set on `best`
     # only — that swap *is* what "best available" means here. None elsewhere:
-    # gemma/luna/gemini read images natively, and `rix` refuses them outright.
+    # luna/gemini read images natively, and `rix` refuses them outright.
     vision_fallback: BaseChatModel | None = None
     # Credits charged when `vision_fallback` takes the turn.
     vision_credits: float | None = None
@@ -106,18 +105,6 @@ CHAT_MODELS: dict[str, ChatModel] = {
         # that don't.
         accepts_images=False,
     ),
-    # No longer offered in the picker (see lib/models.ts in the frontend), but
-    # kept resolvable on purpose: `resolve_model` raises on an unknown id, and
-    # threads created while gemma was selectable still carry it — a rewind of
-    # one would 400 if this row went away.
-    "gemma": ChatModel(
-        id="gemma",
-        label="Gemma 4",
-        llm=gemma_4_31b,
-        credits=3.0,
-        requires_auth=True,
-        accepts_images=True,
-    ),
     "luna": ChatModel(
         id="luna",
         label="GPT-5.6 Luna",
@@ -147,7 +134,11 @@ DEFAULT_MODEL = "best"
 # fine-tune was offline, and this lookup runs *before* the CHAT_MODELS one — so
 # leaving it would silently shadow the real `rix` entry above and serve `best`
 # to everyone who picked the adapter.
-_LEGACY_ALIASES = {"fast": "best", "pro": "best"}
+#
+# `gemma` is here because Cerebras archived gemma-4-31b and the entry was
+# removed, but threads created while it was selectable still carry it, and
+# `resolve_model` raises on an unknown id — a rewind of one would 400.
+_LEGACY_ALIASES = {"fast": "best", "pro": "best", "gemma": "best"}
 
 
 def resolve_model(model_id: str | None) -> ChatModel:

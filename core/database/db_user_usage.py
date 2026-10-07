@@ -71,7 +71,6 @@ MODE_CREDIT_COST: dict[str, float] = {
     "best": 1.0,
     "best-vision": 1.0,
     "rix": 1.0,
-    "gemma": 3.0,
     "luna": 3.0,
     "gemini": 3.0,
     "fast": 1.0,

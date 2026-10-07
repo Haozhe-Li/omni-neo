@@ -2,7 +2,7 @@
 
     python -m evals.cli --list
     python -m evals.cli --case web-research/sea-lions-vs-seals --no-judge
-    python -m evals.cli --models gemma-4-31b-high --suites web-research charting
+    python -m evals.cli --models gpt-oss-120b-high --suites web-research charting
     python -m evals.cli --smoke --models all --tool-cache
 
 Runs the model matrix sequentially (models are compared, not raced) with cases

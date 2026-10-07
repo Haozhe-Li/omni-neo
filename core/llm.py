@@ -107,8 +107,6 @@ gemini_flash_lite_latest = init_chat_model("google_genai:gemini-flash-lite-lates
 gemini_flash = init_chat_model("google_genai:gemini-3-flash-preview", include_thoughts=True)
 llama3_1_8b = ChatGroq(model="llama-3.1-8b-instant")
 glm_4_7 = ChatCerebras(model="zai-glm-4.7", temperature=0.2)
-gemma_4_31b = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="low")
-gemma_4_31b_high = ChatCerebras(model="gemma-4-31b", temperature=0.2, reasoning_effort="high")
 prompt_guard_2_86m = ChatGroq(model="meta-llama/llama-prompt-guard-2-86m")
 gemini_3_6_flash = init_chat_model("google_genai:gemini-3.6-flash")
 gpt_6_luna = init_chat_model("openai:gpt-6-luna", use_responses_api=True)
@@ -327,4 +325,7 @@ credibility_llm = gpt_oss_20b
 generate_cover_llm = gpt_oss_20b
 research_schedule_llm = gpt_oss_120b_low
 
-CHAT_LLM_FALLBACKS = [gemma_4_31b, gemini_flash_lite_latest]
+# Tried in order when the picked model errors. `gemma-4-31b` led this list until
+# Cerebras archived it (404 `model_archived_error`), which left the first
+# fallback dead on every failover.
+CHAT_LLM_FALLBACKS = [gemini_flash_lite_latest]
