@@ -16,6 +16,24 @@ from core.sft_capture import CapturedTurn
 logger = logging.getLogger(__name__)
 
 
+async def _insert_snapshot_and_images(
+    conn, cap: CapturedTurn, harness_hash: str, system_prompt: str, tools: list[dict],
+    deepagents_version: str | None,
+) -> None:
+    """The rows an example points at, written in the example's own transaction."""
+    await conn.execute(
+        "INSERT INTO harness_snapshots (harness_hash, system_prompt, tools, deepagents_version) "
+        "VALUES (%s, %s, %s, %s) ON CONFLICT (harness_hash) DO NOTHING",
+        (harness_hash, system_prompt, pg.adapt(tools), deepagents_version),
+    )
+    for sha, (mime, data) in cap.images.items():
+        await conn.execute(
+            "INSERT INTO sft_images (sha256, mime, data) VALUES (%s, %s, %s) "
+            "ON CONFLICT (sha256) DO NOTHING",
+            (sha, mime, data),
+        )
+
+
 async def asave_example(
     *,
     thread_id: str,
@@ -38,17 +56,9 @@ async def asave_example(
     must not inherit the approval of the one it replaced.
     """
     async with (await pg.apool()).connection() as conn, conn.transaction():
-        await conn.execute(
-            "INSERT INTO harness_snapshots (harness_hash, system_prompt, tools, deepagents_version) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT (harness_hash) DO NOTHING",
-            (harness_hash, system_prompt, pg.adapt(tools), deepagents_version),
+        await _insert_snapshot_and_images(
+            conn, cap, harness_hash, system_prompt, tools, deepagents_version
         )
-        for sha, (mime, data) in cap.images.items():
-            await conn.execute(
-                "INSERT INTO sft_images (sha256, mime, data) VALUES (%s, %s, %s) "
-                "ON CONFLICT (sha256) DO NOTHING",
-                (sha, mime, data),
-            )
         cur = await conn.execute(
             """
             INSERT INTO sft_examples (
@@ -80,6 +90,75 @@ async def asave_example(
                 thread_id, turn, user_id, harness_hash, cap.models_seen, pg.adapt(cap.messages),
                 cap.n_assistant_turns, cap.n_tool_calls, cap.tools_used, cap.approx_chars,
                 cap.has_image, cap.has_memory, cap.has_attachments, cap.compacted,
+            ),
+        )
+        row = await cur.fetchone()
+    return row["id"]
+
+
+async def asave_collector_example(
+    *,
+    thread_id: str,
+    turn: int,
+    user_id: str,
+    cap: CapturedTurn,
+    harness_hash: str,
+    system_prompt: str,
+    tools: list[dict],
+    deepagents_version: str | None,
+    status: str,
+    edited: bool,
+    original_final_text: str | None,
+    collect_meta: dict,
+) -> int:
+    """Insert or replace the collector's example for (thread, turn); returns its id.
+
+    Unlike `asave_example` there is no "keep the reviewer's status when the
+    conversation is unchanged" rule: the annotator is the reviewer, and
+    submitting again is them saying what this row should now be, so the status,
+    the edit flag and the metadata are all overwritten with what they just
+    submitted.
+    """
+    async with (await pg.apool()).connection() as conn, conn.transaction():
+        await _insert_snapshot_and_images(
+            conn, cap, harness_hash, system_prompt, tools, deepagents_version
+        )
+        cur = await conn.execute(
+            """
+            INSERT INTO sft_examples (
+                thread_id, turn, user_id, harness_hash, models_seen, messages,
+                n_assistant_turns, n_tool_calls, tools_used, approx_chars,
+                has_image, has_memory, has_attachments, compacted,
+                source, status, edited, original_final_text, collect_meta
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      'collector', %s, %s, %s, %s)
+            ON CONFLICT (thread_id, turn) DO UPDATE SET
+                user_id             = EXCLUDED.user_id,
+                harness_hash        = EXCLUDED.harness_hash,
+                models_seen         = EXCLUDED.models_seen,
+                messages            = EXCLUDED.messages,
+                n_assistant_turns   = EXCLUDED.n_assistant_turns,
+                n_tool_calls        = EXCLUDED.n_tool_calls,
+                tools_used          = EXCLUDED.tools_used,
+                approx_chars        = EXCLUDED.approx_chars,
+                has_image           = EXCLUDED.has_image,
+                has_memory          = EXCLUDED.has_memory,
+                has_attachments     = EXCLUDED.has_attachments,
+                compacted           = EXCLUDED.compacted,
+                source              = 'collector',
+                status              = EXCLUDED.status,
+                status_note         = NULL,
+                edited              = EXCLUDED.edited,
+                original_final_text = EXCLUDED.original_final_text,
+                collect_meta        = EXCLUDED.collect_meta,
+                updated_at          = now()
+            RETURNING id
+            """,
+            (
+                thread_id, turn, user_id, harness_hash, cap.models_seen, pg.adapt(cap.messages),
+                cap.n_assistant_turns, cap.n_tool_calls, cap.tools_used, cap.approx_chars,
+                cap.has_image, cap.has_memory, cap.has_attachments, cap.compacted,
+                status, edited, original_final_text, pg.adapt(collect_meta),
             ),
         )
         row = await cur.fetchone()

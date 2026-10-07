@@ -36,7 +36,12 @@ from core.check_source import check_source_matches
 from core.utils.source_credibility import classify_single_url
 from core.utils.citations import reset_citation_registry_async
 from core.utils.errors import ErrorCode, error_payload
-from core.utils.utils import format_system_reminder, format_user_memory
+from core.utils.utils import (
+    build_turn_context,
+    format_system_reminder,
+    format_user_memory,
+    memory_injection_due,
+)
 from core.auth import get_current_user
 from core.database.db_user_threads import (
     get_thread_messages,
@@ -465,18 +470,9 @@ async def chat(
     has_image = await _has_image_attachment(request.attached_file_ids)
     model = _model_gate(request.resolved_model_id, user_id, has_image)
     charge_key = _charge_key(model, has_image)
-    # Memory is durable, cross-turn context: once injected into a thread's
-    # first turn, LangGraph's checkpointer keeps that whole message (memory
-    # block included) in history forever, so re-fetching and re-injecting it
-    # on every later turn is pure duplication — it only has to go in once.
-    # `request.turn` is the frontend's 1-indexed per-thread turn counter (see
-    # QueryRequest.turn); `turn is None` means a legacy client that doesn't
-    # send it, where we keep injecting every turn to stay safe. A thread-less
-    # direct-stream request has no persisted history at all, so it always
-    # needs its own copy regardless of turn.
-    should_inject_memory = memory_enabled and (
-        thread_id is None or request.turn is None or request.turn == 1
-    )
+    # Whether this turn carries the <user_memory> block — the rule lives in
+    # core/utils/utils.py, shared with the training-data collector.
+    should_inject_memory = memory_injection_due(request)
 
     # Structured timing for the non-LLM prelude (see core/utils/timing.py).
     t = Timing("chat_prelude", thread_id=thread_id, model=model.id,
@@ -551,8 +547,7 @@ async def chat(
     query_text = request.query
     requested_skill = resolve_skill_name(request.skill)
 
-    system_reminder_str = format_system_reminder(request.personalization)
-    user_memory_str = format_user_memory(stored_memory) if should_inject_memory else ""
+    system_reminder_str, user_memory_str = build_turn_context(request, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
     if thread_id:

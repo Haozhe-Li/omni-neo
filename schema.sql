@@ -280,6 +280,44 @@ CREATE TABLE IF NOT EXISTS sft_examples (
 CREATE INDEX IF NOT EXISTS idx_sft_examples_user ON sft_examples (user_id);
 CREATE INDEX IF NOT EXISTS idx_sft_examples_build ON sft_examples (harness_hash, status);
 
+-- Rows written by the training-data collector (core/routers/collector.py, the
+-- password-protected /collect page) rather than by a thumbs-up. Same table, same
+-- `messages` shape, same harness snapshot: a collected example is built from the
+-- real LangGraph checkpoint of a real agent run, so the builder treats both alike.
+--   source              'thumbs' (default, every pre-existing row) | 'collector'
+--   edited              a human rewrote at least one final answer in the thread
+--   original_final_text the model's last answer before editing (NULL if unedited)
+--   collect_meta        per-turn inputs the annotator chose + the edit log
+-- Collector rows may carry a <user_memory> block (has_memory) — memory a human
+-- wrote for the occasion, not a real person's — so the builder exempts them from
+-- its has_memory filter. A thumbs-up still never records one.
+ALTER TABLE sft_examples ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'thumbs';
+ALTER TABLE sft_examples ADD COLUMN IF NOT EXISTS edited BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sft_examples ADD COLUMN IF NOT EXISTS original_final_text TEXT;
+ALTER TABLE sft_examples ADD COLUMN IF NOT EXISTS collect_meta JSONB;
+CREATE INDEX IF NOT EXISTS idx_sft_examples_source ON sft_examples (source);
+
+-- collector_turns: what the annotator asked for on each turn of a collector
+-- thread, and the edit they made to its answer. One row per (thread, turn); the
+-- turn is the frontend-style odd number (1, 3, 5 ...). Written by
+-- POST /api/collector/generate and PUT /api/collector/threads/{id}/final, read at
+-- submit to fill sft_examples.collect_meta and to refuse a thread whose turns
+-- did not all go through the collector.
+CREATE TABLE IF NOT EXISTS collector_turns (
+    thread_id           VARCHAR(255) NOT NULL,
+    turn                INTEGER NOT NULL,
+    user_id             VARCHAR(255) NOT NULL,
+    model               VARCHAR(32),
+    personalization     JSONB NOT NULL,          -- exactly what was sent: datetime / location / language
+    memory              TEXT,                    -- first turn only
+    original_final_text TEXT,                    -- set the first time this turn's answer is edited
+    edited_final_text   TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (thread_id, turn)
+);
+CREATE INDEX IF NOT EXISTS idx_collector_turns_user ON collector_turns (user_id);
+
 -- ---------------------------------------------------------------------------
 -- shared_threads / thread_forks: share a conversation by link
 -- ---------------------------------------------------------------------------

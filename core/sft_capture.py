@@ -291,9 +291,15 @@ def build_capture(
     *,
     ui_messages: list[dict] | None = None,
     compacted: bool = False,
+    allow_memory: bool = False,
 ) -> CapturedTurn:
     """The whole pipeline for one thumbs-up. Raises CaptureError when the
-    exchange should not become an example (the code says why)."""
+    exchange should not become an example (the code says why).
+
+    `allow_memory` is for the training-data collector only (core/routers/
+    collector.py): there the `<user_memory>` block is memory a human wrote for the
+    occasion, not a real person's stored facts, so the privacy reason below does
+    not apply. A thumbs-up never passes it."""
     prefix = slice_through_turn(messages, turn)
     if ui_messages is not None:
         check_ui_alignment(ui_messages, turn, prefix)
@@ -306,7 +312,7 @@ def build_capture(
     # own file, and both are meant to get their own dedicated training later.
     # The memory block is injected on a thread's first turn and stays in the
     # history, so every thumbed turn of such a thread is skipped, not just the first.
-    if cap.has_memory:
+    if cap.has_memory and not allow_memory:
         raise CaptureError("has_memory", "thread carries a <user_memory> block")
     if cap.has_attachments:
         raise CaptureError("has_attachments", "thread carries uploaded files")
