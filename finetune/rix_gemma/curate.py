@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import dotenv
@@ -41,6 +42,26 @@ def _query_of(messages: list[dict], nth_user: int = 0) -> str:
         content = "".join(p.get("text", "") for p in content if p.get("type") == "text")
     m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", content, re.S)
     return " ".join((m.group(1) if m else content).split())
+
+
+_SKILL_PATH_RE = re.compile(r"/skills/([^/\s\"']+)/SKILL\.md")
+
+
+def skills_loaded(messages: list[dict]) -> set[str]:
+    """Skills the agent opened in this conversation.
+
+    A skill is "loaded" when a tool call reads its SKILL.md — the only way the
+    agent gets one, whether it chose to or the app delivered a picked / routed
+    skill as a read_file (the two are deliberately indistinguishable in the
+    trace; see core/stream.py).
+    """
+    found: set[str] = set()
+    for m in messages:
+        if m["role"] != "assistant":
+            continue
+        for c in m.get("tool_calls") or []:
+            found.update(_SKILL_PATH_RE.findall(c["function"]["arguments"]))
+    return found
 
 
 def _short(s: str, n: int) -> str:
@@ -99,6 +120,16 @@ def cmd_stats(_args) -> None:
         ("by tool", "SELECT t AS k, count(*) AS n FROM sft_examples, unnest(tools_used) t GROUP BY 1 ORDER BY 2 DESC"),
     ):
         print(label + ":", {r["k"]: r["n"] for r in pg.fetch_all(sql)})
+    messages = [r["messages"] for r in pg.fetch_all("SELECT messages FROM sft_examples")]
+    total = len(messages)
+    if total:
+        per_example = [skills_loaded(m) for m in messages]
+        by_skill = Counter(s for loaded in per_example for s in loaded)
+        none = sum(1 for loaded in per_example if not loaded)
+        print(f"by skill (of {total} example(s); one example can load several, so these can sum past 100%):")
+        for skill, n in by_skill.most_common():
+            print(f"  {skill:<22} {n:>4}  {n / total:>6.1%}")
+        print(f"  {'(no skill)':<22} {none:>4}  {none / total:>6.1%}")
     r = pg.fetch_one(
         "SELECT count(*) AS n, count(DISTINCT user_id) AS users, "
         "count(*) FILTER (WHERE has_memory) AS memory, count(*) FILTER (WHERE has_attachments) AS attach, "

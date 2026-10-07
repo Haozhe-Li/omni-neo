@@ -300,3 +300,32 @@ def test_oversized_examples_are_refused(monkeypatch):
     with pytest.raises(sc.CaptureError) as e:
         sc.build_capture([human("x" * 100), ai("a")], 1)
     assert e.value.code == "too_large"
+
+
+# ── curate.py stats helper ─────────────────────────────────────────────────
+
+
+def test_skills_loaded_reads_skill_md_paths_from_tool_calls():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "rix_curate", Path(__file__).resolve().parents[1] / "finetune" / "rix_gemma" / "curate.py"
+    )
+    curate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(curate)
+
+    def call(name, args):
+        return {"id": "x", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+    msgs = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            call("read_file", {"file_path": "/skills/web-research/SKILL.md"}),
+            call("read_file", {"file_path": "/skills/charting/SKILL.md"}),
+            call("read_file", {"file_path": "/uploads/notes.md"}),          # not a skill
+            call("web_search", {"query": "read /skills/fake/SKILL.md"}),     # only the path shape matters
+        ]},
+    ]
+    assert curate.skills_loaded(msgs) == {"web-research", "charting", "fake"}
+    assert curate.skills_loaded([{"role": "user", "content": "/skills/x/SKILL.md"}]) == set()
