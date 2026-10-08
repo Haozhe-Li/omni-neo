@@ -50,7 +50,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.agent import get_agent
+from core.agent import get_agent, resolve_skill_name
 from core.auth import get_collector
 from core.chat_models import resolve_model
 from core.collector_schema import CollectorGenerateRequest, to_query_request
@@ -208,6 +208,7 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
         model=model.id,
         personalization=body.personalization.model_dump(exclude_none=True),
         memory=body.memory,
+        skill=body.skill,
     )
 
     cancel_event = asyncio.Event()
@@ -223,7 +224,8 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
             attached_file_ids=None,
             user_memory=user_memory,
             follow_up_content=None,
-            skill=None,
+            # Resolved exactly as /chat resolves it (`deep-research` -> `web-research`).
+            skill=resolve_skill_name(request.skill),
             user_location=p.user_location,
             user_local_datetime=p.user_local_datetime,
             turn=turn,
@@ -293,6 +295,7 @@ async def thread_state(thread_id: str, user_id: str = Depends(get_collector)):
                 "model": t["model"],
                 "personalization": t["personalization"],
                 "memory": t["memory"],
+                "skill": t["skill"],
                 "edited": t["edited_final_text"] is not None
                 and t["edited_final_text"] != t["original_final_text"],
             }
@@ -407,6 +410,7 @@ async def submit(
                 "model": t["model"],
                 "personalization": t["personalization"],
                 "memory": t["memory"],
+                "skill": t["skill"],
                 "original_final_text": t["original_final_text"] if t in edits else None,
             }
             for t in turns

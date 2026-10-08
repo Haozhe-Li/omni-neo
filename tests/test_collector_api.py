@@ -141,6 +141,17 @@ class TestGenerateInput:
         assert kw["memory_enabled"] is False
         assert (kw["attached_file_ids"], kw["skill"], kw["source_url"], kw["follow_up_content"]) == (None,) * 4
 
+    @pytest.mark.parametrize(
+        "picked,handed_over",
+        [("deep-research", "web-research"), ("trip-advisor", "trip-advisor"), ("guided-learning", "guided-learning"), (None, None)],
+    )
+    def test_the_skill_is_resolved_as_chat_resolves_it(self, client, wired, picked, handed_over):
+        extra = {"skill": picked} if picked else {}
+        r = client.post("/api/collector/generate", json=body(**extra), headers=HEADERS)
+        assert r.status_code == 200
+        assert wired["kwargs"]["skill"] == handed_over
+        assert wired["recorded"][0]["skill"] == picked   # what the annotator picked, as the picker names it
+
     def test_the_turn_comes_from_the_checkpoint_not_the_client(self, client, wired):
         wired["history"] = exchange(1) + exchange(2)
         wired["recorded_turns"] = [1, 3]
@@ -185,7 +196,8 @@ class TestGenerateInput:
             {"model": "rix"},
             {"personalization": {"user_local_datetime": "2026-10-07T14:05:09Z"}},
             {"personalization": {"user_local_datetime": DT, "response_language": "auto"}},
-            {"skill": "web-research"},
+            {"skill": "web-research"},     # the on-disk name; the picker never sends it
+            {"skill": "charting"},         # chosen by the agent, not a user
         ],
     )
     def test_non_production_inputs_never_reach_the_agent(self, client, wired, bad):

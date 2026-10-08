@@ -317,6 +317,8 @@ CREATE TABLE IF NOT EXISTS collector_turns (
     PRIMARY KEY (thread_id, turn)
 );
 CREATE INDEX IF NOT EXISTS idx_collector_turns_user ON collector_turns (user_id);
+-- The skill the annotator switched on for the turn (the chat picker's wire id), if any.
+ALTER TABLE collector_turns ADD COLUMN IF NOT EXISTS skill VARCHAR(32);
 
 -- ---------------------------------------------------------------------------
 -- shared_threads / thread_forks: share a conversation by link

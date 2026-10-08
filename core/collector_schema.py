@@ -20,7 +20,11 @@ lib/utils.ts `getLocalISOString`, lib/location.ts, components/settings-dialog.ts
   not a valid value here either.
 - `user_unit` is never sent, and `memory_enabled` is derived from the memory text
   rather than chosen, so neither is accepted.
-- Nothing else a turn can carry (attachments, skills, source URLs, follow-up
+- `skill`, when present, is one of the three ids the chat's skill picker offers
+  (components/chat-view.tsx `SKILLS`); the backend maps it to the skill on disk
+  with the same `resolve_skill_name` /chat uses. The other skills in skills/ are
+  chosen by the agent or the scout, never by the user, so they are not accepted.
+- Nothing else a turn can carry (attachments, source URLs, follow-up
   selections) is accepted: the collector UI does not expose them, and letting a
   field through before its production shape has been reviewed is how a dataset
   quietly stops matching production.
@@ -50,6 +54,10 @@ RESPONSE_LANGUAGES: tuple[str, ...] = ("en", "zh-CN", "zh-TW", "ja", "ko")
 _DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
 # lib/location.ts: `${city}, ${country} (IP Approximate | GPS Precise Location)`.
 _LOCATION_RE = re.compile(r"^[^\n]+, [^\n]+ \((?:IP Approximate|GPS Precise Location)\)$")
+
+# components/chat-view.tsx `SKILLS`: the only skills a user can switch on. The wire
+# value is the id; the backend aliases `deep-research` to the `web-research` skill.
+SKILL_IDS: tuple[str, ...] = ("deep-research", "trip-advisor", "guided-learning")
 
 MAX_QUERY_CHARS = 20_000
 MAX_LOCATION_CHARS = 200
@@ -97,6 +105,10 @@ class CollectorGenerateRequest(BaseModel):
     thread_id: str
     personalization: CollectorPersonalization
     model: str | None = None
+    # The skill the user switched on for this turn, as the picker sends it. The
+    # picker keeps a skill on until it is cleared, so a client carrying it across
+    # turns is the production shape too.
+    skill: Literal["deep-research", "trip-advisor", "guided-learning"] | None = None
     # Memory a human wrote for this conversation. First turn only: production
     # injects `<user_memory>` once and the checkpoint carries it from then on.
     memory: str | None = None
@@ -138,6 +150,7 @@ def to_query_request(req: CollectorGenerateRequest, *, turn: int) -> QueryReques
         query=req.query,
         thread_id=req.thread_id,
         model=req.model,
+        skill=req.skill,
         turn=turn,
         personalization=Personalization(
             memory_enabled=bool(req.memory),

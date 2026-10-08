@@ -50,8 +50,18 @@ def _setup_env() -> None:
     os.environ["COLLECTOR_API_KEY"] = "k"
 
 
+def _fresh_pools() -> None:
+    """Drop pools a previous test left bound to a loop that has since closed."""
+    from core.database import pg
+
+    pg.close_pools()
+    pg._async_pool = None
+    pg._async_lock = None
+
+
 def test_collector_matches_chat_and_files_an_example():
     _setup_env()
+    _fresh_pools()
     import psycopg
 
     with psycopg.connect(URL, autocommit=True) as conn:
@@ -158,7 +168,7 @@ def test_collector_matches_chat_and_files_an_example():
         guest = {"X-Guest-Id": GUEST}
         prod_thread = client.get("/get_thread_id", headers=guest).json()
 
-        def chat_turn(thread_id: str, query: str, turn: int, dt: str) -> None:
+        def chat_turn(thread_id: str, query: str, turn: int, dt: str, skill: str | None = None) -> None:
             payload = {
                 "query": query, "thread_id": thread_id, "model": "best", "turn": turn,
                 "personalization": {
@@ -166,6 +176,8 @@ def test_collector_matches_chat_and_files_an_example():
                     "user_local_datetime": dt, "user_location": LOC,
                 },
             }
+            if skill:
+                payload["skill"] = skill
             with client.stream("POST", "/chat", json=payload, headers=guest) as r:
                 assert r.status_code == 200, r.read()
                 body = "".join(r.iter_text())
@@ -181,18 +193,21 @@ def test_collector_matches_chat_and_files_an_example():
         h = {"X-Collector-Key": "k", "X-Collector-Id": "e2e"}
         thread = client.post("/api/collector/threads", headers=h).json()["thread_id"]
 
-        def collect_turn(query: str, dt: str, memory: str | None) -> str:
+        def collect_turn(query: str, dt: str, memory: str | None, *, thread_id: str | None = None, skill: str | None = None) -> str:
+            thread_id = thread_id or thread
             body = {
-                "query": query, "thread_id": thread, "model": "best",
+                "query": query, "thread_id": thread_id, "model": "best",
                 "personalization": {"user_local_datetime": dt, "user_location": LOC, "response_language": "zh-CN"},
             }
             if memory:
                 body["memory"] = memory
+            if skill:
+                body["skill"] = skill
             with client.stream("POST", "/api/collector/generate", json=body, headers=h) as r:
                 assert r.status_code == 200, r.read()
                 text = "".join(r.iter_text())
             assert '"done"' in text, text[-400:]
-            state = client.get(f"/api/collector/threads/{thread}/state", headers=h).json()
+            state = client.get(f"/api/collector/threads/{thread_id}/state", headers=h).json()
             assert state["complete"], state
             return state["final_text"]
 
@@ -216,6 +231,20 @@ def test_collector_matches_chat_and_files_an_example():
         assert seen_by_model == ["EDITED ANSWER ONE"]
         assert col_first[0].startswith("<user_memory>") and "<system_reminder>" in col_first[0]
         assert "<user_memory>" not in col_second[1]          # memory goes in once, on turn 1
+
+        # ── a skill switched on: same picker id in, same message out ─────────
+        for picked, on_disk in (("deep-research", "web-research"), ("guided-learning", "guided-learning")):
+            prod_t = client.get("/get_thread_id", headers=guest).json()
+            chat_turn(prod_t, "帮我系统研究一下抗生素耐药性", 1, DT1, skill=picked)
+            prod_skill = human_texts(models["best"])
+            col_t = client.post("/api/collector/threads", headers=h).json()["thread_id"]
+            collect_turn("帮我系统研究一下抗生素耐药性", DT1, MEMORY, thread_id=col_t, skill=picked)
+            col_skill = human_texts(models["best"])
+            assert col_skill == prod_skill, f"skill {picked}: what the model read differs from production"
+            assert f"<requested_skill>\n{on_disk}\n</requested_skill>" in col_skill[0]
+            assert "<context_enrichment>" in col_skill[0]       # the skill's own instructions, injected once
+            turn_rows = client.get(f"/api/collector/threads/{col_t}/state", headers=h).json()["turns"]
+            assert turn_rows[0]["skill"] == picked
 
         # ── submit ──────────────────────────────────────────────────────────
         r = client.post(f"/api/collector/threads/{thread}/submit", json={"note": "e2e"}, headers=h)
@@ -256,4 +285,4 @@ def test_collector_matches_chat_and_files_an_example():
         pg.execute("DELETE FROM user_memories WHERE user_id = %s", (GUEST,))
         pg.execute("DELETE FROM collector_turns")
 
-    pg.close_pools()  # the async pool belongs to the client's loop and dies with it
+    _fresh_pools()  # the async pool belongs to the client's loop and dies with it

@@ -42,8 +42,19 @@ def _captured(answer: str):
     return sc.build_capture(msgs, 1, allow_memory=True)
 
 
+def _fresh_pools() -> None:
+    """Drop pools a previous test left bound to a loop that has since closed."""
+    from core.database import pg
+
+    pg.close_pools()
+    pg._async_pool = None
+    pg._async_pool = None
+    pg._async_lock = None
+
+
 def test_collector_rows_end_to_end():
     os.environ["DATABASE_URL"] = URL
+    _fresh_pools()
     import psycopg
 
     with psycopg.connect(URL, autocommit=True) as conn:
@@ -67,11 +78,12 @@ def test_collector_rows_end_to_end():
             await db_collector.arecord_turn(
                 thread_id="c-col", turn=1, user_id="collector_a", model="best",
                 personalization={"user_local_datetime": "2026-10-07T14:05:09+08:00"}, memory="mem",
+                skill="deep-research",
             )
             assert await db_collector.arecord_edit("c-col", 1, "collector_a", "orig", "v1")
             assert await db_collector.arecord_edit("c-col", 1, "collector_a", "v1", "v2")
             [t] = await db_collector.alist_turns("c-col", "collector_a")
-            assert (t["original_final_text"], t["edited_final_text"], t["memory"]) == ("orig", "v2", "mem")
+            assert (t["original_final_text"], t["edited_final_text"], t["memory"], t["skill"]) == ("orig", "v2", "mem", "deep-research")
             assert not await db_collector.arecord_edit("c-col", 1, "someone_else", "x", "y")  # scoped to owner
             assert await db_collector.alist_turns("c-col", "collector_b") == []
 
