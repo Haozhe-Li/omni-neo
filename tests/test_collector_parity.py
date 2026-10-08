@@ -133,7 +133,7 @@ class TestRejectsNonProduction:
         with pytest.raises(ValidationError):
             collector_request(personalization={"user_local_datetime": DT, field: "x"})
 
-    @pytest.mark.parametrize("field", ["skill", "source_url", "attached_file_ids", "follow_up_content", "turn", "mode"])
+    @pytest.mark.parametrize("field", ["source_url", "attached_file_ids", "follow_up_content", "turn", "mode"])
     def test_unknown_request_fields(self, field):
         # Each is something a turn can carry in production that the collector does not
         # model; letting one through unreviewed is how a dataset drifts.
@@ -141,6 +141,19 @@ class TestRejectsNonProduction:
             CollectorGenerateRequest(
                 query="q", thread_id="t", personalization={"user_local_datetime": DT}, **{field: "x"}
             )
+
+    @pytest.mark.parametrize("skill", ["deep-research", "trip-advisor", "guided-learning", None])
+    def test_skill_accepts_the_pickers_ids(self, skill):
+        assert collector_request(skill=skill).skill == skill
+
+    @pytest.mark.parametrize(
+        "skill",
+        # the on-disk name (the picker never sends it), skills only the agent picks, near-misses
+        ["web-research", "charting", "mapping", "ask-question", "Deep Research", "deep_research", "", "none"],
+    )
+    def test_skill_rejects_anything_the_picker_cannot_send(self, skill):
+        with pytest.raises(ValidationError):
+            collector_request(skill=skill)
 
     def test_datetime_is_required(self):
         with pytest.raises(ValidationError):
@@ -215,6 +228,13 @@ class TestSameContextAsChat:
         for field in ("skill", "source_url", "attached_file_ids", "follow_up_content"):
             assert getattr(ours, field) is None, field
 
+    @pytest.mark.parametrize("skill", ["deep-research", "trip-advisor", "guided-learning"])
+    def test_skill_matches_the_frontend_payload(self, skill):
+        # chat-view sets `payload.skill = activeSkill` — the picker's id, unmodified
+        ours = to_query_request(collector_request(skill=skill), turn=1)
+        theirs = QueryRequest(**{**frontend_payload(turn=1), "skill": skill})
+        assert ours.skill == theirs.skill == skill
+
 
 @pytest.fixture(scope="module")
 def build_message_content():
@@ -263,6 +283,22 @@ class TestUserMessageLayout:
             "今天适合跑步吗？\n"
             "</user_query>"
         )
+
+    @pytest.mark.parametrize(
+        "picked,on_disk", [("deep-research", "web-research"), ("trip-advisor", "trip-advisor"), ("guided-learning", "guided-learning")]
+    )
+    def test_requested_skill_block(self, build_message_content, picked, on_disk):
+        # /chat resolves the picker's id with resolve_skill_name before building the
+        # message; the collector does the same, so the block names the on-disk skill.
+        from core.agent import resolve_skill_name
+
+        request = to_query_request(collector_request(skill=picked, memory=None), turn=1)
+        reminder, user_memory = build_turn_context(request, None)
+        content, _, _ = build_message_content(
+            request.query, reminder, None, request.thread_id,
+            user_memory=user_memory, skill=resolve_skill_name(request.skill),
+        )
+        assert f"</system_reminder>\n\n<requested_skill>\n{on_disk}\n</requested_skill>\n\n<user_query>" in content
 
     def test_later_turn_has_no_memory_block(self, build_message_content):
         ours = self.render(

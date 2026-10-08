@@ -23,7 +23,9 @@ The collector adds no path into the agent:
 
 - `core/collector_schema.py` accepts only what the production client can send, in
   production's formats (`getLocalISOString`, `"City, Country (IP Approximate)"`, the
-  settings-dialog language codes). Skills, attachments, source URLs and follow-up
+  settings-dialog language codes). `skill` takes only the three ids the chat's skill
+  picker offers (`deep-research`, `trip-advisor`, `guided-learning`), resolved with the
+  same `resolve_skill_name` `/chat` uses; attachments, source URLs and follow-up
   selections are not accepted.
 - The system reminder and `<user_memory>` block come from `build_turn_context`
   (`core/utils/utils.py`), the function `POST /chat` calls.
