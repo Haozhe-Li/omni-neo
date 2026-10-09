@@ -80,6 +80,12 @@ def wired(monkeypatch):
     async def stream_read(thread_id):
         yield "data: {\"type\": \"done\"}\n\n"
 
+    seen["files"] = {}
+
+    def get_file_record(file_id):
+        return seen["files"].get(file_id)
+
+    monkeypatch.setattr(collector, "get_file_record", get_file_record)
     monkeypatch.setattr(collector, "_owned_thread", owned)
     monkeypatch.setattr(collector, "_checkpoint_messages", messages)
     monkeypatch.setattr(collector, "stream_is_generating", not_generating)
@@ -89,6 +95,17 @@ def wired(monkeypatch):
     monkeypatch.setattr(collector, "_generate_background", generate_background)
     monkeypatch.setattr(collector, "stream_read", stream_read)
     return seen
+
+
+FID = "user_uploads/collector_alice/0b8f6a52-3c41-4a77-9d0e-6f5d1c2e9a10"
+FID2 = "user_uploads/collector_alice/9a1c2d3e-4b5f-4a6b-8c7d-0e1f2a3b4c5d"
+
+
+def file_record(fid=FID, name="report.pdf", **over):
+    base = {"file_id": fid, "user_id": OWNER, "thread_id": "t-1", "status": "ready", "original_filename": name,
+            "category": "document", "file_type": "application/pdf", "file_size_bytes": 1234, "s3_bucket": "omni"}
+    base.update(over)
+    return base
 
 
 def exchange(n: int):
@@ -115,6 +132,9 @@ class TestAuth:
             ("get", "/api/collector/threads/x/stream"),
             ("post", "/api/collector/threads/x/stop"),
             ("get", "/api/collector/threads/x/state"),
+            ("post", "/api/collector/threads/x/restart"),
+            ("post", "/api/collector/threads/x/uploads"),
+            ("post", "/api/collector/uploads/confirm?file_id=y"),
             ("put", "/api/collector/threads/x/final"),
             ("post", "/api/collector/threads/x/submit"),
         ]:
@@ -186,6 +206,42 @@ class TestGenerateInput:
         assert client.post("/api/collector/generate", json=body(), headers=HEADERS).status_code == 200
         assert wired["kwargs"]["turn"] == 1
 
+    def test_files_and_urls_are_handed_over_as_chat_hands_them(self, client, wired):
+        wired["files"][FID] = file_record()
+        wired["files"][FID2] = file_record(FID2, "chart.png", category="image", file_type="image/png")
+        files = [{FID: "report.pdf"}, {FID2: "chart.png"}]
+        urls = ["https://en.wikipedia.org/wiki/Rapid_transit", "https://example.com/a"]
+        r = client.post("/api/collector/generate", json=body(attached_file_ids=files, source_url=urls), headers=HEADERS)
+        assert r.status_code == 200, r.text
+        kw = wired["kwargs"]
+        assert kw["attached_file_ids"] == files            # the dict list itself, as /chat passes it
+        assert kw["source_url"] == urls
+        rec = wired["recorded"][0]
+        assert rec["source_urls"] == urls
+        assert [(a["filename"], a["category"]) for a in rec["attachments"]] == [("report.pdf", "document"), ("chart.png", "image")]
+
+    def test_a_file_only_turn_has_empty_text(self, client, wired):
+        wired["files"][FID] = file_record()
+        r = client.post("/api/collector/generate", json=body(query="", attached_file_ids=[{FID: "report.pdf"}], memory=None), headers=HEADERS)
+        assert r.status_code == 200 and wired["kwargs"]["query"] == ""
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            None,                                              # no such file
+            file_record(user_id="collector_mallory"),          # someone else's upload
+            file_record(thread_id="another-thread"),           # from another conversation
+            file_record(status="pending"),                     # the composer only sends files it saw go ready
+            file_record(status="failed"),
+            file_record(name="renamed.pdf"),                   # not the stored name
+        ],
+    )
+    def test_files_that_are_not_this_conversations_are_refused(self, client, wired, record):
+        if record is not None:
+            wired["files"][FID] = record
+        r = client.post("/api/collector/generate", json=body(attached_file_ids=[{FID: "report.pdf"}]), headers=HEADERS)
+        assert r.status_code == 422 and wired["kwargs"] is None
+
     def test_oversized_memory_is_refused(self, client, wired):
         r = client.post("/api/collector/generate", json=body(memory="x" * 3001), headers=HEADERS)
         assert r.status_code == 422 and wired["kwargs"] is None
@@ -203,3 +259,47 @@ class TestGenerateInput:
     def test_non_production_inputs_never_reach_the_agent(self, client, wired, bad):
         r = client.post("/api/collector/generate", json=body(**bad), headers=HEADERS)
         assert r.status_code == 422 and wired["kwargs"] is None
+
+
+class TestUploadsAndRestart:
+    def test_the_upload_is_minted_for_this_annotator_and_thread(self, client, wired, monkeypatch):
+        calls = []
+
+        def mint(**kw):
+            calls.append(kw)
+            return {"upload_url": "https://s3.test/put", "file_id": FID, "thread_id": kw["thread_id"]}
+
+        monkeypatch.setattr(collector, "mint_upload", mint)
+        r = client.post("/api/collector/threads/t-1/uploads", headers=HEADERS,
+                        json={"filename": "report.pdf", "file_type": "application/pdf", "file_size_bytes": 1234})
+        assert r.status_code == 200 and r.json()["file_id"] == FID
+        assert calls == [{"user_id": OWNER, "thread_id": "t-1", "filename": "report.pdf",
+                          "file_type": "application/pdf", "file_size_bytes": 1234}]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"filename": "a.exe", "file_type": "application/x-msdownload", "file_size_bytes": 10},
+            {"filename": "a.pdf", "file_type": "application/pdf", "file_size_bytes": 21 * 1024 * 1024},
+            {"filename": "a.pdf", "file_type": "application/pdf", "file_size_bytes": 10, "thread_id": "elsewhere"},
+        ],
+    )
+    def test_uploads_the_composer_would_refuse(self, client, wired, monkeypatch, payload):
+        monkeypatch.setattr(collector, "mint_upload", lambda **kw: pytest.fail("minted"))
+        assert client.post("/api/collector/threads/t-1/uploads", headers=HEADERS, json=payload).status_code == 422
+
+    def test_confirm_only_for_your_own_files(self, client, wired, monkeypatch):
+        processed = []
+        monkeypatch.setattr(collector, "process_uploaded_file", lambda fid: processed.append(fid))
+        wired["files"][FID] = file_record(user_id="collector_mallory")
+        assert client.post(f"/api/collector/uploads/confirm?file_id={FID}", headers=HEADERS).status_code == 404
+        assert client.post("/api/collector/uploads/confirm?file_id=user_uploads/nobody/x", headers=HEADERS).status_code == 404
+        assert processed == []
+        wired["files"][FID] = file_record()
+        r = client.post(f"/api/collector/uploads/confirm?file_id={FID}", headers=HEADERS)
+        assert r.status_code == 200 and r.json()["category"] == "document" and processed == [FID]
+
+    def test_a_file_that_fails_to_parse_is_an_error(self, client, wired, monkeypatch):
+        monkeypatch.setattr(collector, "process_uploaded_file", lambda fid: None)
+        wired["files"][FID] = file_record(status="failed")
+        assert client.post(f"/api/collector/uploads/confirm?file_id={FID}", headers=HEADERS).status_code == 422

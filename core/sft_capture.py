@@ -292,6 +292,7 @@ def build_capture(
     ui_messages: list[dict] | None = None,
     compacted: bool = False,
     allow_memory: bool = False,
+    allow_attachments: bool = False,
 ) -> CapturedTurn:
     """The whole pipeline for one thumbs-up. Raises CaptureError when the
     exchange should not become an example (the code says why).
@@ -299,7 +300,12 @@ def build_capture(
     `allow_memory` is for the training-data collector only (core/routers/
     collector.py): there the `<user_memory>` block is memory a human wrote for the
     occasion, not a real person's stored facts, so the privacy reason below does
-    not apply. A thumbs-up never passes it."""
+    not apply. A thumbs-up never passes it.
+
+    `allow_attachments` is the same exception for files and images: the collector's
+    uploads are test files an annotator chose, not a real person's documents. The
+    images are stored (sft_images) and the documents' text is in the `read_file` tool
+    results the agent made, so the row records what the model saw either way."""
     prefix = slice_through_turn(messages, turn)
     if ui_messages is not None:
         check_ui_alignment(ui_messages, turn, prefix)
@@ -314,7 +320,7 @@ def build_capture(
     # history, so every thumbed turn of such a thread is skipped, not just the first.
     if cap.has_memory and not allow_memory:
         raise CaptureError("has_memory", "thread carries a <user_memory> block")
-    if cap.has_attachments:
+    if cap.has_attachments and not allow_attachments:
         raise CaptureError("has_attachments", "thread carries uploaded files")
     if not is_teacher_turn(cap.turn_models):
         raise CaptureError("not_teacher_model", f"turn served by {cap.turn_models or 'unknown'}")

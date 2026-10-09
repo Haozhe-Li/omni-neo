@@ -34,8 +34,9 @@ real user's conversation. So the defaults lean toward leaving rows out:
   to override). Memory blocks are personal facts about a real person and uploaded
   documents are their private files; both would be read into the weights, and a
   model can later repeat what it was trained on. The exception is rows from the
-  collector page (`source = 'collector'`): their memory was written by an annotator
-  for the purpose, so those rows keep it — that is the point of collecting them.
+  collector page (`source = 'collector'`): their memory and uploaded files were chosen by
+  an annotator for the purpose, so those rows keep them — that is the point of collecting
+  them. Images still follow `--images` (the default drops them).
 - **No images** until the trainer is known to accept them (`--images keep`).
 - **Not rejected.** Rows a reviewer marked 'rejected' (finetune/rix_gemma/curate.py)
   never come through; `--only-accepted` additionally drops the unreviewed.
@@ -250,7 +251,9 @@ def main() -> int:
         # stored facts, so the privacy reason for this filter does not apply to them.
         elif r["has_memory"] and r.get("source") != "collector" and not args.include_memory:
             dropped["has <user_memory>"] += 1
-        elif r["has_attachments"] and not args.include_attachments:
+        # Same exemption for uploads: a collector row's files are test inputs an
+        # annotator chose, not a real person's documents.
+        elif r["has_attachments"] and r.get("source") != "collector" and not args.include_attachments:
             dropped["has attachments"] += 1
         elif r["has_image"] and args.images == "drop":
             dropped["has image"] += 1

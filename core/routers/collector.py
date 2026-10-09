@@ -53,16 +53,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.agent import get_agent, resolve_skill_name
 from core.auth import get_collector
 from core.chat_models import resolve_model
-from core.collector_schema import CollectorGenerateRequest, to_query_request
+from core.collector_schema import CollectorGenerateRequest, CollectorUploadRequest, to_query_request
 from core.database import db_collector
 from core.database.db_sft_examples import asave_collector_example
+from core.database.db_user_files import get_file_record
 from core.database.db_threads_control import delete_thread as delete_thread_state, upsert_thread
 from core.database.db_user_memories import MAX_MEMORY_CHARS
 from core.database.db_user_threads import delete_user_thread, get_thread_row, register_thread
 from core.harness_snapshot import live_harness
+from core.RAG.file_parser import delete_s3_objects, process_uploaded_file
 from core.redis_stream import stream_get_status, stream_is_generating, stream_begin, stream_read
 from core.routers.chat import _generate_background
 from core.routers.state import cancellation_events, generation_tasks
+from core.routers.uploads import mint_upload
 from core.sft_capture import CaptureError, _text_of, build_capture, slice_through_turn
 from core.utils.utils import build_turn_context
 
@@ -150,10 +153,117 @@ async def discard_thread(thread_id: str, user_id: str = Depends(get_collector)):
     event = cancellation_events.get(thread_id)
     if event:
         event.set()
+    await _drop_thread(thread_id, user_id)
+    # The uploads were test inputs for this conversation; an example that was filed
+    # already holds what the model saw of them (images in sft_images, documents in the
+    # read_file results), so the originals can go with it.
+    objects = await db_collector.apurge_files(thread_id, user_id)
+    await asyncio.to_thread(delete_s3_objects, objects)
+    return {"status": "deleted"}
+
+
+async def _drop_thread(thread_id: str, user_id: str) -> None:
+    """The thread's checkpoint, UI row and recorded turns — not its uploaded files."""
     await asyncio.to_thread(delete_user_thread, thread_id, user_id)
     await asyncio.to_thread(delete_thread_state, thread_id)
     await db_collector.adelete_turns(thread_id, user_id)
-    return {"status": "deleted"}
+
+
+@router.post("/threads/{thread_id}/restart")
+async def restart_thread(thread_id: str, user_id: str = Depends(get_collector)):
+    """Throw a conversation's generation away but keep what was staged for it.
+
+    "Regenerate" and "change inputs" start over on a fresh checkpoint; the files the
+    annotator uploaded for the first turn have to come along, so they are moved to
+    the new thread (same ids, same objects) before the old one is dropped.
+    """
+    await _owned_thread(thread_id, user_id)
+    event = cancellation_events.get(thread_id)
+    if event:
+        event.set()
+    new_id = str(uuid.uuid4())
+    await asyncio.to_thread(upsert_thread, new_id, user_id)
+    if not await asyncio.to_thread(register_thread, new_id, user_id, COLLECTOR_ORIGIN):
+        raise HTTPException(status_code=500, detail="Could not create the thread.")
+    await db_collector.arebind_files(thread_id, new_id, user_id)
+    await _drop_thread(thread_id, user_id)
+    return {"thread_id": new_id}
+
+
+# ── uploads ─────────────────────────────────────────────────────────────────
+# The browser uploads straight to S3 with a presigned URL, as it does for a user's
+# attachment, so a file never passes through a serverless function's body limit.
+
+
+@router.post("/threads/{thread_id}/uploads")
+async def start_upload(
+    thread_id: str, body: CollectorUploadRequest, user_id: str = Depends(get_collector)
+):
+    """POST /api/upload/url for a collector thread: a pending `user_files` row and a presigned PUT."""
+    await _owned_thread(thread_id, user_id)
+    minted = await asyncio.to_thread(
+        mint_upload,
+        user_id=user_id,
+        thread_id=thread_id,
+        filename=body.filename,
+        file_type=body.file_type,
+        file_size_bytes=body.file_size_bytes,
+    )
+    if not minted.get("upload_url"):
+        raise HTTPException(status_code=502, detail="Could not create an upload URL.")
+    return minted
+
+
+@router.post("/uploads/confirm")
+async def confirm_upload(file_id: str, user_id: str = Depends(get_collector)):
+    """POST /api/upload/confirm, restricted to this annotator's own files: parse the
+    uploaded object and return once the file is ready or has failed."""
+    record = await asyncio.to_thread(get_file_record, file_id)
+    if record is None or record["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="File not found.")
+    await _owned_thread(record["thread_id"], user_id)
+    await asyncio.to_thread(process_uploaded_file, file_id)
+    record = await asyncio.to_thread(get_file_record, file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    if record["status"] == "failed":
+        raise HTTPException(status_code=422, detail="File processing failed.")
+    return {"status": record["status"], "file_id": file_id, "category": record["category"]}
+
+
+async def _resolve_attachments(
+    attached: list[dict[str, str]] | None, thread_id: str, user_id: str
+) -> list[dict]:
+    """Check every attached file is this annotator's, from this thread, ready, and
+    named as the upload recorded; return what is worth keeping about each.
+
+    The production composer only ever sends files it has just uploaded and seen go
+    ready, so anything else — a stranger's id, another conversation's file, a name
+    that is not the stored one — is not a request production could make.
+    """
+    out: list[dict] = []
+    for entry in attached or []:
+        ((file_id, name),) = entry.items()
+        record = await asyncio.to_thread(get_file_record, file_id)
+        if (
+            record is None
+            or record["user_id"] != user_id
+            or record["thread_id"] != thread_id
+            or record["status"] != "ready"
+            or record["original_filename"] != name
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name}: not a ready file uploaded to this conversation.",
+            )
+        out.append({
+            "file_id": file_id,
+            "filename": record["original_filename"],
+            "category": record["category"],
+            "file_type": record["file_type"],
+            "size_bytes": record["file_size_bytes"],
+        })
+    return out
 
 
 # ── generate ────────────────────────────────────────────────────────────────
@@ -196,6 +306,8 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
         # record a memory the model never saw.
         raise HTTPException(status_code=400, detail="memory can only be set on the first turn.")
 
+    attachments = await _resolve_attachments(body.attached_file_ids, thread_id, user_id)
+
     model = resolve_model(body.model)  # validated against COLLECTOR_MODELS by the schema
     request = to_query_request(body, turn=turn)
     system_reminder, user_memory = build_turn_context(request, body.memory)
@@ -209,6 +321,8 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
         personalization=body.personalization.model_dump(exclude_none=True),
         memory=body.memory,
         skill=body.skill,
+        attachments=attachments,
+        source_urls=body.source_url,
     )
 
     cancel_event = asyncio.Event()
@@ -221,7 +335,7 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
             query=request.query,
             model_id=model.id,
             system_reminder=system_reminder,
-            attached_file_ids=None,
+            attached_file_ids=request.attached_file_ids,
             user_memory=user_memory,
             follow_up_content=None,
             # Resolved exactly as /chat resolves it (`deep-research` -> `web-research`).
@@ -233,7 +347,7 @@ async def generate(body: CollectorGenerateRequest, user_id: str = Depends(get_co
             # Never: the memory text here is invented, and must not be written into
             # a user_memories row by the post-turn extraction.
             memory_enabled=False,
-            source_url=None,
+            source_url=request.source_url,
         )
     )
     generation_tasks[thread_id] = task
@@ -296,6 +410,8 @@ async def thread_state(thread_id: str, user_id: str = Depends(get_collector)):
                 "personalization": t["personalization"],
                 "memory": t["memory"],
                 "skill": t["skill"],
+                "attachments": t["attachments"] or [],
+                "source_urls": t["source_urls"] or [],
                 "edited": t["edited_final_text"] is not None
                 and t["edited_final_text"] != t["original_final_text"],
             }
@@ -386,6 +502,7 @@ async def submit(
             turn,
             compacted=bool(values.get("_summarization_event")),
             allow_memory=True,
+            allow_attachments=True,
         )
     except CaptureError as e:
         # Unlike a thumbs-up, the annotator is watching: say why instead of "skipped".
@@ -411,6 +528,8 @@ async def submit(
                 "personalization": t["personalization"],
                 "memory": t["memory"],
                 "skill": t["skill"],
+                "attachments": t["attachments"] or [],
+                "source_urls": t["source_urls"] or [],
                 "original_final_text": t["original_final_text"] if t in edits else None,
             }
             for t in turns
