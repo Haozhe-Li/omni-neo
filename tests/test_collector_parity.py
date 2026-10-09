@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from core.collector_schema import (
     COLLECTOR_MODELS,
     CollectorGenerateRequest,
+    CollectorUploadRequest,
     to_query_request,
 )
 from core.utils.data_model import QueryRequest
@@ -50,6 +51,9 @@ _IMPORT_ENV = {
         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME",
     )},
 }
+
+FID = "user_uploads/collector_alice/0b8f6a52-3c41-4a77-9d0e-6f5d1c2e9a10"
+FID2 = "user_uploads/collector_alice/9a1c2d3e-4b5f-4a6b-8c7d-0e1f2a3b4c5d"
 
 DT = "2026-10-07T14:05:09+08:00"
 LOC = "Shanghai, China (IP Approximate)"
@@ -133,7 +137,7 @@ class TestRejectsNonProduction:
         with pytest.raises(ValidationError):
             collector_request(personalization={"user_local_datetime": DT, field: "x"})
 
-    @pytest.mark.parametrize("field", ["source_url", "attached_file_ids", "follow_up_content", "turn", "mode"])
+    @pytest.mark.parametrize("field", ["follow_up_content", "turn", "mode"])
     def test_unknown_request_fields(self, field):
         # Each is something a turn can carry in production that the collector does not
         # model; letting one through unreviewed is how a dataset drifts.
@@ -154,6 +158,96 @@ class TestRejectsNonProduction:
     def test_skill_rejects_anything_the_picker_cannot_send(self, skill):
         with pytest.raises(ValidationError):
             collector_request(skill=skill)
+
+    # ── files ──
+    def test_attached_files_in_the_chat_view_shape(self):
+        r = collector_request(attached_file_ids=[{FID: "report.pdf"}, {FID2: "chart.png"}])
+        assert r.attached_file_ids == [{FID: "report.pdf"}, {FID2: "chart.png"}]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            [{FID: "a.pdf", FID2: "b.pdf"}],                     # one dict per file
+            [{"../etc/passwd": "a.pdf"}],                        # not an id the upload endpoint mints
+            [{"user_uploads/x/not-a-uuid": "a.pdf"}],
+            [{"other_prefix/collector_alice/0b8f6a52-3c41-4a77-9d0e-6f5d1c2e9a10": "a.pdf"}],
+            [{FID: "a.pdf"}, {FID: "a.pdf"}],                    # twice
+            [{FID: ""}],                                         # no name
+            [{FID: "x" * 256}],
+            [{FID: "a.pdf"}] * 6,                                # over the 5-file cap
+            [],                                                  # production omits the field instead
+        ],
+    )
+    def test_attached_files_the_composer_could_not_send(self, bad):
+        # `[]` normalises to "no files" (production omits the key) rather than failing
+        if bad == []:
+            assert collector_request(attached_file_ids=bad).attached_file_ids is None
+            return
+        with pytest.raises(ValidationError):
+            collector_request(attached_file_ids=bad)
+
+    def test_a_turn_may_have_no_text_only_with_files(self):
+        assert collector_request(query="", attached_file_ids=[{FID: "a.pdf"}]).query == ""
+        for q in ("", "  \n"):
+            with pytest.raises(ValidationError):
+                collector_request(query=q)
+            with pytest.raises(ValidationError):
+                collector_request(query=q, source_url=["https://example.com/"])   # URL-only is not sendable
+
+    # ── URLs ──
+    @pytest.mark.parametrize("url", ["https://example.com/", "http://example.com/a?b=1#c", "https://en.wikipedia.org/wiki/Rapid_transit",
+                                     "https://omniknows.xyz/pages/abc", "https://user@host.test:8080/p"])
+    def test_source_urls_in_normalised_form(self, url):
+        assert collector_request(source_url=[url]).source_url == [url]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "example.com", "www.example.com/a",                  # normalizeUrl adds the scheme before sending
+            "ftp://example.com/", "javascript:alert(1)", "file:///etc/passwd",
+            "https://example.com",                               # new URL(...).toString() writes a "/"
+            "HTTPS://example.com/", "https://EXAMPLE.com/",      # ... and lower-cases scheme and host
+            "https://exa mple.com/", "https://example.com/a b",  # no whitespace
+            "https://" + "a" * 2050 + ".com/",
+            "",
+        ],
+    )
+    def test_source_urls_the_picker_could_not_send(self, bad):
+        with pytest.raises(ValidationError):
+            collector_request(source_url=[bad])
+
+    def test_source_url_caps_and_duplicates(self):
+        urls = [f"https://example.com/{i}" for i in range(5)]
+        assert collector_request(source_url=urls).source_url == urls
+        with pytest.raises(ValidationError):
+            collector_request(source_url=urls + ["https://example.com/5"])
+        with pytest.raises(ValidationError):
+            collector_request(source_url=["https://example.com/a", "https://example.com/a"])
+
+    # ── the upload request ──
+    @pytest.mark.parametrize(
+        "name,mime",
+        [("a.pdf", "application/pdf"), ("a.png", "image/png"), ("a.JPG", "image/jpeg"), ("notes.txt", "text/plain"),
+         ("a.py", ""), ("a.docx", "application/octet-stream"),      # extension alone is enough, as in the composer
+         ("noext", "text/plain")],                                   # ... and so is the MIME type
+    )
+    def test_uploads_the_composers_accept(self, name, mime):
+        CollectorUploadRequest(filename=name, file_type=mime, file_size_bytes=10)
+
+    @pytest.mark.parametrize(
+        "name,mime,size",
+        [("a.gif", "image/gif", 10), ("a.webp", "image/webp", 10), ("a.exe", "application/x-msdownload", 10),
+         ("a.zip", "application/zip", 10), ("a.pdf", "application/pdf", 20 * 1024 * 1024 + 1),
+         ("a.pdf", "application/pdf", 0), ("../a.pdf", "application/pdf", 10), ("d\\a.pdf", "application/pdf", 10),
+         ("", "application/pdf", 10)],
+    )
+    def test_uploads_the_composers_refuse(self, name, mime, size):
+        with pytest.raises(ValidationError):
+            CollectorUploadRequest(filename=name, file_type=mime, file_size_bytes=size)
+
+    def test_upload_requests_take_no_extra_fields(self):
+        with pytest.raises(ValidationError):
+            CollectorUploadRequest(filename="a.pdf", file_type="application/pdf", file_size_bytes=10, thread_id="x")
 
     def test_datetime_is_required(self):
         with pytest.raises(ValidationError):
@@ -227,6 +321,15 @@ class TestSameContextAsChat:
         # nothing the collector doesn't model leaks in
         for field in ("skill", "source_url", "attached_file_ids", "follow_up_content"):
             assert getattr(ours, field) is None, field
+
+    def test_files_and_urls_match_the_frontend_payload(self):
+        # chat-view sends `attached_file_ids: [{id: name}]` and `source_url: [url]`, unmodified
+        ours = to_query_request(
+            collector_request(attached_file_ids=[{FID: "a.pdf"}], source_url=["https://example.com/"]), turn=1
+        )
+        theirs = QueryRequest(**{**frontend_payload(turn=1), "attached_file_ids": [{FID: "a.pdf"}], "source_url": ["https://example.com/"]})
+        assert ours.attached_file_ids == theirs.attached_file_ids
+        assert ours.source_url == theirs.source_url
 
     @pytest.mark.parametrize("skill", ["deep-research", "trip-advisor", "guided-learning"])
     def test_skill_matches_the_frontend_payload(self, skill):

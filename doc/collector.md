@@ -25,8 +25,10 @@ The collector adds no path into the agent:
   production's formats (`getLocalISOString`, `"City, Country (IP Approximate)"`, the
   settings-dialog language codes). `skill` takes only the three ids the chat's skill
   picker offers (`deep-research`, `trip-advisor`, `guided-learning`), resolved with the
-  same `resolve_skill_name` `/chat` uses; attachments, source URLs and follow-up
-  selections are not accepted.
+  same `resolve_skill_name` `/chat` uses. `attached_file_ids` (`[{file_id: filename}]`, at most 5,
+  ready files of this conversation) and `source_url` (the "Add URL" list, at most 5, in
+  `normalizeUrl`'s canonical form) are accepted in the shapes the composer sends; follow-up
+  selections are not.
 - The system reminder and `<user_memory>` block come from `build_turn_context`
   (`core/utils/utils.py`), the function `POST /chat` calls.
 - Generation is `_generate_background` from `core/routers/chat.py`, unmodified.
@@ -50,3 +52,26 @@ Memory can be set on the first turn only, as in production.
 
 `build_dataset.py` keeps `<user_memory>` on `source = 'collector'` rows (the memory is
 written by the annotator, not a real person's data).
+
+## Files, images and pinned URLs
+
+Uploads follow production's path: `POST /threads/{id}/uploads` mints the same pending
+`user_files` row and presigned S3 PUT as `/api/upload/url` (`mint_upload`), the browser
+PUTs the file straight to S3, and `POST /uploads/confirm?file_id=` parses it (same
+`process_uploaded_file`). Only what the composers accept is allowed: jpg/png images and the
+document/text formats of `lib/upload-types.ts`, at most 20 MB each. A turn may carry up to 5
+files and, as in chat-view, may have no text if it has files.
+
+`generate` checks each attached file is this annotator's, from this conversation, ready and
+named as stored, then hands `attached_file_ids` / `source_url` to the agent exactly as `/chat`
+does. A submitted example is built with `allow_attachments`: images are stored in `sft_images`,
+documents are in the `read_file` results the agent made, and `collector_turns.attachments /
+source_urls` (copied into `collect_meta`) record what was attached. `build_dataset.py` keeps
+attachments on collector rows; images still follow `--images`.
+
+`POST /threads/{id}/restart` (regenerate / change inputs) moves the staged files to a fresh
+thread; discarding a conversation deletes its files and their S3 objects. Run
+`python -m scripts.init_db` after deploying (adds `collector_turns.attachments / source_urls`).
+`tests/test_collector_e2e_files.py` runs the same turn, with a document, an image and two URLs,
+through `/chat` and the collector against a real S3 API (moto) and asserts the model receives
+identical messages.

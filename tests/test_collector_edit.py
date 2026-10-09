@@ -131,3 +131,36 @@ def test_human_messages_survive_the_edit_untouched():
     # the K-th user message is turn 2K-1; the collector derives turns from this count
     msgs = [HumanMessage(content="a"), AIMessage(content="x"), HumanMessage(content="b"), AIMessage(content="y")]
     assert 2 * sum(isinstance(m, HumanMessage) for m in msgs) - 1 == 3
+
+
+def test_attachments_are_refused_for_a_thumbs_up_and_allowed_for_the_collector():
+    # A real person's uploaded files are not recorded by a thumbs-up; the collector's are
+    # test files an annotator chose. Images ride along either way (sft_images).
+    messages = [
+        HumanMessage(content="<attached_files>\nnotes.txt -> mounted at /uploads/notes.txt\n</attached_files>\n\n<user_query>\nq\n</user_query>"),
+        AIMessage(content="a", response_metadata=dict(LUNA)),
+    ]
+    with pytest.raises(sc.CaptureError) as e:
+        sc.build_capture(messages, 1)
+    assert e.value.code == "has_attachments"
+    cap = sc.build_capture(messages, 1, allow_attachments=True)
+    assert cap.has_attachments and not cap.has_memory
+
+    # the memory exception does not imply the attachment one, nor the reverse
+    with pytest.raises(sc.CaptureError):
+        sc.build_capture(messages, 1, allow_memory=True)
+
+
+def test_an_image_message_is_stored_by_reference_with_its_bytes_kept():
+    png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    messages = [
+        HumanMessage(content=[
+            {"type": "text", "text": "<attached_files>\nx\n</attached_files>\n\n<user_query>\nwhat is this\n</user_query>"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+        ]),
+        AIMessage(content="a tiny square", response_metadata=dict(LUNA)),
+    ]
+    cap = sc.build_capture(messages, 1, allow_attachments=True)
+    [(sha, (mime, data))] = cap.images.items()
+    assert mime == "image/png" and data[:4] == b"\x89PNG" and cap.has_image
+    assert cap.messages[0]["content"][1]["image_url"]["url"] == f"omni-image://{sha}"

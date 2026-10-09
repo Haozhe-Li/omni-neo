@@ -132,6 +132,22 @@ def delete_user_uploads_from_s3(user_id: str, buckets: list[str]) -> int:
     return deleted
 
 
+def delete_s3_objects(objects: list[tuple[str, str]]) -> int:
+    """Delete specific `(bucket, key)` objects, best-effort; returns how many went.
+
+    For the collector discarding a conversation's test uploads. A failure is logged
+    and skipped — a leftover object is cheaper than a failed discard.
+    """
+    deleted = 0
+    for bucket, key in objects:
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=key)
+            deleted += 1
+        except Exception as e:
+            logger.error(f"delete_s3_objects failed for {bucket}/{key}: {e}")
+    return deleted
+
+
 def get_put_presigned_url(s3_bucket: str, file_id: str, file_type: str) -> str | None:
     """Generate a short-lived presigned URL for frontend direct upload"""
     try:

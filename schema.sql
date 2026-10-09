@@ -319,6 +319,11 @@ CREATE TABLE IF NOT EXISTS collector_turns (
 CREATE INDEX IF NOT EXISTS idx_collector_turns_user ON collector_turns (user_id);
 -- The skill the annotator switched on for the turn (the chat picker's wire id), if any.
 ALTER TABLE collector_turns ADD COLUMN IF NOT EXISTS skill VARCHAR(32);
+-- What was attached to the turn: [{file_id, filename, category, file_type, size_bytes}] and the
+-- "Add URL" list. The files themselves are in user_files / S3 until the conversation is discarded;
+-- what the model saw of them is in the example's messages (images in sft_images).
+ALTER TABLE collector_turns ADD COLUMN IF NOT EXISTS attachments JSONB;
+ALTER TABLE collector_turns ADD COLUMN IF NOT EXISTS source_urls JSONB;
 
 -- ---------------------------------------------------------------------------
 -- shared_threads / thread_forks: share a conversation by link

@@ -39,43 +39,69 @@ class UploadUrlRequest(BaseModel):
     thread_id: str | None = None
 
 
-@router.post("/url")
-def api_upload_url(
-    request: UploadUrlRequest,
-    user_id: str = Depends(get_current_user),
-):
+def classify_upload(filename: str, file_type: str) -> str:
+    """'image' or 'document' for an upload, or 400 if the format is not accepted.
+
+    One rule for every caller (this router and the training-data collector), so a
+    file is filed under the same category whichever door it came through.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if file_type.startswith("image/"):
+        return "image"
+    if (
+        ext in MARKDOWN_SOURCE_EXTENSIONS
+        or ext in _TEXT_EXTENSIONS
+        or file_type.startswith("text/")
+        or file_type in _TEXT_MIME_TYPES
+    ):
+        return "document"
+    raise HTTPException(status_code=400, detail="Unsupported file format")
+
+
+def mint_upload(
+    *, user_id: str, thread_id: str | None, filename: str, file_type: str, file_size_bytes: int
+) -> dict:
+    """Register a pending file and return its presigned S3 PUT URL.
+
+    The whole of POST /api/upload/url, so the collector (core/routers/collector.py)
+    stores files exactly as a user's upload does: same key shape
+    (`user_uploads/<user>/<uuid>`), same bucket, same `user_files` row, same category.
+    """
     # Use thread_id from request body; generate one only if frontend didn't provide it.
-    thread_id = request.thread_id or str(uuid.uuid4())
+    thread_id = thread_id or str(uuid.uuid4())
     raw_file_id = str(uuid.uuid4())
     file_id = f"user_uploads/{user_id}/{raw_file_id}"
     s3_bucket = os.getenv("S3_BUCKET_NAME", "omni")
 
-    ext = os.path.splitext(request.filename)[1].lower()
-    if request.file_type.startswith("image/"):
-        category = "image"
-    elif (
-        ext in MARKDOWN_SOURCE_EXTENSIONS
-        or ext in _TEXT_EXTENSIONS
-        or request.file_type.startswith("text/")
-        or request.file_type in _TEXT_MIME_TYPES
-    ):
-        category = "document"
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported file format")
+    category = classify_upload(filename, file_type)
 
     create_pending_file(
         file_id=file_id,
         user_id=user_id,
         thread_id=thread_id,
-        original_filename=request.filename,
-        file_type=request.file_type,
-        file_size_bytes=request.file_size_bytes,
+        original_filename=filename,
+        file_type=file_type,
+        file_size_bytes=file_size_bytes,
         s3_bucket=s3_bucket,
         category=category,
     )
 
-    url = get_put_presigned_url(s3_bucket, file_id, request.file_type)
+    url = get_put_presigned_url(s3_bucket, file_id, file_type)
     return {"upload_url": url, "file_id": file_id, "thread_id": thread_id}
+
+
+@router.post("/url")
+def api_upload_url(
+    request: UploadUrlRequest,
+    user_id: str = Depends(get_current_user),
+):
+    return mint_upload(
+        user_id=user_id,
+        thread_id=request.thread_id,
+        filename=request.filename,
+        file_type=request.file_type,
+        file_size_bytes=request.file_size_bytes,
+    )
 
 
 @router.post("/confirm")
