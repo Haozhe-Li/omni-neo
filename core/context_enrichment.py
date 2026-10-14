@@ -799,8 +799,15 @@ async def enrich_context(
     query: str,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
+    harmful: "asyncio.Future[bool] | None" = None,
 ) -> Enrichment:
     """Scout one retrieval for ``query`` and package it for the turn.
+
+    ``harmful`` is the prompt guard's verdict, running concurrently with the
+    routing and classification below. Those only read the query; the tool
+    fetch is the first step with an outside effect (a web search sends the
+    query to a third party), so it waits for the verdict and is skipped if the
+    query was flagged. The caller discards the whole turn in that case anyway.
 
     Never raises: every failure path (long query, dead model, unparseable
     decision, unknown action, missing argument, failing tool) returns an empty
@@ -863,6 +870,9 @@ async def enrich_context(
         logger.warning(
             "[context_enrichment] action %r missing its argument — ignored", decision.action
         )
+        return Enrichment()
+
+    if harmful is not None and await harmful:
         return Enrichment()
 
     args = action.args(decision)

@@ -16,10 +16,12 @@ checkpointer.py), so thread deletion clears it via the sync Redis saver's
 """
 
 import logging
+import re
 import threading
 import time
 
 from core.database import pg
+from core.database.db_user_threads import register_thread
 from core.database.checkpointer import get_sync_checkpointer, delete_rewind_points
 from core.utils import redis_sources, vector_sources
 from core.utils.redis_client import get_redis
@@ -185,6 +187,30 @@ def upsert_thread(thread_id: str, user_id: str | None = None) -> None:
         _owner_cache_invalidate(thread_id)  # ownership may have just changed
     except Exception as e:
         logger.error(f"[db_threads_control] upsert_thread error for {thread_id}: {e}")
+
+
+# A thread id the *client* minted (crypto.randomUUID on the home screen) is only
+# registered on first use if it is a well-formed UUID; anything else keeps the
+# old behaviour (no registration, touch_thread alone).
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def is_uuid_thread_id(thread_id: str | None) -> bool:
+    return bool(thread_id) and _UUID_RE.match(thread_id) is not None
+
+
+def ensure_thread_registered(thread_id: str, user_id: str) -> bool:
+    """Create the threads_control + user_threads rows for a thread the client
+    named itself, owned by `user_id`. Idempotent (ON CONFLICT DO NOTHING), so it
+    is safe for /chat and /sync to both call it when they race on a brand-new
+    thread. Replaces the up-front GET /get_thread_id round trip: the thread now
+    comes into existence with its first message, not before the user has typed.
+    Never takes over a thread another user already owns."""
+    ok = register_thread(thread_id, user_id)
+    _owner_cache_invalidate(thread_id)  # a cached "unclaimed" entry is now stale
+    return ok
 
 
 def touch_thread(thread_id: str, user_id: str | None = None) -> None:

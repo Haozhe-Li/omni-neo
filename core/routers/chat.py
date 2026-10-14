@@ -48,7 +48,10 @@ from core.database.db_user_threads import (
     upsert_thread_messages,
 )
 from core.database.db_user_usage import evaluate_charge_fast, commit_charge_fast, usage_snapshot_hit
+from core.database.db_user_threads import count_user_threads, GUEST_MAX_THREADS
 from core.database.db_threads_control import (
+    ensure_thread_registered,
+    is_uuid_thread_id,
     touch_thread,
     get_thread_owner_async,
     owner_cache_hit,
@@ -435,6 +438,14 @@ def _charge_key(model: ChatModel, has_image: bool) -> str:
     return model.id
 
 
+def _register_and_touch(thread_id: str, user_id: str, register: bool) -> None:
+    """Background job at the start of a turn: create the thread's rows if the
+    client just minted its id (see ensure_thread_registered), then bump it."""
+    if register:
+        ensure_thread_registered(thread_id, user_id)
+    touch_thread(thread_id, user_id)
+
+
 def _thread_locked_detail(locked_reason: str | None) -> dict:
     """The structured 403 body for a thread SAFETY_TERMINATED already locked —
     same shape convention as _usage_limit_detail, for the frontend to switch on
@@ -497,15 +508,31 @@ async def chat(
     async def _lock_state():
         return await get_thread_lock_state_async(thread_id) if thread_id else (False, None)
 
+    # The guest thread cap used to be enforced by GET /get_thread_id. Threads now
+    # come into being here, on their first message, so the count is read in this
+    # same batch (guests only, and only when the owner isn't already cached —
+    # i.e. when this may be a new thread) and applied below once `owner` shows it
+    # is new. Costs no extra round trip.
+    async def _guest_threads():
+        if thread_id and user_id.startswith("guest_") and not owner_cache_hit(thread_id):
+            return await asyncio.to_thread(count_user_threads, user_id)
+        return 0
+
     _batch_start = time.perf_counter()
-    charge_result, owner, is_generating_now, stored_memory, (is_locked, locked_reason) = await asyncio.gather(
+    (
+        charge_result, owner, is_generating_now, stored_memory,
+        (is_locked, locked_reason), guest_thread_count,
+    ) = await asyncio.gather(
         t.atimed("charge", evaluate_charge_fast(user_id, charge_key)),
         t.atimed("owner", _owner()),
         t.atimed("is_generating", _generating()),
         t.atimed("memory", _memory()),
         t.atimed("lock_state", _lock_state()),
+        t.atimed("guest_threads", _guest_threads()),
     )
     t.record("batch", (time.perf_counter() - _batch_start) * 1000)
+    # No owner on record = a thread the client minted itself, first seen now.
+    is_new_thread = bool(thread_id) and owner is None
 
     # ── decide, in priority order (pure in-memory, no I/O) ─────────────────
     # 1. access gate — reject before any side effect (nothing charged yet)
@@ -524,6 +551,17 @@ async def chat(
             media_type="text/event-stream",
             headers=headers,
         )
+    # 2b. guest thread cap — only for a thread that doesn't exist yet
+    if (
+        is_new_thread
+        and user_id.startswith("guest_")
+        and guest_thread_count >= GUEST_MAX_THREADS
+    ):
+        t.emit(outcome="guest_thread_limit")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Guest accounts are limited to {GUEST_MAX_THREADS} threads. Please sign in for unlimited threads.",
+        )
     # 3. lock gate — conversation was ended for safety, no new turns.
     if is_locked:
         t.emit(outcome="locked")
@@ -538,7 +576,10 @@ async def chat(
     commit_charge_fast(user_id, charge_key)
     if thread_id:
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(db_executor, touch_thread, thread_id, user_id)
+        loop.run_in_executor(
+            db_executor, _register_and_touch,
+            thread_id, user_id, is_new_thread and is_uuid_thread_id(thread_id),
+        )
 
     # The follow-up selection and the requested skill are no longer glued onto
     # the query string: `build_message_content` gives each its own block so the

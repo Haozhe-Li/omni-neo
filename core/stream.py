@@ -275,6 +275,14 @@ def _lock_thread_fire_and_forget(thread_id: str | None) -> None:
     asyncio.create_task(_do())
 
 
+def _harmful_events(thread_id: str | None):
+    """The turn-ending SSE for a query the prompt guard flagged: lock the
+    thread and send the structured safety error (same shape as the
+    prompt-leakage cutoff below)."""
+    _lock_thread_fire_and_forget(thread_id)
+    yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
+
+
 def _text_of(content: Any) -> str:
     """Coerce a message's `content` (str or content-block list) to plain text."""
     if isinstance(content, str):
@@ -631,8 +639,17 @@ async def _stream_agent(
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
+    harmful: "asyncio.Future[bool] | None" = None,
 ):
     """Run the pre-flight scout, then drive the agent, yielding SSE strings.
+
+    ``harmful`` is the prompt-guard verdict for ``query``, started by
+    `run_agent_stream` so it runs *concurrently* with everything below that
+    precedes the model call (citation load, scout, message assembly). It is
+    awaited right before anything is emitted or the agent starts: a harmful
+    verdict ends the turn there, discarding whatever was prepared. Nothing
+    reaches the model, and nothing reaches the client, before the verdict is
+    in. ``None`` means no guard (the caller already vetted the query).
 
     If ``rewind_config`` is provided the agent replays / forks from that
     LangGraph checkpoint instead of appending a new user message. In that
@@ -717,6 +734,7 @@ async def _stream_agent(
                 query,
                 user_location=user_location,
                 user_local_datetime=user_local_datetime,
+                harmful=harmful,
             )
             # The router may have matched the request to a skill ("深度研究一下…"
             # -> web-research). From here on that is the same as the user having
@@ -728,6 +746,13 @@ async def _stream_agent(
                 skill = enrichment.skill
                 if thread_id is not None:
                     await skill_already_delivered(thread_id, skill)
+        # `source_url` makes build_message_content fetch pages from the open web
+        # on the user's behalf — the one assembly step with an outside effect —
+        # so it still waits for the verdict. Everything else is local string work.
+        if source_url and harmful is not None and await harmful:
+            for ev in _harmful_events(thread_id):
+                yield ev
+            return
         content, doc_files, doc_sources = await asyncio.to_thread(
             build_message_content,
             query,
@@ -749,6 +774,15 @@ async def _stream_agent(
         files = {**SKILL_FILES, **doc_files}
         if files:
             input_state["files"] = files
+
+    # The gate. Only now — with the scout and message assembly already done in
+    # parallel with the classifier — do we need its answer, and everything
+    # above is thrown away if it says harmful: no scout step, no source card,
+    # no model call ever reaches the client or the provider.
+    if harmful is not None and await harmful:
+        for ev in _harmful_events(thread_id):
+            yield ev
+        return
 
     seen_sources: set[tuple] = set()
     # Citation numbers already surfaced to the frontend — seeded from whatever
@@ -988,11 +1022,13 @@ async def run_agent_stream(
         yield _sse(error_payload(test_code, detail=f"test_command:{query.strip()}"))
         return
 
-    if await is_harmful(query):
-        _lock_thread_fire_and_forget(thread_id)
-        yield _sse(error_payload(ErrorCode.SAFETY_TERMINATED, detail="harmful_query"))
-        return
-
+    # The prompt guard is a network call (~150-400ms) that used to sit in front
+    # of everything. It now runs alongside the pre-model work in `_stream_agent`,
+    # which awaits the verdict before it emits a single event or starts the
+    # agent — so the guarantee is unchanged (a harmful query never reaches the
+    # model) while its latency overlaps with the scout instead of adding to it.
+    # `is_harmful` fails open and never raises.
+    harmful = asyncio.ensure_future(is_harmful(query))
     try:
         async for event in _stream_agent(
             query, thread_id, model_id, system_reminder, attached_file_ids,
@@ -1006,6 +1042,7 @@ async def run_agent_stream(
             extra_sources=extra_sources,
             source_url=source_url,
             cancellation_event=cancellation_event,
+            harmful=harmful,
         ):
             if cancellation_event and cancellation_event.is_set():
                 yield _sse({"type": "stopped"})
@@ -1016,3 +1053,6 @@ async def run_agent_stream(
 
         traceback.print_exc()
         yield _sse(error_payload(ErrorCode.GENERATION_FAILED, detail=str(exc)))
+    finally:
+        if not harmful.done():
+            harmful.cancel()
