@@ -42,7 +42,9 @@
 
 ### `GET /get_thread_id`
 
-创建一个新 Thread ID。应在每次新建对话时调用。
+创建一个新 Thread ID。
+
+> **不再是必经步骤。** 网页前端现在自己生成 UUID v4 作为 thread_id，后端在该 thread 的第一次 `/chat`（或 `/api/threads/{id}/sync`）时惰性创建 `threads_control` / `user_threads` 行（幂等，不会接管他人的 thread）；游客 thread 数量上限也在这时检查（超限同样返回 429）。只有需要 `origin`（如 `voice`）的调用方仍应使用本接口。惰性创建只接受格式合法的 UUID。
 
 **鉴权：** 可选（传了会绑定用户）
 
@@ -703,7 +705,7 @@ Content-Type: multipart/form-data
 ### 新建对话
 
 ```
-1. GET  /get_thread_id             （携带身份 Header）→ 拿到 thread_id
+1. 本地生成 UUID v4 作为 thread_id   （无需请求；后端首次 /chat 或 /sync 时自动建档）
 2. POST /get_model    { query }    → 决定用 /chat 还是 /light_chat
 3. POST /chat 或 /light_chat       → 展示回答
 4. POST /get_title    { query }    → 异步更新侧边栏标题

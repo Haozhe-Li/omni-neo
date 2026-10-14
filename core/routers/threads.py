@@ -20,6 +20,9 @@ from core.database.db_user_threads import (
     GUEST_MAX_THREADS,
 )
 from core.database.db_threads_control import (
+    ensure_thread_registered,
+    get_thread_owner,
+    is_uuid_thread_id,
     upsert_thread,
     delete_thread as delete_thread_state,
     delete_threads_bulk as delete_threads_state_bulk,
@@ -173,7 +176,13 @@ def api_sync_thread(
     """
     Upsert the ui_messages (and optionally the title) for a thread.
     The row is only written if it belongs to the requesting user.
+
+    The client mints its own thread id and fires this sync alongside the first
+    /chat, so it can land first: an unclaimed thread is registered here too
+    (see ensure_thread_registered) instead of failing the foreign key.
     """
+    if is_uuid_thread_id(thread_id) and get_thread_owner(thread_id) is None:
+        ensure_thread_registered(thread_id, user_id)
     ok = upsert_thread_messages(thread_id, user_id, body.messages)
     if not ok:
         raise HTTPException(
