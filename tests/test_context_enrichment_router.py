@@ -81,7 +81,10 @@ def test_web_search_decided_by_router_skips_the_llm_and_searches_the_query_verba
     assert h.llm_calls == []
     assert h.tool_calls[0][0] == "web_search" and h.tool_calls[0][1].search_query == "what is a vector database"
     assert out.action == "web_search" and "BODY" in out.text
-    assert out.events[0] == {"type": "tool_call", "tool": "web_search", "args": {"query": "what is a vector database"}}
+    assert out.events[0] == {
+        "type": "tool_call", "tool": "web_search", "args": {"query": "what is a vector database"},
+        "id": ce._SCOUT_CALL_ID,
+    }
 
 
 def test_direct_response_enriches_nothing_and_does_not_call_the_llm(monkeypatch):
@@ -215,3 +218,28 @@ def test_the_shipped_choices_define_a_web_research_skill_that_exists_on_disk():
     assert "web-research" in skills
     for name in skills:
         assert (Path(__file__).parent.parent / "skills" / name / "SKILL.md").is_file(), name
+
+
+def test_scout_search_reports_the_pages_it_retrieved_as_a_tool_result(monkeypatch):
+    from core.utils.citations import register_citation, reset_citation_registry
+
+    Harness(monkeypatch, FakeRouter(result("web_search")))
+    real = ce._ACTIONS["web_search"]
+
+    async def search_that_cites(d):
+        register_citation("A", "https://a.com/x", "c")
+        register_citation("Junk", "https://junk.biz", "c", credibility={"label": "junk", "reason": "r"})
+        register_citation("B", "https://b.org/y", "c")
+        return "BODY", None
+
+    monkeypatch.setitem(
+        ce._ACTIONS, "web_search",
+        ce._Action(tool=real.tool, args=real.args, run=search_that_cites, ready=real.ready),
+    )
+    reset_citation_registry()
+    out = run(ce.enrich_context("what is a vector database"))
+    call, result_ev = out.events[0], out.events[1]
+    assert result_ev == {
+        "type": "tool_result", "id": call["id"], "tool": "web_search",
+        "results": [{"title": "A", "url": "https://a.com/x"}, {"title": "B", "url": "https://b.org/y"}],
+    }

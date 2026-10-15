@@ -74,6 +74,7 @@ from core.tools.adapters import (
     weather_forecast,
     web_search,
 )
+from core.tool_results import pages_from_sources
 from core.utils.citations import all_citations
 
 logger = logging.getLogger(__name__)
@@ -758,6 +759,10 @@ def requested_skill_enrichment(skill: str, *, routed: bool = False) -> Enrichmen
     )
 
 
+# Wire id of the scout's one tool_call, so its tool_result can find it. One
+# scout runs per turn and the id only has to be unique within a turn's steps.
+_SCOUT_CALL_ID = "context-enrichment"
+
 # Long enough that a still-active thread never sees a spurious re-inject; short
 # enough not to leak a key per (thread, skill) forever for one that was
 # abandoned after a single turn.
@@ -939,7 +944,18 @@ async def enrich_context(
     )
     text = f"{preamble}\n\n{body}"
 
-    events: list[dict] = [{"type": "tool_call", "tool": action.tool, "args": args}]
+    # The scout's search is a step on the trace like any other, so it reports
+    # what it retrieved the same way the agent's own calls do (`tool_result`,
+    # see core/stream.py) — this is the retrieval a plain factual question
+    # usually gets, so without it that trace shows a query and nothing read.
+    events: list[dict] = [
+        {"type": "tool_call", "tool": action.tool, "args": args, "id": _SCOUT_CALL_ID}
+    ]
+    pages = pages_from_sources(sources)
+    if pages:
+        events.append(
+            {"type": "tool_result", "id": _SCOUT_CALL_ID, "tool": action.tool, "results": pages}
+        )
     if widget:
         events.append({"type": "widget", **widget})
 

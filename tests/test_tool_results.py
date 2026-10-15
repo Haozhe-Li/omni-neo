@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from core.tool_results import MAX_RESULTS, tool_result_pages
+from core.tool_results import MAX_RESULTS, pages_from_sources, tool_result_pages
 
 
 def test_search_list_keeps_order_and_drops_content():
@@ -56,3 +56,13 @@ def test_dedupes_and_caps():
     assert len(tool_result_pages(json.dumps(dup))) == 1
     many = [{"title": str(i), "url": f"https://x.com/{i}"} for i in range(MAX_RESULTS + 5)]
     assert len(tool_result_pages(json.dumps(many))) == MAX_RESULTS
+
+
+def test_pages_from_sources_skips_documents_and_junk():
+    sources = [
+        {"title": "Doc", "url": "", "content": "uploaded"},
+        {"title": "Junk", "url": "https://junk.biz", "credibility": {"label": "junk"}},
+        {"title": "A", "url": "https://a.com", "credibility": {"label": "trusted"}},
+        {"title": "A again", "url": "https://a.com"},
+    ]
+    assert pages_from_sources(sources) == [{"title": "A", "url": "https://a.com"}]
