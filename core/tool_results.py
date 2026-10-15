@@ -36,6 +36,26 @@ def _payload(content: Any) -> Any:
     return content
 
 
+def pages_from_sources(sources: list[dict]) -> list[dict]:
+    """`{title, url}` pages for citation records, for a step whose tool result
+    is not available — the pre-flight scout runs its retrieval outside the
+    agent, so only the citations it registered are on hand. Same rules as
+    `tool_result_pages`: no URL-less records (uploaded documents), no junk
+    (withheld from the agent), deduped, capped.
+    """
+    pages: list[dict] = []
+    seen: set[str] = set()
+    for src in sources:
+        url = src.get("url") or ""
+        if not url or url in seen or (src.get("credibility") or {}).get("label") == "junk":
+            continue
+        seen.add(url)
+        pages.append({"title": src.get("title") or "", "url": url})
+        if len(pages) >= MAX_RESULTS:
+            break
+    return pages
+
+
 def tool_result_pages(
     content: Any,
     citation_by_n: Callable[[int], dict | None] | None = None,
