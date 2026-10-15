@@ -28,7 +28,7 @@ description: Internal knowledge about Omni. Use this skill when the user asks ab
 ## Tech Stack
 - **LLM**:
   - Best model: the default recommendation. Omni will automatically select the most suitable model for your query.
-  - Rix: Omni's latest experimental in-house model, tuned for agentic research on top of Qwen 3 30B A3B. It is text-only, and because it is still in beta, responses may take a little longer.
+  - Rix: Omni's latest experimental in-house model, distilled from GPT 5.6 Luna on top of Gemma 4 26B A4B. It supports images, and because it is still in beta, answers may occasionally be less polished than the other models.
   - Gemma 4: Google's latest open-source multimodal model from Google DeepMind.
   - GPT 5.6 Luna: OpenAI's latest versatile multimodal model.
   - Gemini 3.6 Flash: Google's latest versatile multimodal model.
@@ -93,4 +93,4 @@ Yes — like any AI system, Omni can occasionally hallucinate or misstate facts.
 The "Best Model" option allows Omni to automatically select the most suitable model for your query based on the task at hand. This ensures optimal performance and accuracy without requiring you to manually choose a model. For example, if your query involves complex reasoning or multi-step research, Omni may select a model that excels in those areas. Conversely, for simpler tasks, it may choose a faster model to provide quick responses.
 
 **Q: Is Rix a better model than the others?**
-Rix is an experimental in-house model designed for advanced research tasks. While it may excel in certain areas, it is still in beta and may take longer to respond. In our internal benchmarks, Rix has shown strong upgrades in anti-hallucination and reasoning capabilities compared to other models. Furthermore, Rix is text-only and does not support multimodal inputs like images or charts. Depending on your specific needs, you may choose to use Rix for deep research tasks or opt for other models for multimodal capabilities.
+Rix is an experimental in-house model designed for advanced research tasks. While it may excel in certain areas, it is still in beta and may take longer to respond. In our internal benchmarks, Rix has shown strong upgrades in anti-hallucination and reasoning capabilities compared to other models. Depending on your specific needs, you may choose to use Rix for research tasks or opt for another model if you want the most polished answers.

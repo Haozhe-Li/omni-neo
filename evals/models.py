@@ -113,19 +113,20 @@ def _family_of(model_id: str) -> str:
     A W&B LoRA artifact collapses onto its base model. The raw id is a
     per-training-run path (`.../omni-pro-v3-0812-1157:v1`), so keying pricing on
     it would mean a new `pricing.yaml` entry for every retrain — and a silently
-    unpriced model until someone remembered. Every artifact in this project is a
-    rank-1 adapter over Qwen3-30B-A3B and is served at the base model's rate.
+    unpriced model until someone remembered. Every artifact in this project is an
+    adapter over Gemma 4 26B-A4B and is served at the base model's rate (no
+    pricing.yaml entry yet, so cost reads as unknown).
     """
     if model_id.startswith("wandb-artifact:///"):
         return _WANDB_ARTIFACT_BASE
     return model_id.split("/")[-1]
 
 
-# The base model every LoRA in `omni-pro-agent` is trained on, and the family
+# The base model every LoRA in this project is trained on, and the family
 # their cost is looked up under. Change this if a future adapter uses a
 # different base — an artifact priced against the wrong base is silently wrong,
 # not an error.
-_WANDB_ARTIFACT_BASE = "Qwen3-30B-A3B-Instruct-2507"
+_WANDB_ARTIFACT_BASE = "gemma-4-26B-A4B-it"
 
 
 # Display-only relabeling, keyed by var_name — does NOT touch `family`

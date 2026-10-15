@@ -38,7 +38,7 @@ run_wave() {
 }
 
 echo "wave 1/3"
-run_wave "cerebras:gpt-oss-120b-low gemma-4-31b" "wandb:qwen3-30b-a3b rix-30b-a3b-v1 rix-30b-a3b-v3"
+run_wave "cerebras:gpt-oss-120b-low gemma-4-31b" "wandb:qwen3-30b-a3b"
 echo "wave 2/3"
 run_wave "groq:gpt-oss-120b-low-groq gpt-oss-20b" "google:gemini-3-6-flash gemini-flash-lite-3-5"
 echo "wave 3/3"

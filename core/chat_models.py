@@ -3,15 +3,14 @@
 This replaced the fast/pro *mode* switch. A mode was a bundle of prompt, turn
 budget and skill roster; a model is just the weights. Everything else — the
 system prompt, the tools, all 9 skills, the tool budget — is identical
-across every entry here. That uniformity was originally what let `rix` be
-served by a LoRA (an adapter has exactly one compatible prompt); `rix` is
-offline pending a retrain against the tool adapter layer, but keeping the
-entries uniform is what makes serving the next one a one-line change.
+across every entry here. That uniformity is what lets `rix` be served by a LoRA
+(an adapter has exactly one compatible prompt), and keeping the entries uniform
+is what makes serving the next one a one-line change.
 
 Four entries, two of them open to guests:
 
     best      the default; luna underneath, on both the text and image paths
-    rix       the fine-tune (offline for now)
+    rix       the fine-tune: Gemma 4 26B-A4B distilled from luna (opt-in)
     luna      signed in
     gemini    signed in
 
@@ -44,7 +43,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from core.llm import (
     gemini_3_6_flash,
     gpt_6_luna,
-    rix_30b_a3b_v6,
+    rix_gemma_v1,
     vision_llm,
 )
 
@@ -56,14 +55,13 @@ class ChatModel:
     llm: BaseChatModel
     credits: float
     requires_auth: bool
-    # True for every model currently listed. It exists for text-only entries
-    # like the offline `rix` fine-tune, which W&B serves without vision: the
-    # frontend blocks the attachment before it is uploaded, and
+    # True for every model currently listed. It exists for text-only entries:
+    # the frontend blocks the attachment before it is uploaded, and
     # `core/routers/chat.py` rejects it again for clients that don't.
     accepts_images: bool
     # Model to swap in when the conversation contains an image. Set on `best`
     # only — that swap *is* what "best available" means here. None elsewhere:
-    # luna/gemini read images natively, and `rix` refuses them outright.
+    # luna/gemini/rix read images natively.
     vision_fallback: BaseChatModel | None = None
     # Credits charged when `vision_fallback` takes the turn.
     vision_credits: float | None = None
@@ -97,13 +95,13 @@ CHAT_MODELS: dict[str, ChatModel] = {
     "rix": ChatModel(
         id="rix",
         label="Rix",
-        llm=rix_30b_a3b_v6,
+        llm=rix_gemma_v1,
         credits=1.0,
         requires_auth=False,
-        # W&B serves the adapter text-only. The frontend blocks an attachment
-        # before upload and core/routers/chat.py rejects it again for clients
-        # that don't.
-        accepts_images=False,
+        # Gemma 4 is multimodal and W&B serves this adapter with vision (an image
+        # turn answered correctly when checked), and the training set includes
+        # image turns, so no swap to another model is needed.
+        accepts_images=True,
     ),
     "luna": ChatModel(
         id="luna",

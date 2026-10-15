@@ -7,7 +7,7 @@ see `core/chat_models.py` for the five entries and what each costs — and every
 one of them is assembled here identically: same `SYSTEM_PROMPT`, same 15 tools,
 same 9 skills, same tool budget (core/tool_budget.py). Only the weights differ.
 
-The uniformity is load-bearing, not tidiness. `rix_30b_a3b_v1` is a LoRA
+The uniformity is load-bearing, not tidiness. `rix_gemma_v1` is a LoRA
 distilled from teacher rollouts of *this* agent, and a LoRA only ever sees one
 system prompt and one tool schema. A per-model prompt would mean serving the
 adapter an input it has never seen — silently, with no error.
@@ -111,7 +111,7 @@ SKILL_FILES = _load_skill_files()
 # The section *text* is load-bearing, not just the section list: a LoRA
 # distilled from this agent only ever sees one system prompt, so an edit here —
 # even a reordering, even a reworded heading — serves that adapter an input it
-# has never seen, silently and without an error. `rix_30b_a3b_v1` was distilled
+# has never seen, silently and without an error. `rix_gemma_v1` was distilled
 # under an older revision of these sections and is offline for exactly that
 # reason; any future adapter has to be collected and trained under whatever this
 # file says at the time. `finetune/pro_agent/fingerprint.py` is the tripwire —
@@ -774,10 +774,8 @@ class VisionModelMiddleware(AgentMiddleware):
     conversation, not just the latest turn — a later turn re-referencing an
     earlier image is still a multimodal request.
 
-    This used to be a fast-profile detail (gpt-oss-120b is text-only). It is now
-    load-bearing for every request: the primary model is a LoRA over
-    Qwen3-30B-A3B-Instruct served by W&B Inference, which is text-only, so
-    without this middleware every image turn in the product 400s.
+    This used to be a fast-profile detail (gpt-oss-120b is text-only). It is only
+    set for `best`, whose text path may be a text-only model.
 
     Note what this does *not* do — it swaps the model, not the prompt. Luna
     receives the same system prompt the adapter was trained on, which is correct

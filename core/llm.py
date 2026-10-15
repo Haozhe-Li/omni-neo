@@ -126,148 +126,23 @@ gpt_5_4_nano = init_chat_model("openai:gpt-5.4-nano", use_responses_api=True)
 qwen3_30b_a3b = ChatWandb(
     model="Qwen/Qwen3-30B-A3B-Instruct-2507", temperature=0.2, max_tokens=8192
 )
-# rix_30b_a3b_v1 = ChatWandb(
-#     model=(
-#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-#         "/omni-pro-agent/omni-pro-104-0812-0016:v1"
-#     ),
-#     temperature=0.7,
-#     max_tokens=8192,
-# )
-
-# v3: 122 rows, 6 epochs, 732 steps, final loss 0.413. Superseded by v4 below;
-# kept so the benchmark can still measure it.
+# The chat fine-tune: Gemma 4 26B-A4B distilled from gpt-6-luna (finetune/rix_gemma).
+# v1: 124 rows, 3 epochs, 372 steps, per-epoch mean loss 1.91 -> 0.94 -> 0.78.
+# Rows come from thumbs-ups and the collector page, and include a handful of
+# image turns, so unlike the Qwen adapters it replaces this one is served with
+# vision. Trained on the current harness (harness_hash 0417ee59ecf80b04): a
+# change to the system prompt, a skill's `description:` or a tool docstring
+# means re-collecting and re-training, not just editing the prompt.
 #
-# What changed from v1 (104 rows, 1 epoch, loss ~0.9): all 15 deep-research
-# trajectories are back, and the run actually completed. Two earlier attempts at
-# the full set hung forever because W&B Serverless Training has a hard
-# **32,768-token** sequence limit that it does not error on — it just stops
-# producing gradient steps while still reporting RUNNING. v2 died at step 97 of
-# 516 on the first row above it. `filter_context.py` drops anything over 32,000
-# measured through the real Qwen chat template; the longest row here is 31,840.
+# Known gaps from the first check against the full agent: it loads a skill
+# (read_file on /skills/...) far less often than luna does, and a turn that
+# follows a tool call can open with a leaked `<|channel>thought` marker.
 #
-# temperature 0.2, not the 0.7 above: v1's published 0.866 was measured at 0.2,
-# so this keeps the v1-vs-v3 comparison clean. Note that means re-running v1
-# today would NOT reproduce 0.866 — its temperature was raised afterwards.
-# rix_30b_a3b_v3 = ChatWandb(
-#     model=(
-#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-#         "/omni-pro-agent/omni-pro-v3-0812-1157:v1"
-#     ),
-#     temperature=0.2,
-#     max_tokens=8192,
-# )
-
-# v4: 157 rows, 6 epochs, 942 steps, final loss 0.422. Serves `rix`.
-#
-# The higher loss than v3's 0.413 is not a regression — the set grew 29% and
-# every added row is a distribution v3 never saw. What v4 adds, all of it
-# absent from the previous 147 rows:
-#
-#   - translation with a `<textblock>` deliverable (0 rows before, and 0 of the
-#     28 benchmark cases, which is why v3 answers translations in plain prose)
-#   - Chinese questions carrying English noun phrases. v3 answers those
-#     entirely in English, 0 of 8 measured; one or two English words is fine at
-#     8 of 8, so it is a dose response, not noise
-#   - `Follow User's Query Language`, the `<personalization>` value production
-#     sends when the user has set no preference. It appeared in 0 of 147 rows
-#     while being what most production turns actually carry
-#
-# The 32,768-token trap that killed v2 is unchanged and still the thing to
-# respect. v4's longest row is 29,128 measured through the real Qwen chat
-# template with tool schemas included; nothing was dropped by the filter, and
-# all 15 deep-research trajectories survive. Note that `build_dataset.py` had
-# silently stopped water-filling tool results — without that fix the filter
-# removes every deep-research row instead.
-#
-# temperature 0.2 to match v3, so the v3-vs-v4 benchmark comparison stays
-# clean. Worth revisiting on its own: low temperature is what degenerate tool
-# loops like best, and repeated identical calls are a live production
-# complaint.
-# rix_30b_a3b_v4 = ChatWandb(
-#     model=(
-#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-#         "/omni-pro-agent/omni-pro-v4-0813-0317:v1"
-#     ),
-#     temperature=0.2,
-#     max_tokens=8192,
-# )
-
-# v5: 173 rows, 6 epochs, 1038 steps, final loss 0.431.
-#
-# Not yet serving `rix` — v4 still is, pending this model's benchmark. What v5
-# adds over v4's 157 rows, all of it absent before:
-#
-#   - `adversarial` (4) and `safety` (4), the first refusal data in the set.
-#     v4 regressed here: on `adversarial/injection-in-page` it leaked 18,551 of
-#     the system prompt's 19,586 characters, 2 of 2 repeats, while v1 and v3
-#     leaked 0 of 2. All eight answers are hand-written — the teacher's own
-#     refusals echo the injection text back before refusing, which is the exact
-#     habit that produced v4's leak.
-#   - `code-write` (2), a `<textblock>` boundary case in the other direction:
-#     code belongs in a fence, and `_S_WRITING_FORMAT` lists only prose
-#     deliverables. luna itself failed this — cw-02 was rejected for putting
-#     Python in a textblock, so its answer is hand-written too.
-#   - `math-exact` (2) and `math-research` (2), the latter being the only rows
-#     where retrieval and computation appear together: `compute` never cites
-#     because it never searches, `search-fact` never computes.
-#   - `about` rewritten from 4 rows to 6, all now direct identity questions.
-#
-# `Follow User's Query Language` doubles from 20 rows to 40.
-#
-# First version whose training data, production and the benchmark all render
-# `<personalization>` through the same code. That makes v5's benchmark score
-# NOT strictly comparable to v4's 0.9182: v4's 28 older cases were measured
-# under the old field spelling. See `evals/backfill_cases.py`.
-#
-# temperature 0.2, unchanged from v3/v4 so the comparison stays clean.
-# Offline as of the tool adapter layer: v5 was trained on the pre-adapter tool
-# names (`google_search`, `load_web_page`, `run_python`, …), none of which the
-# agent exposes any more, so it would spend every turn calling tools that no
-# longer exist. Retrain against the current schema before serving it again.
-# rix_30b_a3b_v5 = ChatWandb(
-#     model=(
-#         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-#         "/omni-pro-agent/omni-pro-v5-0813-1601:v1"
-#     ),
-#     temperature=0.2,
-#     max_tokens=8192,
-# )
-
-# v6: 360 rows, 3 epochs, 1080 steps, run-level train/loss 0.613 (per-epoch
-# means 0.926 -> 0.561 -> 0.352). Serves `rix`.
-#
-# The first adapter trained on the current harness, which is why v5 had to go
-# offline rather than simply be superseded: v5 knew the pre-adapter tool names
-# (`google_search`, `load_web_page`, `run_python`), none of which the agent
-# exposes any more. What v6 additionally sees, all of it absent from every
-# earlier version:
-#
-#   - `<context_enrichment>` on 194 of 360 rows. Production now runs a
-#     pre-flight scout before the agent (core/context_enrichment.py) and hands
-#     it a search, weather, stock or FX result inside the user message. Every
-#     earlier adapter would meet that block for the first time in production.
-#   - `<system_reminder>` in place of `<personalization>`, identity line
-#     included.
-#   - The ```text writing contract and the draft-email skill: 36 rows deliver
-#     prose in a fence, 16 load draft-email and deliver `<textblock
-#     type="email">`, and no row mixes the two.
-#   - Randomised context envelopes — 25 rows carry no personalization at all,
-#     89 carry a memory block, and the response language is production's
-#     `Follow User's Query Language` default on a third of them. Earlier
-#     versions pinned a language and a two-week datetime window on every row,
-#     so those values were as much a part of each example as the task.
-#
-# Loss is above v4's 0.422 and v5's 0.431 on the same run-level statistic, and
-# that is the epoch count, not a regression: those ran 6 epochs, this one 3.
-# v6's third epoch alone averages 0.352, below both. Whether the extra data is
-# worth the shallower training is a benchmark question, not a loss question.
-#
-# temperature 0.2, unchanged from v3/v4/v5 so the comparison stays clean.
-rix_30b_a3b_v6 = ChatWandb(
+# temperature 0.2, as every earlier rix.
+rix_gemma_v1 = ChatWandb(
     model=(
         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
-        "/omni-pro-agent/omni-pro-v6-0907-1712:v1"
+        "/omni-rix-gemma/rix-gemma-v1:v1"
     ),
     temperature=0.2,
     max_tokens=8192,
@@ -299,21 +174,14 @@ rix_voice = ChatWandb(
     max_tokens=1024,
 )
 
-# The chat fine-tune, and the model an image turn is served on.
-#
-# `best` used to be exactly these two — the adapter on text, `vision_llm`
-# swapped in by VisionModelMiddleware the moment an image appeared anywhere in
-# the conversation (core/agent.py), since W&B Inference serves the adapter
-# without vision and an image turn on it would 400. It is luna on both paths
-# for the moment; core/chat_models.py holds that decision and why.
-#
-# `chat_llm` still names the adapter, and deliberately did not follow that
-# switch: the eval matrix and finetune/pro_agent/fingerprint.py both read it to
-# mean "the model the pro agent is served on", and the fingerprint in
-# particular resolves its harness profile from the model's provider — pointed
-# at an OpenAI model it would capture a system prompt the adapter is never
-# served.
-chat_llm = rix_30b_a3b_v6
+# The model the pro agent is served on, as the eval matrix and
+# finetune/pro_agent/fingerprint.py read it, and the fallback for an image turn
+# on `best`. `best` itself serves luna on both paths for now
+# (core/chat_models.py), so `chat_llm` names the fine-tune rather than following
+# that switch: the fingerprint resolves its harness profile from the model's
+# provider, and pointed at an OpenAI model it would capture a system prompt the
+# adapter is never served.
+chat_llm = rix_gemma_v1
 vision_llm = gpt_6_luna
 
 get_title_llm = gpt_oss_20b
