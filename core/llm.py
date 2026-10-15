@@ -4,6 +4,10 @@ from langchain_cerebras import ChatCerebras as _BaseChatCerebras
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+
+from core.think_strip import ThinkBlockStripper
 
 
 class ChatCerebras(_BaseChatCerebras):
@@ -59,6 +63,75 @@ class ChatWandb(ChatOpenAI):
             api_key=os.environ["WANDB_API_KEY"],
             **kwargs,
         )
+
+class ChatWandbGemma(ChatWandb):
+    """A Gemma LoRA on W&B Inference, with its empty thinking block stripped.
+
+    Gemma's generation prompt already ends with an empty thought block, which the
+    training rendering never contains, so the served model emits a second
+    `<|channel>thought\n<channel|>` at the start of every message it writes and
+    W&B returns it as plain text (finetune/voice_agent/README.md, point 2). Left
+    alone it shows in the answer and is stored in the thread, which the next turn
+    then reads back.
+
+    Filtered here, before the token callbacks fire, rather than in the stream
+    layer: LangGraph streams from `on_llm_new_token`, so a filter downstream of
+    `_astream` would run after the unfiltered text had already gone out. For that
+    reason `run_manager` is withheld from the base class and called by hand.
+    """
+
+    @staticmethod
+    def _clean_chunk(gen: ChatGenerationChunk, strip: ThinkBlockStripper) -> ChatGenerationChunk:
+        msg = gen.message
+        if isinstance(msg.content, str):
+            msg.content = strip.feed(msg.content)
+            gen.text = msg.content
+        return gen
+
+    @staticmethod
+    def _tail(strip: ThinkBlockStripper) -> ChatGenerationChunk | None:
+        rest = strip.flush()
+        return ChatGenerationChunk(message=AIMessageChunk(content=rest)) if rest else None
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        strip = ThinkBlockStripper()
+        async for gen in super()._astream(messages, stop, None, **kwargs):
+            gen = self._clean_chunk(gen, strip)
+            if run_manager:
+                await run_manager.on_llm_new_token(gen.text, chunk=gen)
+            yield gen
+        if (tail := self._tail(strip)) is not None:
+            if run_manager:
+                await run_manager.on_llm_new_token(tail.text, chunk=tail)
+            yield tail
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        strip = ThinkBlockStripper()
+        for gen in super()._stream(messages, stop, None, **kwargs):
+            gen = self._clean_chunk(gen, strip)
+            if run_manager:
+                run_manager.on_llm_new_token(gen.text, chunk=gen)
+            yield gen
+        if (tail := self._tail(strip)) is not None:
+            if run_manager:
+                run_manager.on_llm_new_token(tail.text, chunk=tail)
+            yield tail
+
+    @staticmethod
+    def _clean_result(result):
+        for g in result.generations:
+            if isinstance(g.message.content, str):
+                strip = ThinkBlockStripper()
+                g.message.content = strip.feed(g.message.content) + strip.flush()
+                g.text = g.message.content
+        return result
+
+    def _generate(self, *args, **kwargs):
+        return self._clean_result(super()._generate(*args, **kwargs))
+
+    async def _agenerate(self, *args, **kwargs):
+        return self._clean_result(await super()._agenerate(*args, **kwargs))
+
 
     def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
         """Drop the per-chunk usage report W&B sends on every single chunk.
@@ -134,12 +207,12 @@ qwen3_30b_a3b = ChatWandb(
 # change to the system prompt, a skill's `description:` or a tool docstring
 # means re-collecting and re-training, not just editing the prompt.
 #
-# Known gaps from the first check against the full agent: it loads a skill
-# (read_file on /skills/...) far less often than luna does, and a turn that
-# follows a tool call can open with a leaked `<|channel>thought` marker.
+# Known gap from the first check against the full agent: it loads a skill
+# (read_file on /skills/...) far less often than luna does. The empty thought
+# marker it emits on every message is stripped by `ChatWandbGemma`.
 #
 # temperature 0.2, as every earlier rix.
-rix_gemma_v1 = ChatWandb(
+rix_gemma_v1 = ChatWandbGemma(
     model=(
         "wandb-artifact:///welogmediaofficial-university-of-illinois-urbana-champaign"
         "/omni-rix-gemma/rix-gemma-v1:v1"
