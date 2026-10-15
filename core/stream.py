@@ -15,7 +15,13 @@ Wire protocol (one JSON object per `data:` line):
                                                             reasoning_content; Cerebras
                                                             gpt-oss/glm/gemma: reasoning;
                                                             pro: Gemini thinking blocks)
-    tool_call {type, tool, args}                        – agent is calling a tool
+    tool_call {type, tool, args, id}                    – agent is calling a tool
+    tool_result {type, id, tool, results:[{title,url}]}  – the pages that call
+                                                            retrieved (search /
+                                                            fetch / quote), for
+                                                            the step trace. `id`
+                                                            matches the call's.
+                                                            Omitted when empty.
     tool      {type, tool, content}                     – raw tool result
     sources   {type, sources:[{n,title,url,content}]}    – accumulated citations;
                                                             `n` matches the [n]
@@ -92,6 +98,7 @@ from core.context_enrichment import (
 )
 from core.RAG.file_parser import get_image_base64_data_url, MARKDOWN_SOURCE_EXTENSIONS
 from core.database.db_user_files import get_file_record, count_prior_ready_files_with_name
+from core.tool_results import tool_result_pages
 
 # Tool names whose calls are represented by artifact events, not tool_call.
 _ARTIFACT_TOOL_NAMES = {"render_chart"}
@@ -246,6 +253,10 @@ def _normalize_citations(text: str) -> str:
 # it O(1) per chunk while staying comfortably larger than the n-gram runs
 # PromptLeakGuard looks for.
 _LEAK_CHECK_WINDOW = 800
+
+
+def _citation_by_n(n: int) -> dict | None:
+    return next((c for c in all_citations() if c.get("n") == n), None)
 
 
 def _sse(obj: dict[str, Any]) -> str:
@@ -922,7 +933,12 @@ async def _stream_agent(
                             if not name or name in _ARTIFACT_TOOL_NAMES:
                                 continue
                             yield _sse(
-                                {"type": "tool_call", "tool": name, "args": tc.get("args", {})}
+                                {
+                                    "type": "tool_call",
+                                    "tool": name,
+                                    "args": tc.get("args", {}),
+                                    "id": tc.get("id"),
+                                }
                             )
 
                     # Tool results: artifact / report sentinels, else sources
@@ -944,6 +960,18 @@ async def _stream_agent(
                             # else: the tool returned a validation error → leave it
                             # in the model's context so it can retry; nothing to emit.
                             continue
+
+                        # Regular tool → what it retrieved, for the step trace.
+                        pages = tool_result_pages(raw_content, _citation_by_n)
+                        if pages:
+                            yield _sse(
+                                {
+                                    "type": "tool_result",
+                                    "id": getattr(msg, "tool_call_id", None),
+                                    "tool": name,
+                                    "results": pages,
+                                }
+                            )
 
                         # Regular tool → surface any citations it just registered.
                         # Read from the citation registry (`register_citation`,

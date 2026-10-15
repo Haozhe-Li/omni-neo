@@ -78,7 +78,7 @@ router = APIRouter(tags=["chat"])
 # ~1×ceil(N/batch). Non-token events (tool calls, artifacts, done …) bypass
 # the batch and flush immediately so the frontend doesn't wait for them.
 _FLUSH_IMMEDIATELY: frozenset[str] = frozenset({
-    "tool_call", "artifact", "sources", "done", "error", "stopped",
+    "tool_call", "tool_result", "artifact", "sources", "done", "error", "stopped",
     "widget", "drafting", "follow_up",
 })
 _BATCH_SIZE = 15        # flush when this many events are pending
@@ -204,7 +204,16 @@ async def _generate_background(
                     "tool": ev.get("tool"),
                     "args": ev.get("args", {}),
                     "timestamp": int(time.time() * 1000),
+                    "id": ev.get("id"),
                 })
+            elif ev_type == "tool_result":
+                # Hang the retrieved pages on the call that made them, so a
+                # reloaded thread draws the same trace the live stream did.
+                call_id = ev.get("id")
+                for step in reversed(steps):
+                    if call_id and step.get("id") == call_id:
+                        step["results"] = ev.get("results", [])
+                        break
             elif ev_type == "sources":
                 sources.extend(ev.get("sources", []))
             elif ev_type == "artifact":
