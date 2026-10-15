@@ -2,8 +2,8 @@
 
     venv/bin/python3.12 evals/scout_routing/run.py            # keyword stage only, offline
     venv/bin/python3.12 evals/scout_routing/run.py --llm      # + the production scout model
-    venv/bin/python3.12 evals/scout_routing/run.py --router   # + the embedding intent router
-                                                              #   (needs EMBEDDING_SERVICE_URL, REDIS_URL)
+    venv/bin/python3.12 evals/scout_routing/run.py --router   # + the Decisions-API intent router
+                                                              #   (needs OPENAI_API_KEY)
 
 What is scored, and why it is two different things:
 
@@ -264,46 +264,44 @@ def pipeline_report(cases, kw, llm) -> None:
 
 
 
-# ── embedding intent router ─────────────────────────────────────────────────
+# ── intent router (Decisions API) ───────────────────────────────────────────
 
-# The router's score is the head's probability for its top label.
-THRESHOLDS = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.99]
-COSINE_FLOORS = [0.0, 0.30, 0.40, 0.50, 0.60]
+SKILL_BARS = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
 
 
-def assert_no_anchor_overlap(cases: list[dict]) -> None:
-    """Anchors must not be eval queries: that would measure memorisation."""
-    from core.intent_examples import INTENT_EXAMPLES
+async def run_router(cases: list[dict], concurrency: int, latency_sample: int) -> dict:
+    """One Decisions request per case (bulk, `concurrency` in flight), then a short
+    sequential pass for the latency a real turn would see."""
+    from core import intent_router as ir
 
-    eval_qs = {c["q"].strip().lower() for c in cases}
-    clash = [t for items in INTENT_EXAMPLES.values() for t in items if t.strip().lower() in eval_qs]
-    assert not clash, f"anchor examples duplicate eval queries: {clash}"
+    sem = asyncio.Semaphore(concurrency)
 
-
-async def run_router(cases: list[dict], rebuild: bool, latency_sample: int) -> dict:
-    from core.intent_router import IntentRouter
+    async def one(c: dict) -> dict:
+        async with sem:
+            for attempt in range(3):  # a beta API: retry transient failures, report persistent ones
+                try:
+                    r = await ir.route(c["q"])
+                    top = max(r.scores, key=r.scores.__getitem__)
+                    return {"id": c["id"], "label": r.label, "top": top, "score": round(r.score, 4),
+                            "scores": {k: round(x, 4) for k, x in r.scores.items()}}
+                except Exception as exc:  # noqa: BLE001
+                    err = repr(exc)
+                    await asyncio.sleep(1 + attempt)
+            return {"id": c["id"], "label": None, "top": None, "score": 0.0, "scores": {}, "error": err}
 
     t0 = time.monotonic()
-    router = await IntentRouter.build(force=rebuild)
-    build_s = time.monotonic() - t0
-
-    t0 = time.monotonic()
-    vecs = await router.embed_queries([c["q"] for c in cases])
+    results = await asyncio.gather(*(one(c) for c in cases))
     bulk_s = time.monotonic() - t0
-    results = []
-    for c, v in zip(cases, vecs):
-        r = router.route_vector(v, min_prob=0.0, min_cosine=-1.0)  # thresholds applied later, in the sweep
-        results.append({"id": c["id"], "top": r.top_label, "score": round(r.score, 4), "cosine": round(r.cosine, 4),
-                        "anchor": r.anchor, "scores": {k: round(x, 4) for k, x in r.scores.items()}})
 
-    # What one live request costs: a single-query embed, sequential, like a real turn.
     lat = []
     for c in cases[:: max(1, len(cases) // latency_sample)][:latency_sample]:
         t = time.monotonic()
-        await router.route(c["q"])
-        lat.append(time.monotonic() - t)
-    return {"build_s": round(build_s, 2), "fit_ms": round(router.fit_seconds * 1000, 1),
-            "bulk_embed_s": round(bulk_s, 2), "latency_s": [round(x, 3) for x in lat], "results": results}
+        try:
+            await ir.route(c["q"])
+            lat.append(time.monotonic() - t)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"bulk_s": round(bulk_s, 2), "latency_s": [round(x, 3) for x in lat], "results": list(results)}
 
 
 def router_error_kind(gold: str, pred: str) -> str:
@@ -327,80 +325,62 @@ def router_error_kind(gold: str, pred: str) -> str:
     return "lost-enrichment"  # pred direct_response on a query that wanted a lookup
 
 
-def _router_slice(cases, res, llm, title: str, prob_for_floor: float) -> None:
+def _router_slice(cases, res, title: str) -> None:
     n = len(cases)
     if not n:
         return
-    ok = [r["top"] == c["gold"] for c, r in zip(cases, res)]
+    bad = [r for r in res if r["label"] is None]
+    ok = [r["label"] == c["gold"] for c, r in zip(cases, res)]
     cor = sorted(r["score"] for r, o in zip(res, ok) if o)
-    wro = sorted(r["score"] for r, o in zip(res, ok) if not o)
+    wro = sorted(r["score"] for r, o in zip(res, ok) if not o and r["label"])
     med = lambda a: a[len(a) // 2] if a else float("nan")  # noqa: E731
+    kinds = Counter(router_error_kind(c["gold"], r["label"]) for c, r in zip(cases, res) if r["label"])
+    real = sum(v for k, v in kinds.items() if k not in ("ok", "benign"))
+    detail = ", ".join(f"{k} {v}" for k, v in kinds.items() if k != "ok") or "none"
     print(f"\n── Router [{title}] — {n} cases ──")
-    print(f"  top-1 accuracy, no threshold: {pct(sum(ok), n)} ({sum(ok)}/{n});  "
+    print(f"  accuracy: {pct(sum(ok), n)} ({sum(ok)}/{n});  request failures {len(bad)};  "
           f"median probability when right {med(cor):.3f}, when wrong {med(wro):.3f}")
-    print(f"  {'gold':<16}{'n':>4}{'top-1 right':>13}")
+    print(f"  real errors {real}  [{detail}]")
+    print(f"  {'gold':<20}{'n':>4}{'right':>9}")
     for g in INTENTS:
         idx = [i for i, c in enumerate(cases) if c["gold"] == g]
         if idx:
-            print(f"  {g:<16}{len(idx):>4}{pct(sum(ok[i] for i in idx), len(idx)):>13}")
-
-    hdr = f"\n  {'prob>=':>7}{'decided':>9}{'precision':>11}{'coverage':>10}{'wrong':>7}  wrong by gold class"
-    if llm:
-        hdr += f"{'':>20}pipeline acc (router, else LLM)"
-    print(hdr)
-    for t in THRESHOLDS:
-        dec = [(c, r) for c, r in zip(cases, res) if r["score"] >= t]
-        hit = sum(1 for c, r in dec if r["top"] == c["gold"])
-        wrong = Counter(c["gold"] for c, r in dec if r["top"] != c["gold"])
-        w = " ".join(f"{g[:7]}:{k}" for g, k in sorted(wrong.items())) or "-"
-        line = f"  {t:>7.2f}{len(dec):>9}{pct(hit, len(dec)):>11}{pct(hit, n):>10}{len(dec) - hit:>7}  {w:<34}"
-        if llm:
-            fin = sum(((r["top"] if r["score"] >= t else l["pred"]) == c["gold"]) for c, r, l in zip(cases, res, llm))
-            line += f"{pct(fin, n)}"
-        print(line)
-    print("  (precision = decided-and-right / decided;  coverage = decided-and-right / all cases)")
-
-    # The rule that ships (core/intent_router.py: per-label thresholds), scored with
-    # the same cost view the product uses: about_omni -> direct_response is harmless.
-    from core.intent_router import min_prob_for
-
-    dec = [(c, r) for c, r in zip(cases, res) if r["score"] >= min_prob_for(r["top"])]
-    kinds = Counter(router_error_kind(c["gold"], r["top"]) for c, r in dec)
-    real = sum(v for k, v in kinds.items() if k not in ("ok", "benign"))
-    detail = ", ".join(f"{k} {v}" for k, v in kinds.items() if k != "ok") or "none"
-    print(f"\n  SHIPPED RULE (web_search >= {min_prob_for('web_search')}, others >= {min_prob_for('weather')}): "
-          f"decided {len(dec)}/{n} ({pct(len(dec), n).strip()}), unknown -> LLM {n - len(dec)}; "
-          f"real errors {real}  [{detail}]")
-
-    print(f"\n  Second guard, at prob>={prob_for_floor}: also require nearest-anchor cosine >= F")
-    print(f"  {'F':>6}{'decided':>9}{'wrong':>7}")
-    for f in COSINE_FLOORS:
-        dec = [(c, r) for c, r in zip(cases, res) if r["score"] >= prob_for_floor and r["cosine"] >= f]
-        print(f"  {f:>6.2f}{len(dec):>9}{sum(1 for c, r in dec if r['top'] != c['gold']):>7}")
+            print(f"  {g:<20}{len(idx):>4}{pct(sum(ok[i] for i in idx), len(idx)):>9}")
 
 
-def router_report(cases, rr: dict, llm=None, prob_for_floor: float = 0.9) -> None:
+def router_report(cases, rr: dict) -> None:
     res = rr["results"]
     n = len(cases)
     lat = sorted(rr["latency_s"])
-    print(f"\n══ Embedding router — {n} cases ══")
-    print(f"  anchors built in {rr['build_s']}s (head fit {rr['fit_ms']}ms);  {n} queries embedded in {rr['bulk_embed_s']}s")
+    print(f"\n══ Decisions-API router — {n} cases ══")
+    print(f"  {n} requests in {rr['bulk_s']}s")
     if lat:
         p = lambda q: lat[min(len(lat) - 1, int(q * len(lat)))]  # noqa: E731
-        print(f"  single-query route latency (n={len(lat)}, from this machine, sequential): "
-              f"mean {statistics.mean(lat) * 1000:.0f}ms  p50 {p(.5) * 1000:.0f}ms  p90 {p(.9) * 1000:.0f}ms")
-    for title, f in (("all", lambda c: True), ("original eval, not held-out", lambda c: "held" not in c["tags"]),
-                     ("held-out only", lambda c: "held" in c["tags"])):
+        print(f"  single-request latency (n={len(lat)}, from this machine, sequential): "
+              f"mean {statistics.mean(lat) * 1000:.0f}ms  p50 {p(.5) * 1000:.0f}ms  "
+              f"p90 {p(.9) * 1000:.0f}ms  max {lat[-1] * 1000:.0f}ms")
+    for title, f in (("all", lambda c: True), ("excluding low-confidence gold", lambda c: "low" not in c["tags"]),
+                     ("adversarial only", lambda c: "adv" in c["tags"])):
         idx = [i for i, c in enumerate(cases) if f(c)]
-        _router_slice([cases[i] for i in idx], [res[i] for i in idx],
-                      [llm[i] for i in idx] if llm else None, title, prob_for_floor)
+        _router_slice([cases[i] for i in idx], [res[i] for i in idx], title)
+
+    # The skill bar is the one threshold left: sweep it on the cases that involve a skill.
+    print(f"\n  skill bar sweep (gold or top choice is a skill; the shipped bar is "
+          f"{__import__('core.intent_router', fromlist=['x']).MIN_PROB_SKILL}):")
+    print(f"  {'bar':>6}{'skill taken':>13}{'right':>7}{'wrong':>7}")
+    rel = [(c, r) for c, r in zip(cases, res) if r["top"] and (c["gold"].startswith("skill:") or r["top"].startswith("skill:"))]
+    for t in SKILL_BARS:
+        took = [(c, r) for c, r in rel if r["top"].startswith("skill:") and r["scores"][r["top"]] >= t]
+        right = sum(1 for c, r in took if c["gold"] == r["top"])
+        print(f"  {t:>6.2f}{len(took):>13}{right:>7}{len(took) - right:>7}")
 
 
-def router_details(cases, rr: dict, threshold: float) -> None:
-    print(f"\n── Router: wrong answers at probability >= {threshold} ──")
+def router_details(cases, rr: dict) -> None:
+    print("\n── Router: wrong answers ──")
     for c, r in zip(cases, rr["results"]):
-        if r["score"] >= threshold and r["top"] != c["gold"]:
-            print(f"  p={r['score']:.3f} cos={r['cosine']:.2f} gold={c['gold']:<15} pred={r['top']:<15} {c['q'][:46]!r}")
+        if r["label"] != c["gold"]:
+            kind = router_error_kind(c["gold"], r["label"]) if r["label"] else "REQUEST FAILED " + r.get("error", "")[:60]
+            print(f"  p={r['score']:.2f} {kind:<16} gold={c['gold']:<15} pred={str(r['label']):<15} {c['q'][:46]!r}")
 
 # ── main ────────────────────────────────────────────────────────────────────
 
@@ -409,9 +389,8 @@ def main() -> None:
     ap.add_argument("--llm", action="store_true", help="also run the production scout model (network, ~1 call per case)")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=15.0, help="per-call LLM timeout (prod uses 6s; looser here so slow calls are measured, not dropped)")
-    ap.add_argument("--router", action="store_true", help="also run the embedding intent router (needs the embedding service + Redis)")
-    ap.add_argument("--rebuild", action="store_true", help="with --router: delete cached anchor vectors and re-embed")
-    ap.add_argument("--router-details", type=float, metavar="THR", help="with --router: list wrong answers at probability >= THR")
+    ap.add_argument("--router", action="store_true", help="also run the intent router (one Decisions API request per case; needs OPENAI_API_KEY)")
+    ap.add_argument("--router-details", action="store_true", help="with --router: list every wrong answer")
     ap.add_argument("--details", action="store_true", help="list every wrong answer and miss for the keyword stage")
     ap.add_argument("--out", type=Path, help="write raw per-case results as JSON")
     a = ap.parse_args()
@@ -440,11 +419,10 @@ def main() -> None:
 
     rr = None
     if a.router:
-        assert_no_anchor_overlap(cases)
-        rr = asyncio.run(run_router(cases, a.rebuild, latency_sample=30))
-        router_report(cases, rr, llm)
-        if a.router_details is not None:
-            router_details(cases, rr, a.router_details)
+        rr = asyncio.run(run_router(cases, a.concurrency, latency_sample=30))
+        router_report(cases, rr)
+        if a.router_details:
+            router_details(cases, rr)
 
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)

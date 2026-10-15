@@ -7,9 +7,11 @@ the result into the ``<context_enrichment>`` block of the user message (see
 
 Design constraints, all deliberate:
 
-- **Router first, model second.** The embedding intent router (core/intent_router.py)
-  decides outright when it is sure; only "unsure" and the labels that need arguments
-  extracted (weather, stock, currency) reach the model — see `route_intent`.
+- **Router first, model second.** The intent router (core/intent_router.py, one
+  multiple-choice call to OpenAI's Decisions API) always names the kind of turn; the
+  scout model only runs where arguments must be extracted (weather location, stock
+  ticker, currency pair) or a long search query reformulated. It also classifies the
+  turn itself if the router request fails — see `route_intent`.
 - **Skills can be routed to.** A ``skill:<name>`` label means the request is the kind
   a skill exists for ("深度研究一下…" -> web-research). The router alone decides, and the
   result is identical to the user having picked that skill — see `requested_skill_enrichment`.
@@ -62,8 +64,8 @@ from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from core.agent import SKILL_FILES
-from core.intent_examples import SKILL_LABEL_PREFIX
-from core.intent_router import RouteResult, get_ready_router
+from core.intent_choices import SKILL_LABEL_PREFIX
+from core.intent_router import RouteResult, route as router_route
 from core.llm import context_enrich_llm
 from core.utils.redis_client import get_async_redis
 from core.tools.adapters import (
@@ -231,10 +233,22 @@ and correct answer.
 """
 
 
+# What the router already decided, handed to the scout so it spends its call on the
+# fields. Phrased as a strong prior rather than a constraint: the scout still owns the
+# weather_current / weather_forecast split and may overrule a clearly wrong label.
+_ROUTED_HINT = {
+    "weather": "weather_current or weather_forecast",
+    "stock": "stock",
+    "currency": "currency",
+    "web_search": "web_search",
+}
+
+
 def build_scout_messages(
     query: str,
     user_location: str | None = None,
     user_local_datetime: str | None = None,
+    routed_label: str | None = None,
 ) -> list[tuple[str, str]]:
     """Render the exact (system, user) messages the scout is asked with."""
     context_lines: list[str] = []
@@ -250,6 +264,14 @@ def build_scout_messages(
             "Use this to resolve relative or implicit references such as "
             "'here', 'nearby', 'now', 'today':\n"
             + "\n".join(context_lines)
+        )
+    if routed_label in _ROUTED_HINT:
+        system_prompt += (
+            "\n\n# Already classified\n"
+            f"A classifier has already judged this query to be a {routed_label} request, so "
+            f"the action is almost certainly {_ROUTED_HINT[routed_label]}. Your job is the "
+            "fields: extract them carefully. Choose a different action only if the "
+            "classifier is clearly wrong."
         )
     return [("system", system_prompt), ("user", query)]
 
@@ -370,7 +392,7 @@ _ACTIONS: dict[str, _Action] = {
 # ── Keyword shortcut (retired) ──────────────────────────────────────────────
 # Everything from here down to `shortcut_decision` is the keyword router that used
 # to sit in front of the scout. `enrich_context` no longer calls it: it is replaced
-# by the embedding intent router (core/intent_router.py, see `route_intent` below),
+# by the intent router (core/intent_router.py, see `route_intent` below),
 # which measured 85% vs the keyword stage's 58% precision on evals/scout_routing.
 # It stays only because `evals/scout_routing/run.py` scores it as the baseline the
 # router has to beat. Delete it together with that baseline.
@@ -543,32 +565,30 @@ def shortcut_decision(query: str) -> EnrichmentDecision | None:
 
 
 # ── Intent router ───────────────────────────────────────────────────────────
-# One embedding request (~80-100ms) replaces the scout LLM call (~300ms) whenever it
-# is sure. Its timeout is deliberately tight: it is a shortcut, and a slow shortcut
-# is worse than none — on timeout or any error the turn simply goes to the LLM.
-_ROUTER_TIMEOUT_S = 0.4
+# One Decisions API request (median ~170ms, occasionally ~1s) names the kind of turn,
+# and replaces the scout LLM call (~300ms+) for every label that needs no arguments.
+# The deadline is generous because a miss costs the scout call on top of the wait; on
+# timeout or any error the turn simply goes to the scout.
+_ROUTER_TIMEOUT_S = 1.0
 
 
 async def route_intent(query: str) -> tuple[EnrichmentDecision | None, RouteResult | None]:
-    """A decision the router can make on its own, plus what it saw; (None, ...) means
-    "ask the LLM scout".
+    """A decision the router can make on its own, plus what it saw.
 
-    The router answers *which kind of turn this is*. That is the whole decision for
-    three labels. It is not enough for the other two cases, which go to the LLM:
+    The router always answers *which kind of turn this is*. That is the whole decision
+    for about_omni, direct_response, a skill, and web_search on a short query. The rest
+    still need the scout, but only to extract, so `(None, result)` means "ask the scout
+    for the fields":
 
-    - weather / stock / currency: the tool needs a city, a ticker, a currency pair,
-      and extracting those is the scout's job.
+    - weather / stock / currency: the tool needs a city, a ticker, a currency pair.
     - web_search on a long query: the search string should be a short, broad
       reformulation, not the user's paragraph pasted in.
 
-    The router unavailable (still building, timed out, embedding service down) is
-    the same as "unsure": never an error, always the LLM.
+    `(None, None)` means the router itself failed (timeout, API error, no access): the
+    scout then classifies the turn from scratch. Never an error.
     """
-    router = get_ready_router()
-    if router is None:
-        return None, None
     try:
-        r = await asyncio.wait_for(router.route(query), timeout=_ROUTER_TIMEOUT_S)
+        r = await asyncio.wait_for(router_route(query), timeout=_ROUTER_TIMEOUT_S)
     except asyncio.TimeoutError:
         logger.warning("[context_enrichment] intent router timed out after %ss", _ROUTER_TIMEOUT_S)
         return None, None
@@ -769,7 +789,7 @@ async def skill_already_delivered(thread_id: str, skill: str) -> bool:
 
 def routed_skill(routed: RouteResult | None) -> str | None:
     """The skill a router result decided on, or None for any other outcome."""
-    if routed is not None and routed.label and routed.label.startswith(SKILL_LABEL_PREFIX):
+    if routed is not None and routed.label.startswith(SKILL_LABEL_PREFIX):
         return routed.label[len(SKILL_LABEL_PREFIX):]
     return None
 
@@ -782,9 +802,10 @@ async def classify(
     user_location: str | None = None,
     user_local_datetime: str | None = None,
     timeout: float = _CLASSIFY_TIMEOUT_S,
+    routed_label: str | None = None,
 ) -> EnrichmentDecision | None:
     """Run the scout model only — no fetching. None on any failure."""
-    messages = build_scout_messages(query, user_location, user_local_datetime)
+    messages = build_scout_messages(query, user_location, user_local_datetime, routed_label)
     try:
         with tracing_context(project_name="context-enrichment"):
             return await asyncio.wait_for(_llm.ainvoke(messages), timeout=timeout)
@@ -818,7 +839,7 @@ async def enrich_context(
 
     t0 = time.monotonic()
     decision, routed = await route_intent(query)
-    seen = f"{routed.top_label}:{routed.score:.2f}" if routed else "n/a"
+    seen = f"{routed.label}:{routed.score:.2f}" if routed else "n/a"
 
     # A skill label is the router's whole answer (no arguments to extract), so it
     # never reaches the scout. A skill whose file is missing falls through to the
@@ -836,7 +857,9 @@ async def enrich_context(
 
     via = "router" if decision is not None else "llm"
     if decision is None:
-        decision = await classify(query, user_location, user_local_datetime)
+        decision = await classify(
+            query, user_location, user_local_datetime, routed_label=routed.label if routed else None
+        )
     if decision is None:
         return Enrichment()
     t_classify = time.monotonic() - t0

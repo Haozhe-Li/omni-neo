@@ -261,7 +261,7 @@ cases:
   - {q: "帮我看看这段自我介绍有没有语病，语气再亲切一点：大家好，我是新来的同事，负责数据分析。", gold: direct_response, tags: [long]}
 
   # ───────────────────────── held-out（tag: held）─────────────────────────
-  # 写于第一轮 router 评测、看过失败模式之后；与 anchors 无逐字重合（run.py 断言）。
+  # 写于第一轮 router 评测、看过失败模式之后。
   # 它们抽查的是「同一类失败换了主题是否还会错」，不是盲测——盲测只能靠线上日志。
   - {q: "台风是怎么形成的", gold: web_search, tags: [held, adv]}
   - {q: "通货膨胀是怎么产生的", gold: web_search, tags: [held, adv]}

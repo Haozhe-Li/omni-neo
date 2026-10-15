@@ -168,12 +168,11 @@ def test_unfinished_guard_is_cancelled_when_the_stream_is_abandoned(prelude, mon
 
 
 def _patch_scout(monkeypatch, ran: list):
-    class R:
-        async def route(self, q):
-            from core.intent_router import RouteResult
-            return RouteResult(label="web_search", top_label="web_search", score=0.9, anchor="a")
+    async def fake_route(q):
+        from core.intent_router import RouteResult
+        return RouteResult(label="web_search", score=0.9)
 
-    monkeypatch.setattr(ce, "get_ready_router", lambda: R())
+    monkeypatch.setattr(ce, "router_route", fake_route)
 
     async def fake_run(d):
         ran.append(d)

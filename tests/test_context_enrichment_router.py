@@ -19,15 +19,15 @@ import pytest
 warnings.filterwarnings("ignore")
 
 from core import context_enrichment as ce  # noqa: E402
-from core.intent_router import RouteResult  # noqa: E402
+from core.intent_router import RouteResult, RouterError  # noqa: E402
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def result(label, top=None, score=0.9):
-    return RouteResult(label=label, top_label=top or label or "web_search", score=score, anchor="a")
+def result(label, score=0.9):
+    return RouteResult(label=label, score=score)
 
 
 class FakeRouter:
@@ -47,10 +47,16 @@ class Harness:
 
     def __init__(self, monkeypatch, router, scout_decision=None):
         self.llm_calls, self.tool_calls = [], []
-        monkeypatch.setattr(ce, "get_ready_router", lambda: router)
+        self.routed_labels = []
 
-        async def fake_classify(query, loc=None, dt=None, timeout=0):
+        async def no_router(query):
+            raise RouterError("router unavailable")
+
+        monkeypatch.setattr(ce, "router_route", router.route if router is not None else no_router)
+
+        async def fake_classify(query, loc=None, dt=None, timeout=0, routed_label=None):
             self.llm_calls.append(query)
+            self.routed_labels.append(routed_label)
             return scout_decision
 
         monkeypatch.setattr(ce, "classify", fake_classify)
@@ -97,15 +103,8 @@ def test_widget_labels_still_go_to_the_llm_because_it_extracts_the_arguments(mon
     h = Harness(monkeypatch, FakeRouter(result(label)), scout_decision=decision)
     out = run(ce.enrich_context("nvidia stock today"))
     assert h.llm_calls == ["nvidia stock today"]
+    assert h.routed_labels == [label]  # the scout is told what the router decided
     assert h.tool_calls == [("stock", decision)] and out.action == "stock"
-
-
-def test_unsure_router_means_ask_the_llm(monkeypatch):
-    decision = ce.EnrichmentDecision(action="web_search", search_query="langgraph checkpointer")
-    h = Harness(monkeypatch, FakeRouter(result(None, top="web_search", score=0.4)), scout_decision=decision)
-    out = run(ce.enrich_context("langgraph postgres checkpointer"))
-    assert h.llm_calls == ["langgraph postgres checkpointer"]
-    assert out.action == "web_search"
 
 
 def test_long_web_search_query_goes_to_the_llm_for_a_short_reformulation(monkeypatch):
@@ -113,20 +112,20 @@ def test_long_web_search_query_goes_to_the_llm_for_a_short_reformulation(monkeyp
     decision = ce.EnrichmentDecision(action="web_search", search_query="short query")
     h = Harness(monkeypatch, FakeRouter(result("web_search")), scout_decision=decision)
     run(ce.enrich_context(long_q))
-    assert h.llm_calls == [long_q]
+    assert h.llm_calls == [long_q] and h.routed_labels == ["web_search"]
     assert h.tool_calls[0][1].search_query == "short query"  # the LLM's, not the pasted paragraph
 
 
-def test_router_not_ready_falls_back_to_the_llm(monkeypatch):
+def test_router_unavailable_falls_back_to_the_llm_with_no_prior(monkeypatch):
     decision = ce.EnrichmentDecision(action="direct_response")
     h = Harness(monkeypatch, None, scout_decision=decision)
     out = run(ce.enrich_context("hello"))
-    assert h.llm_calls == ["hello"] and out.text == ""
+    assert h.llm_calls == ["hello"] and h.routed_labels == [None] and out.text == ""
 
 
 def test_router_error_falls_back_to_the_llm_and_never_raises(monkeypatch):
     decision = ce.EnrichmentDecision(action="direct_response")
-    h = Harness(monkeypatch, FakeRouter(exc=RuntimeError("embedding service down")), scout_decision=decision)
+    h = Harness(monkeypatch, FakeRouter(exc=RouterError("decisions API down")), scout_decision=decision)
     out = run(ce.enrich_context("hello"))
     assert h.llm_calls == ["hello"] and out.text == ""
 
@@ -139,8 +138,8 @@ def test_slow_router_is_cut_off_and_falls_back_to_the_llm(monkeypatch):
     assert h.llm_calls == ["what is rust"] and h.tool_calls == [] and out.text == ""
 
 
-def test_llm_failure_after_an_unsure_router_is_still_just_no_enrichment(monkeypatch):
-    h = Harness(monkeypatch, FakeRouter(result(None)), scout_decision=None)
+def test_llm_failure_after_a_router_error_is_still_just_no_enrichment(monkeypatch):
+    h = Harness(monkeypatch, FakeRouter(exc=RouterError("down")), scout_decision=None)
     out = run(ce.enrich_context("anything"))
     assert h.llm_calls == ["anything"] and out.text == "" and out.events == []
 
@@ -192,15 +191,6 @@ def test_routed_skill_emits_the_same_read_file_event_as_a_picked_one(monkeypatch
     assert routed.text.split("\n\n", 1)[1] == picked.text.split("\n\n", 1)[1]
 
 
-def test_unsure_skill_route_is_not_a_skill(monkeypatch):
-    with_skill_file(monkeypatch)
-    decision = ce.EnrichmentDecision(action="web_search", search_query="vector databases")
-    h = Harness(monkeypatch, FakeRouter(result(None, top="skill:web-research", score=0.5)), scout_decision=decision)
-    out = run(ce.enrich_context("tell me about vector databases"))
-    assert h.llm_calls == ["tell me about vector databases"]
-    assert out.skill is None and out.action == "web_search"
-
-
 def test_skill_label_with_a_missing_skill_file_falls_back_to_the_scout(monkeypatch):
     monkeypatch.setattr(ce, "SKILL_FILES", {})
     decision = ce.EnrichmentDecision(action="web_search", search_query="solid state batteries")
@@ -212,23 +202,16 @@ def test_skill_label_with_a_missing_skill_file_falls_back_to_the_scout(monkeypat
 
 def test_routed_skill_only_reads_skill_labels():
     assert ce.routed_skill(result("skill:web-research")) == "web-research"
-    for r in (result("web_search"), result(None, top="skill:web-research"), None):
+    for r in (result("web_search"), None):
         assert ce.routed_skill(r) is None
 
 
-def test_skill_labels_have_their_own_higher_probability_bar():
-    from core import intent_router as ir
-
-    assert ir.min_prob_for("skill:web-research") == ir.MIN_PROB_SKILL
-    assert ir.MIN_PROB_SKILL >= ir.min_prob_for("web_search") > ir.MIN_PROB
-
-
-def test_the_shipped_anchors_define_a_web_research_skill_that_exists_on_disk():
+def test_the_shipped_choices_define_a_web_research_skill_that_exists_on_disk():
     from pathlib import Path
 
-    from core.intent_examples import INTENT_EXAMPLES, SKILL_LABEL_PREFIX
+    from core.intent_choices import INTENT_CHOICES, SKILL_LABEL_PREFIX
 
-    skills = [k[len(SKILL_LABEL_PREFIX):] for k in INTENT_EXAMPLES if k.startswith(SKILL_LABEL_PREFIX)]
+    skills = [k[len(SKILL_LABEL_PREFIX):] for k in INTENT_CHOICES if k.startswith(SKILL_LABEL_PREFIX)]
     assert "web-research" in skills
     for name in skills:
         assert (Path(__file__).parent.parent / "skills" / name / "SKILL.md").is_file(), name
