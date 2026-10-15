@@ -36,8 +36,11 @@ real user's conversation. So the defaults lean toward leaving rows out:
   model can later repeat what it was trained on. The exception is rows from the
   collector page (`source = 'collector'`): their memory and uploaded files were chosen by
   an annotator for the purpose, so those rows keep them — that is the point of collecting
-  them. Images still follow `--images` (the default drops them).
-- **No images** until the trainer is known to accept them (`--images keep`).
+  them.
+- **Images only from the collector.** A thumbed-up image is a real person's photo and
+  is dropped; a collector row's image was chosen by an annotator, so it stays
+  (`--images collector`, the default). `--images keep` takes every image, `--images drop`
+  none.
 - **Not rejected.** Rows a reviewer marked 'rejected' (finetune/rix_gemma/curate.py)
   never come through; `--only-accepted` additionally drops the unreviewed.
 
@@ -207,7 +210,8 @@ def main() -> int:
                     help="substring every assistant message's model name must contain; '' disables")
     ap.add_argument("--include-memory", action="store_true")
     ap.add_argument("--include-attachments", action="store_true")
-    ap.add_argument("--images", choices=["drop", "keep"], default="drop")
+    ap.add_argument("--images", choices=["collector", "keep", "drop"], default="collector",
+                    help="which rows' images to train on: collector rows only (default), all, or none")
     ap.add_argument("--max-per-user", type=int, default=0, help="0 = unlimited")
     ap.add_argument("--cap", type=int, default=30_000,
                     help="water-fill tool results until each row fits this many tokens")
@@ -255,7 +259,9 @@ def main() -> int:
         # annotator chose, not a real person's documents.
         elif r["has_attachments"] and r.get("source") != "collector" and not args.include_attachments:
             dropped["has attachments"] += 1
-        elif r["has_image"] and args.images == "drop":
+        # Images follow the same rule as memory and uploads: an annotator's are test
+        # inputs, a thumbs-up user's are their own photos.
+        elif r["has_image"] and not (args.images == "keep" or (args.images == "collector" and r.get("source") == "collector")):
             dropped["has image"] += 1
         else:
             kept.append(r)
@@ -277,7 +283,7 @@ def main() -> int:
         rows = capped
 
     images: dict[str, str] = {}
-    if args.images == "keep":
+    if args.images != "drop":
         wanted = {
             p["image_url"]["url"][len(IMAGE_REF_PREFIX):]
             for r in rows for m in r["messages"] if isinstance(m.get("content"), list)
@@ -305,7 +311,7 @@ def main() -> int:
                "tools": tools}
         row, cut = pro.shrink_row(row, args.cap, tok)
         n_shrunk += bool(cut)
-        if args.images == "keep" and not rehydrate_images(row["messages"], images):
+        if args.images != "drop" and not rehydrate_images(row["messages"], images):
             print(f"  example {r['id']}: image missing from sft_images, skipped")
             continue
         built.append({"row": row, "src": r})

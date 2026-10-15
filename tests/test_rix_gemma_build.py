@@ -173,6 +173,25 @@ def test_images_are_dropped_by_default_and_rehydrated_when_kept(run, monkeypatch
     assert out[0]["messages"][1]["content"][1]["image_url"]["url"] == "data:image/png;base64,AAAA"
 
 
+def test_collector_images_are_kept_by_default_but_thumbs_up_images_are_not(run, monkeypatch):
+    img_msgs = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "omni-image://deadbeef"}}]},
+        {"role": "assistant", "content": "a cat"},
+    ]
+    monkeypatch.setattr(build, "fetch_images", lambda shas: {"deadbeef": "data:image/png;base64,AAAA"})
+    rows = [
+        example(1, thread="t1", messages=img_msgs, has_image=True, source="collector", tools_used=[]),
+        example(2, thread="t2", messages=img_msgs, has_image=True, source="thumbs", tools_used=[]),
+    ]
+    code, out, tmp = run(rows)
+    assert code == 0 and len(out) == 1
+    assert out[0]["messages"][1]["content"][0]["image_url"]["url"] == "data:image/png;base64,AAAA"
+    assert json.loads((tmp / "manifest.json").read_text())["train_example_ids"] == [1]
+    (tmp / "sft_train.jsonl").unlink()
+    assert run(rows, "--images", "drop")[1] == []
+    assert len(run(rows, "--images", "keep")[1]) == 2
+
+
 def test_missing_image_bytes_skip_the_row_instead_of_training_on_a_dangling_ref(run, monkeypatch):
     img_msgs = [
         {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "omni-image://gone"}}]},

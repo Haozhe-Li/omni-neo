@@ -94,11 +94,13 @@ dense model `gemma_4_31b` serves on Cerebras.
   contain whatever a fetched page said. Whether users have agreed to their
   conversations being used for training is a product/legal question this code
   does not answer.
-- **Images** are stored (deduplicated, in `sft_images`) but excluded from builds
-  until the trainer is confirmed to accept image rows; try `--images keep` on a
-  small file first. Dropping `VisionModelMiddleware` (the reason Gemma lets
-  `best` stop swapping models on images) depends on that, so it is not part of
-  this change.
+- **Images** are stored (deduplicated, in `sft_images`). Collector rows' images
+  are built in by default (`--images collector`); a thumbs-up user's are not,
+  because they are that person's photos. `--images keep` takes all, `--images
+  drop` none. Whether the trainer accepts image rows is still unconfirmed, so
+  try a small file first. Dropping `VisionModelMiddleware` (the reason Gemma
+  lets `best` stop swapping models on images) depends on that, so it is not
+  part of this change.
 - **Not exercised against a real database.** The SQL in
   `core/database/db_sft_examples.py` and `schema.sql` was written carefully but
   has not been run; `tests/test_sft_capture.py` and `tests/test_rix_gemma_build.py`
