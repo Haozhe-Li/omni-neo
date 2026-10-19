@@ -5,10 +5,11 @@ both guests and signed-in users.
 Table schema: see schema.sql.
 
 Model:
-    - Every /chat or /rewind call spends credits, priced by the model the user
-      picked: 1 for `best` and the fine-tune, 3 for a frontier model asked for
-      by name (MODE_CREDIT_COST below). A scheduled research run (core/routers/scheduled_tasks.py) spends
-      4.7 against the same ledger. Costs are fractional, hence NUMERIC columns
+    - Every /chat or /rewind call spends credits, priced by the model that
+      actually serves it: 1 for the fine-tune, 3 for a frontier model, and
+      `best` (a router) is billed as whichever of those it routed to
+      (MODE_CREDIT_COST below). A scheduled research run (core/routers/scheduled_tasks.py) spends
+      3 against the same ledger. Costs are fractional, hence NUMERIC columns
       rather than INT.
     - Two independent caps apply at once: a daily one and a calendar-month one.
       Both are tracked in the same row so a single charge is one round trip.
@@ -20,7 +21,7 @@ Model:
       resets, it is spent before the day/month allowances, and what it pays
       for does not count against either cap. A charge takes as much as it can
       from the extra balance and bills only the remainder to day/month, so a
-      balance smaller than one pro turn (4.7) can't get stranded.
+      balance smaller than one turn can't get stranded.
     - Charging is all-or-nothing: if the part left for day/month would push
       either counter over its limit, nothing is charged at all (the request
       should be rejected outright, not partially billed).
@@ -48,18 +49,17 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 
 # Cost of one charge, keyed by whatever the caller passes as `mode`.
 #
-# Interactive turns are keyed by **model id** now (see core/chat_models.py) —
-# `rix` and `best` are 1 credit and every other model is 3. `best-vision` is
-# what the chat router passes when this turn carries an image; it is priced the
-# same as `best` while `best` is luna on both paths, and stays a key of its own
-# so image turns remain countable in the usage rows and so there is one line to
-# put back to 3.0 when the fine-tune takes the text path again. The old
-# `fast`/`pro` keys are kept because a client on a stale bundle, or a rewind of
-# a thread created before this change, still sends them; both bill as `best`
-# did.
+# Interactive turns are keyed by the id of the **concrete model that serves
+# them** (see core/chat_models.py) — `rix` is 1 credit and `luna`/`gemini` are 3.
+# `best` and its image variant are deliberately absent: `best` is a router, so
+# the chat router resolves it through `serving_model` and charges the model it
+# actually routed to. The old `fast`/`pro` keys are gone too; a stale client
+# that still sends one is mapped to `best` on the wire (`_LEGACY_ALIASES`) and
+# then billed by route like any other `best` turn.
 #
-# `scheduled` is unrelated to the picker and unchanged: an unattended research
-# run is a much bigger job than one chat turn.
+# `scheduled` is unrelated to the picker: an unattended research run always
+# runs on luna (core/agent.py's build_scheduled_agent) and is a flat 3, the
+# same as one luna chat turn.
 #
 # `voice`/`voice-text` are core/voice/session.py's live call and
 # core/routers/voice.py's typed-continuation endpoint — priced apart from
@@ -68,14 +68,10 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "3
 # typed one in the same thread because it also pays for STT (OpenAI realtime)
 # and TTS (Fish Audio) on top of the LLM call a typed turn alone makes.
 MODE_CREDIT_COST: dict[str, float] = {
-    "best": 1.0,
-    "best-vision": 1.0,
     "rix": 1.0,
     "luna": 3.0,
     "gemini": 3.0,
-    "fast": 1.0,
-    "pro": 1.0,
-    "scheduled": 4.7,
+    "scheduled": 3.0,
     "voice": 5.0,
     "voice-text": 1.0,
 }

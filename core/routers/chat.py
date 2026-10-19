@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessag
 
 from core.agent import get_agent, resolve_skill_name
 from core.follow_ups import get_follow_ups
-from core.chat_models import ChatModel, resolve_model
+from core.chat_models import ChatModel, resolve_model, serving_model
 from core.database.db_user_files import get_file_record
 from core.stream import run_agent_stream, build_message_content
 import core.database.checkpointer as checkpointer_module
@@ -437,14 +437,10 @@ def _model_gate(model_id: str | None, user_id: str, has_image: bool) -> ChatMode
 
 
 def _charge_key(model: ChatModel, has_image: bool) -> str:
-    """The MODE_CREDIT_COST key for this turn.
-
-    `best` splits in two: an image turn is served by the vision fallback, so it
-    is billed as that model rather than as the 1-credit fine-tune.
-    """
-    if has_image and model.vision_fallback is not None:
-        return f"{model.id}-vision"
-    return model.id
+    """The MODE_CREDIT_COST key for this turn: the id of the concrete model that
+    will actually run it. `best` is a router and has no key of its own — it is
+    billed as whatever `serving_model` routes it to."""
+    return serving_model(model.id, has_image=has_image).id
 
 
 def _register_and_touch(thread_id: str, user_id: str, register: bool) -> None:
@@ -480,7 +476,8 @@ async def chat(
 
     `request.model` picks the weights — see core/chat_models.py for the catalog.
     Every model runs the same prompt, tools and skills; what changes is cost (1
-    credit for the fine-tune, 3 for the rest) and whether guests may use it.
+    credit for the fine-tune, 3 for the rest, `best` billed as whichever model
+    it routes to) and whether guests may use it.
     """
     thread_id = request.thread_id
     p = request.personalization

@@ -16,23 +16,22 @@ Four entries, two of them open to guests:
 
 ## Billing
 
-`best` is 1 credit and everything else is 3, *including* a `best` turn that
-routes to luna — the user pays for the model that actually ran, not the one
-they picked.
+The user pays for the model that actually runs, never for the name they picked.
+`best` is a router, not a model: it has no price of its own, and a turn on it is
+billed as whichever concrete model `serving_model` says takes the turn — luna is
+3 credits, rix is 1. Today `best` routes to luna on both the text and image
+paths, so a `best` turn costs 3. When the fine-tune takes the text path again,
+pointing `text_route` back at `rix` is the whole change: the price follows.
 
-While `best` serves luna on the text path too (see the entry below), it is a
-flat 1 credit either way — the split existed to charge for a different, dearer
-model taking the turn, and there is no different model at the moment. It goes
-back to 3 on the image path when the fine-tune takes the text path again.
-
-The routing decision and the billing decision are also made in different
-places, and that is the seam worth knowing about. `VisionModelMiddleware` swaps
-when an image appears **anywhere in the conversation**; billing runs before the
-agent does and can only see **this turn's** attachments. So a follow-up question
-about an image sent two turns ago is billed at 1 credit. Closing that gap means
-reading thread state on the charge path, which is a DB round trip on the hot
-path for a rare case — `credits_for` documents the rule it actually implements
-rather than pretending otherwise.
+The routing decision and the billing decision are made in different places, and
+that is the seam worth knowing about. `VisionModelMiddleware` swaps when an
+image appears **anywhere in the conversation**; billing runs before the agent
+does and can only see **this turn's** attachments. So once `best`'s two routes
+differ in price, a follow-up question about an image sent two turns ago would be
+billed on the text route. Closing that gap means reading thread state on the
+charge path, which is a DB round trip on the hot path for a rare case —
+`serving_model` documents the rule it actually implements rather than pretending
+otherwise. (While both routes are luna the gap costs nothing.)
 """
 from __future__ import annotations
 
@@ -53,7 +52,9 @@ class ChatModel:
     id: str
     label: str
     llm: BaseChatModel
-    credits: float
+    # Per-turn price of a concrete model. None on a router (`best`), which is
+    # billed as whatever it routes to — see `serving_model`.
+    credits: float | None
     requires_auth: bool
     # True for every model currently listed. It exists for text-only entries:
     # the frontend blocks the attachment before it is uploaded, and
@@ -63,8 +64,12 @@ class ChatModel:
     # only — that swap *is* what "best available" means here. None elsewhere:
     # luna/gemini/rix read images natively.
     vision_fallback: BaseChatModel | None = None
-    # Credits charged when `vision_fallback` takes the turn.
-    vision_credits: float | None = None
+    # Routers only: the id of the concrete CHAT_MODELS entry that takes a text
+    # turn / an image turn. These decide the price. They must name the same
+    # model `llm` / `vision_fallback` actually are, or the user is billed for one
+    # model and served another.
+    text_route: str | None = None
+    vision_route: str | None = None
 
 
 CHAT_MODELS: dict[str, ChatModel] = {
@@ -78,19 +83,15 @@ CHAT_MODELS: dict[str, ChatModel] = {
         # gets the adapter, and so does the eval matrix — `core/llm.py`'s
         # `chat_llm` deliberately did not follow this switch.
         llm=gpt_6_luna,
-        credits=1.0,
+        # A router has no price of its own; see `text_route` / `vision_route`.
+        credits=None,
         requires_auth=False,
         accepts_images=True,
         # A swap to the model already running, and kept anyway: it is the
-        # line that has to change back when the adapter returns, and it is
-        # what keeps image turns identifiable in the usage rows (the router
-        # bills them under a `best-vision` key of their own).
+        # line that has to change back when the adapter returns.
         vision_fallback=vision_llm,
-        # Same price as a text turn, because it is now the same model. Stated
-        # rather than left to default to `credits` so that this and
-        # MODE_CREDIT_COST["best-vision"] read as the pair they are — both go
-        # back to 3.0 together when the adapter takes the text path again.
-        vision_credits=1.0,
+        text_route="luna",
+        vision_route="luna",
     ),
     "rix": ChatModel(
         id="rix",
@@ -155,14 +156,21 @@ def resolve_model(model_id: str | None) -> ChatModel:
     return CHAT_MODELS[key]
 
 
-def credits_for(model_id: str | None, *, has_image: bool = False) -> float:
-    """Credit cost of one turn on `model_id`.
+def serving_model(model_id: str | None, *, has_image: bool = False) -> ChatModel:
+    """The concrete model that will run this turn — what the user is billed for.
 
-    `has_image` means *this request* carries an image attachment — the only
-    signal available before the agent runs. See the module docstring for the
-    follow-up-turn gap this leaves open.
+    A concrete model serves itself. A router (`best`) resolves through its
+    `text_route` / `vision_route`. `has_image` means *this request* carries an
+    image attachment — the only signal available before the agent runs. See the
+    module docstring for the follow-up-turn gap this leaves open.
     """
     m = resolve_model(model_id)
-    if has_image and m.vision_credits is not None:
-        return m.vision_credits
-    return m.credits
+    if m.text_route is None:
+        return m
+    route = m.vision_route if has_image and m.vision_route else m.text_route
+    return CHAT_MODELS[route]
+
+
+def credits_for(model_id: str | None, *, has_image: bool = False) -> float:
+    """Credit cost of one turn on `model_id`, after routing."""
+    return serving_model(model_id, has_image=has_image).credits
