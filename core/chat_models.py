@@ -7,31 +7,29 @@ across every entry here. That uniformity is what lets `rix` be served by a LoRA
 (an adapter has exactly one compatible prompt), and keeping the entries uniform
 is what makes serving the next one a one-line change.
 
-Four entries, two of them open to guests:
+Four entries, three of them open to guests:
 
-    best      the default; luna underneath, on both the text and image paths
-    rix       the fine-tune: Gemma 4 26B-A4B distilled from luna (opt-in)
+    best      the default; a router — see core/routing.py. It has no weights of
+              its own: each turn lands on rix or luna
+    rix       the fine-tune: Gemma 4 26B-A4B distilled from luna (free)
     luna      signed in
     gemini    signed in
 
 ## Billing
 
-The user pays for the model that actually runs, never for the name they picked.
-`best` is a router, not a model: it has no price of its own, and a turn on it is
-billed as whichever concrete model `serving_model` says takes the turn — luna is
-3 credits, rix is 1. Today `best` routes to luna on both the text and image
-paths, so a `best` turn costs 3. When the fine-tune takes the text path again,
-pointing `text_route` back at `rix` is the whole change: the price follows.
+The user pays for the model that actually runs, never for the name they picked:
+rix is free (0 credits), luna and gemini are 3. `best` has no price of its own —
+core/routing.py decides which concrete model takes the turn *before* anything is
+charged (routing needs only the request and one Redis read), and that model's id
+is the billing key. A turn that lands on rix costs nothing, so it also passes the
+usage gate for a user who is out of credits.
 
-The routing decision and the billing decision are made in different places, and
-that is the seam worth knowing about. `VisionModelMiddleware` swaps when an
-image appears **anywhere in the conversation**; billing runs before the agent
-does and can only see **this turn's** attachments. So once `best`'s two routes
-differ in price, a follow-up question about an image sent two turns ago would be
-billed on the text route. Closing that gap means reading thread state on the
-charge path, which is a DB round trip on the hot path for a rare case —
-`serving_model` documents the rule it actually implements rather than pretending
-otherwise. (While both routes are luna the gap costs nothing.)
+`serving_model` is the answer for a caller that does not run the routing policy
+(the training-data collector, which wants the teacher; a state read that needs
+*an* agent): a router resolves to its `fallback_route`, luna.
+
+Images do not change the route or the price. Every model reads them, rix
+included (Gemma 4 is multimodal and W&B serves the adapter with vision).
 """
 from __future__ import annotations
 
@@ -43,7 +41,6 @@ from core.llm import (
     gemini_3_6_flash,
     gpt_6_luna,
     rix_gemma_v1,
-    vision_llm,
 )
 
 
@@ -51,53 +48,44 @@ from core.llm import (
 class ChatModel:
     id: str
     label: str
-    llm: BaseChatModel
-    # Per-turn price of a concrete model. None on a router (`best`), which is
-    # billed as whatever it routes to — see `serving_model`.
+    # None on a router (`best`): it has no weights of its own, so no agent is
+    # built for it — turns run on the concrete model core/routing.py picks.
+    llm: BaseChatModel | None
+    # Per-turn price of a concrete model; 0 is free. None on a router, which is
+    # billed as whatever it routes to.
     credits: float | None
     requires_auth: bool
     # True for every model currently listed. It exists for text-only entries:
     # the frontend blocks the attachment before it is uploaded, and
     # `core/routers/chat.py` rejects it again for clients that don't.
     accepts_images: bool
-    # Model to swap in when the conversation contains an image. Set on `best`
-    # only — that swap *is* what "best available" means here. None elsewhere:
-    # luna/gemini/rix read images natively.
-    vision_fallback: BaseChatModel | None = None
-    # Routers only: the id of the concrete CHAT_MODELS entry that takes a text
-    # turn / an image turn. These decide the price. They must name the same
-    # model `llm` / `vision_fallback` actually are, or the user is billed for one
-    # model and served another.
-    text_route: str | None = None
-    vision_route: str | None = None
+    # Routers only: the concrete model for callers that do not run the routing
+    # policy (see `serving_model`).
+    fallback_route: str | None = None
+
+    @property
+    def is_router(self) -> bool:
+        return self.fallback_route is not None
 
 
 CHAT_MODELS: dict[str, ChatModel] = {
     "best": ChatModel(
         id="best",
         label="Best",
-        # Luna on both paths for now. The fine-tune served the text half until
-        # it started misbehaving in production; `best` is the default and the
-        # only entry a guest can reach, so it is the one place that cannot
-        # carry a model under investigation. Picking `rix` explicitly still
-        # gets the adapter, and so does the eval matrix — `core/llm.py`'s
-        # `chat_llm` deliberately did not follow this switch.
-        llm=gpt_6_luna,
-        # A router has no price of its own; see `text_route` / `vision_route`.
+        # A router: core/routing.py sends the early turns of a thread to rix and
+        # the rest (and anything that asked for a skill) to luna. No llm and no
+        # price of its own.
+        llm=None,
         credits=None,
         requires_auth=False,
         accepts_images=True,
-        # A swap to the model already running, and kept anyway: it is the
-        # line that has to change back when the adapter returns.
-        vision_fallback=vision_llm,
-        text_route="luna",
-        vision_route="luna",
+        fallback_route="luna",
     ),
     "rix": ChatModel(
         id="rix",
         label="Rix",
         llm=rix_gemma_v1,
-        credits=1.0,
+        credits=0.0,
         requires_auth=False,
         # Gemma 4 is multimodal and W&B serves this adapter with vision (an image
         # turn answered correctly when checked), and the training set includes
@@ -156,21 +144,13 @@ def resolve_model(model_id: str | None) -> ChatModel:
     return CHAT_MODELS[key]
 
 
-def serving_model(model_id: str | None, *, has_image: bool = False) -> ChatModel:
-    """The concrete model that will run this turn — what the user is billed for.
-
-    A concrete model serves itself. A router (`best`) resolves through its
-    `text_route` / `vision_route`. `has_image` means *this request* carries an
-    image attachment — the only signal available before the agent runs. See the
-    module docstring for the follow-up-turn gap this leaves open.
-    """
+def serving_model(model_id: str | None) -> ChatModel:
+    """The concrete model behind `model_id` for a caller that does not run the
+    routing policy: a concrete model is itself, a router is its fallback."""
     m = resolve_model(model_id)
-    if m.text_route is None:
-        return m
-    route = m.vision_route if has_image and m.vision_route else m.text_route
-    return CHAT_MODELS[route]
+    return CHAT_MODELS[m.fallback_route] if m.is_router else m
 
 
-def credits_for(model_id: str | None, *, has_image: bool = False) -> float:
-    """Credit cost of one turn on `model_id`, after routing."""
-    return serving_model(model_id, has_image=has_image).credits
+def credits_for(model_id: str | None) -> float:
+    """Credit cost of one turn on `model_id` (a router priced as its fallback)."""
+    return serving_model(model_id).credits

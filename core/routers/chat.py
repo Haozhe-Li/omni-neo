@@ -12,7 +12,8 @@ from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessag
 
 from core.agent import get_agent, resolve_skill_name
 from core.follow_ups import get_follow_ups
-from core.chat_models import ChatModel, resolve_model, serving_model
+from core.chat_models import ChatModel, resolve_model
+from core.routing import decide_route, remember_escalation
 from core.database.db_user_files import get_file_record
 from core.stream import run_agent_stream, build_message_content
 import core.database.checkpointer as checkpointer_module
@@ -436,13 +437,6 @@ def _model_gate(model_id: str | None, user_id: str, has_image: bool) -> ChatMode
     return model
 
 
-def _charge_key(model: ChatModel, has_image: bool) -> str:
-    """The MODE_CREDIT_COST key for this turn: the id of the concrete model that
-    will actually run it. `best` is a router and has no key of its own — it is
-    billed as whatever `serving_model` routes it to."""
-    return serving_model(model.id, has_image=has_image).id
-
-
 def _register_and_touch(thread_id: str, user_id: str, register: bool) -> None:
     """Background job at the start of a turn: create the thread's rows if the
     client just minted its id (see ensure_thread_registered), then bump it."""
@@ -486,7 +480,11 @@ async def chat(
     # Model gate first: an unusable request must not reach the usage ledger.
     has_image = await _has_image_attachment(request.attached_file_ids)
     model = _model_gate(request.resolved_model_id, user_id, has_image)
-    charge_key = _charge_key(model, has_image)
+    requested_skill = resolve_skill_name(request.skill)
+    # `best` is a router: which model serves this turn — and so what it costs —
+    # is decided here, before the charge. See core/routing.py.
+    route = await decide_route(model, thread_id, request.turn, requested_skill)
+    charge_key = route.model_id
     # Whether this turn carries the <user_memory> block — the rule lives in
     # core/utils/utils.py, shared with the training-data collector.
     should_inject_memory = memory_injection_due(request)
@@ -494,6 +492,7 @@ async def chat(
     # Structured timing for the non-LLM prelude (see core/utils/timing.py).
     t = Timing("chat_prelude", thread_id=thread_id, model=model.id,
                is_guest=user_id.startswith("guest_"), memory_enabled=memory_enabled)
+    t.set(route=route.model_id, route_reason=route.reason)
     t.set(owner_cache=("hit" if (thread_id and owner_cache_hit(thread_id)) else "miss"),
           charge_cache=("hit" if usage_snapshot_hit(user_id) else "miss"))
 
@@ -580,6 +579,7 @@ async def chat(
     # Committed to a new generation → reconcile the charge in the background
     # (off the critical path) and bump the thread's updated_at.
     commit_charge_fast(user_id, charge_key)
+    await remember_escalation(thread_id, route)
     if thread_id:
         loop = asyncio.get_event_loop()
         loop.run_in_executor(
@@ -592,7 +592,6 @@ async def chat(
     # model can tell the user's actual question apart from the context around
     # it (see the prompt's "Input Format" section).
     query_text = request.query
-    requested_skill = resolve_skill_name(request.skill)
 
     system_reminder_str, user_memory_str = build_turn_context(request, stored_memory)
     headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
@@ -611,7 +610,7 @@ async def chat(
                 thread_id=thread_id,
                 user_id=user_id,
                 query=query_text,
-                model_id=model.id,
+                model_id=route.model_id,
                 system_reminder=system_reminder_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
@@ -642,7 +641,7 @@ async def chat(
             async for chunk in run_agent_stream(
                 query=query_text,
                 thread_id=None,
-                model_id=model.id,
+                model_id=route.model_id,
                 system_reminder=system_reminder_str,
                 attached_file_ids=request.attached_file_ids,
                 user_memory=user_memory_str,
@@ -810,10 +809,14 @@ async def api_rewind_thread(
     """
     has_image = await _has_image_attachment(body.attached_file_ids)
     model = _model_gate(body.model or body.mode, user_id, has_image)
-    charge_key = _charge_key(model, has_image)
+    # Same routing as a fresh turn; a rewind carries no skill of its own, but the
+    # thread's escalation (if any) still applies. See core/routing.py.
+    route = await decide_route(model, thread_id, body.turn, None)
+    charge_key = route.model_id
 
     t = Timing("rewind_prelude", thread_id=thread_id, model=model.id,
                is_guest=user_id.startswith("guest_"))
+    t.set(route=route.model_id, route_reason=route.reason)
     # Charge-evaluate and ownership check are independent reads — run them
     # concurrently (~1 round trip instead of 2), then commit the charge
     # fire-and-forget once both gates pass. Rewind has no reconnect path.
@@ -836,7 +839,7 @@ async def api_rewind_thread(
     commit_charge_fast(user_id, charge_key)
     t.emit(outcome="charged")
 
-    agent = get_agent(model.id)
+    agent = get_agent(route.model_id)
 
     # Locate the checkpoint right after the target turn's HumanMessage,
     # before the agent replied — body.turn selects which turn (None = most
@@ -905,7 +908,7 @@ async def api_rewind_thread(
             async for chunk in run_agent_stream(
                 query="",  # unused in rewind mode
                 thread_id=thread_id,
-                model_id=model.id,
+                model_id=route.model_id,
                 system_reminder=system_reminder_str,
                 attached_file_ids=body.attached_file_ids,
                 user_location=p.user_location if p else None,

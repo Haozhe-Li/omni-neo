@@ -29,47 +29,37 @@ def test_the_archived_gemma_is_gone_everywhere_it_could_be_served_from():
     assert llm.CHAT_LLM_FALLBACKS, "the chain must keep at least one live fallback"
 
 
-def test_old_threads_that_carry_gemma_still_resolve_and_bill_by_route():
+def test_old_threads_that_carry_gemma_still_resolve_to_the_router():
     # A rewind of a thread created while gemma was selectable sends `gemma`; an
-    # unknown id would 400 it. It resolves to `best`, which is billed as the
-    # model it routes to.
+    # unknown id would 400 it.
     assert resolve_model("gemma").id == "best"
     assert resolve_model("GEMMA ").id == "best"
-    assert credits_for("gemma") == credits_for("best") == 3.0
+    assert resolve_model("gemma").is_router
 
 
-def test_best_is_a_router_and_is_billed_as_the_model_it_routes_to():
+def test_best_is_a_router_with_no_weights_and_no_price():
     best = CHAT_MODELS["best"]
-    assert best.credits is None  # no price of its own
-    # Both routes name real, concrete (non-router) entries.
-    for route in (best.text_route, best.vision_route):
-        assert route in CHAT_MODELS and CHAT_MODELS[route].text_route is None
-    # Today both routes are luna: 3 credits on text and on images.
+    assert best.is_router and best.llm is None and best.credits is None
+    # Callers that do not run the routing policy (collector, state reads) get luna.
     assert serving_model("best").id == "luna"
-    assert serving_model("best", has_image=True).id == "luna"
-    assert credits_for("best") == credits_for("best", has_image=True) == 3.0
-    # The route must be the model that actually runs, or billing and serving diverge.
-    assert best.llm is CHAT_MODELS[best.text_route].llm
-    assert best.vision_fallback is CHAT_MODELS[best.vision_route].llm
+    assert credits_for("best") == 3.0
+    assert not any(m.is_router for k, m in CHAT_MODELS.items() if k != "best")
 
 
 def test_concrete_models_bill_for_themselves():
-    assert (credits_for("rix"), credits_for("luna"), credits_for("gemini")) == (1.0, 3.0, 3.0)
-    assert credits_for("rix", has_image=True) == 1.0
+    assert (credits_for("rix"), credits_for("luna"), credits_for("gemini")) == (0.0, 3.0, 3.0)
     assert all(serving_model(k).id == k for k in ("rix", "luna", "gemini"))
 
 
-def test_every_billing_key_has_a_price():
+def test_every_routable_model_has_a_price():
     from core.database.db_user_usage import MODE_CREDIT_COST
 
-    # What the chat router charges for any model, with or without an image.
-    keys = {serving_model(k, has_image=i).id for k in CHAT_MODELS for i in (False, True)}
-    assert keys <= set(MODE_CREDIT_COST)
+    concrete = {k for k, m in CHAT_MODELS.items() if not m.is_router}
+    assert concrete <= set(MODE_CREDIT_COST)
     # Router and legacy keys are gone: nothing is billed under them any more.
     assert not {"best", "best-vision", "fast", "pro"} & set(MODE_CREDIT_COST)
     assert MODE_CREDIT_COST["scheduled"] == 3.0
-    # The table agrees with the catalog.
-    for k in ("rix", "luna", "gemini"):
+    for k in concrete:
         assert MODE_CREDIT_COST[k] == CHAT_MODELS[k].credits
 
 

@@ -6,7 +6,7 @@ Table schema: see schema.sql.
 
 Model:
     - Every /chat or /rewind call spends credits, priced by the model that
-      actually serves it: 1 for the fine-tune, 3 for a frontier model, and
+      actually serves it: free for the fine-tune, 3 for a frontier model, and
       `best` (a router) is billed as whichever of those it routed to
       (MODE_CREDIT_COST below). A scheduled research run (core/routers/scheduled_tasks.py) spends
       3 against the same ledger. Costs are fractional, hence NUMERIC columns
@@ -51,10 +51,10 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = 300
 # Cost of one charge, keyed by whatever the caller passes as `mode`.
 #
 # Interactive turns are keyed by the id of the **concrete model that serves
-# them** (see core/chat_models.py) — `rix` is 1 credit and `luna`/`gemini` are 3.
-# `best` and its image variant are deliberately absent: `best` is a router, so
-# the chat router resolves it through `serving_model` and charges the model it
-# actually routed to. The old `fast`/`pro` keys are gone too; a stale client
+# them** (see core/chat_models.py) — `rix` is free and `luna`/`gemini` are 3.
+# `best` is deliberately absent: it is a router, so the chat router resolves it
+# with core/routing.py and charges the model it actually routed to. The old
+# `fast`/`pro` keys are gone too; a stale client
 # that still sends one is mapped to `best` on the wire (`_LEGACY_ALIASES`) and
 # then billed by route like any other `best` turn.
 #
@@ -69,7 +69,7 @@ GUEST_MONTHLY_CREDIT_LIMIT: int = 300
 # typed one in the same thread because it also pays for STT (OpenAI realtime)
 # and TTS (Fish Audio) on top of the LLM call a typed turn alone makes.
 MODE_CREDIT_COST: dict[str, float] = {
-    "rix": 1.0,
+    "rix": 0.0,
     "luna": 3.0,
     "gemini": 3.0,
     "scheduled": 3.0,
@@ -203,7 +203,9 @@ def _charge_decision(user_id: str, row: dict | None, ctx: dict) -> tuple[dict | 
         "resets_day_at": ctx["resets_day_at"], "resets_month_at": ctx["resets_month_at"],
         "extra_granted": extra_granted,
     }
-    if new_day <= ctx["day_limit"] and new_month <= ctx["month_limit"]:
+    # A free turn (rix) is always let through: it must not be refused for a user
+    # who is out of credits, which is the point of it being free.
+    if ctx["cost"] <= 0 or (new_day <= ctx["day_limit"] and new_month <= ctx["month_limit"]):
         # The full row is written even when extra paid for everything: `day`
         # and `month` still have to be re-stamped so a rolled-over counter is
         # persisted as reset rather than left stale for the next read.
@@ -352,6 +354,10 @@ async def evaluate_charge_fast(user_id: str, mode: str) -> dict:
     which the caller invokes only when it actually proceeds (so a reconnect,
     which never calls it, never charges)."""
     ctx = _charge_context(user_id, mode)
+    if ctx["cost"] <= 0:
+        # Free turn: nothing to gate on, so no snapshot and no DB read. Only
+        # `charged` is looked at by callers when it is True.
+        return _charge_failopen(ctx)
     row = _snapshot_get(user_id, ctx["today_iso"], ctx["month"])
     if row is not None:
         _, result = _charge_decision(user_id, row, ctx)
@@ -373,7 +379,10 @@ def usage_snapshot_hit(user_id: str) -> bool:
 
 def commit_charge_fast(user_id: str, mode: str) -> None:
     """Fire-and-forget: do the real, atomic charge against the DB, then re-anchor
-    the local snapshot to the post-write truth."""
+    the local snapshot to the post-write truth. A free turn writes nothing."""
+    if MODE_CREDIT_COST.get(mode, _DEFAULT_CREDIT_COST) <= 0:
+        return
+
     async def _run():
         try:
             ctx = _charge_context(user_id, mode)

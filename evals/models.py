@@ -151,7 +151,7 @@ def discover_models() -> list[ModelSpec]:
     """Every chat model defined in `core/llm.py`, in definition order.
 
     Deduplicated by object identity: `core/llm.py` binds role aliases
-    (`chat_llm`, `vision_llm`, `update_memories_llm`, ...) to the same instances,
+    (`chat_llm`, `update_memories_llm`, ...) to the same instances,
     and evaluating `gpt-oss-120b-low` a second time under the name `fast-llm`
     would just double the bill and split its results across two labels. The
     canonical (first-defined) name wins.

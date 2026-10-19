@@ -37,7 +37,6 @@ from __future__ import annotations
 import os
 
 from langchain.agents.middleware import (
-    AgentMiddleware,
     ModelFallbackMiddleware,
     ToolRetryMiddleware,
     ToolCallLimitMiddleware,
@@ -55,7 +54,7 @@ from pydantic import BaseModel, Field
 import core.database.checkpointer as _db
 from core.tool_budget import ToolBudgetMiddleware
 from core.tools.adapters import AGENT_TOOLS
-from core.chat_models import CHAT_MODELS, ChatModel, resolve_model
+from core.chat_models import CHAT_MODELS, ChatModel, serving_model
 from core.llm import *
 
 
@@ -759,51 +758,11 @@ def resolve_skill_name(skill: str | None) -> str | None:
     return SKILL_ALIASES.get(skill.strip().lower(), skill)
 
 
-def _messages_have_image(messages) -> bool:
-    for msg in messages:
-        content = getattr(msg, "content", None)
-        if isinstance(content, list) and any(
-            isinstance(b, dict) and b.get("type") == "image_url" for b in content
-        ):
-            return True
-    return False
-
-
-class VisionModelMiddleware(AgentMiddleware):
-    """Swap to a vision-capable model whenever an image appears anywhere in the
-    conversation, not just the latest turn — a later turn re-referencing an
-    earlier image is still a multimodal request.
-
-    This used to be a fast-profile detail (gpt-oss-120b is text-only). It is only
-    set for `best`, whose text path may be a text-only model.
-
-    Note what this does *not* do — it swaps the model, not the prompt. Luna
-    receives the same system prompt the adapter was trained on, which is correct
-    (it is the teacher those trajectories were distilled from, so it reads the
-    prompt natively) but does mean image turns are served by a model that has
-    never been tuned on this harness. Expect image answers to behave like the
-    luna baseline, not like the fine-tune."""
-
-    def __init__(self, vision_model):
-        super().__init__()
-        self.vision_model = vision_model
-
-    def wrap_model_call(self, request, handler):
-        if _messages_have_image(request.messages):
-            request = request.override(model=self.vision_model)
-        return handler(request)
-
-    async def awrap_model_call(self, request, handler):
-        if _messages_have_image(request.messages):
-            request = request.override(model=self.vision_model)
-        return await handler(request)
-
-
 def build_agent(model: ChatModel):
-    """Construct the Omni interactive agent bound to one selectable model.
+    """Construct the Omni interactive agent bound to one concrete model.
 
     Every model gets the *same* prompt, tools, skills and turn budget — they
-    differ only in weights and in whether an image reroutes the turn. That
+    differ only in weights. That
     uniformity is a requirement, not a convenience: `system_prompt` plus the
     skill roster is a LoRA's compatibility key, so a fine-tune and `best` have
     to be assembled identically or the adapter is being served an input it was
@@ -819,14 +778,6 @@ def build_agent(model: ChatModel):
         # on purpose, so the withheld tools stay withheld through a fallback retry.
         ToolBudgetMiddleware(),
     ]
-    if model.vision_fallback is not None:
-        # Order matters, and only between these two: `wrap_model_call`
-        # middleware compose first-in-list-outermost, so the vision swap has to
-        # sit OUTSIDE the fallback. Reversed, the fallback would hand each retry
-        # back to the vision middleware, which unconditionally re-overrides the
-        # model on any image turn and would put the failing endpoint straight
-        # back — a fallback chain that silently retries the same dead host.
-        middleware.append(VisionModelMiddleware(model.vision_fallback))
     middleware.append(ModelFallbackMiddleware(*CHAT_LLM_FALLBACKS))
 
     return create_deep_agent(
@@ -851,6 +802,8 @@ def initialize_agents():
     global scheduled_agent
     _agents.clear()
     for model_id, model in CHAT_MODELS.items():
+        if model.is_router:
+            continue  # `best` has no weights; get_agent maps it to a real one
         _agents[model_id] = build_agent(model)
     scheduled_agent = build_scheduled_agent()
 
@@ -863,4 +816,4 @@ def get_agent(model_id: str | None = None):
     prompt/tool surface they all assemble is identical. What changes mid-thread
     is only which weights read the existing history.
     """
-    return _agents[resolve_model(model_id).id]
+    return _agents[serving_model(model_id).id]

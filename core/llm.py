@@ -248,14 +248,11 @@ rix_voice = ChatWandb(
 )
 
 # The model the pro agent is served on, as the eval matrix and
-# finetune/pro_agent/fingerprint.py read it, and the fallback for an image turn
-# on `best`. `best` itself serves luna on both paths for now
-# (core/chat_models.py), so `chat_llm` names the fine-tune rather than following
-# that switch: the fingerprint resolves its harness profile from the model's
-# provider, and pointed at an OpenAI model it would capture a system prompt the
-# adapter is never served.
+# finetune/pro_agent/fingerprint.py read it. It names the fine-tune: the
+# fingerprint resolves its harness profile from the model's provider, and
+# pointed at an OpenAI model it would capture a system prompt the adapter is
+# never served.
 chat_llm = rix_gemma_v1
-vision_llm = gpt_6_luna
 
 get_title_llm = gpt_oss_20b
 prompt_guard_llm = prompt_guard_2_86m
