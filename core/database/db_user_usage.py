@@ -13,7 +13,7 @@ Model:
       rather than INT.
     - Two independent caps apply at once: a daily one and a calendar-month one.
       Both are tracked in the same row so a single charge is one round trip.
-    - Limits differ for guests vs signed-in users (see *_CREDIT_LIMIT below),
+    - Limits differ for guests vs signed-in users (see *_CREDIT_LIMIT below, fixed constants),
       keyed the same way every other per-user table in this codebase is:
       `user_id` is either a Clerk sub or a `guest_<uuid>` string.
     - On top of the two caps sits a THIRD bucket: extra credits redeemed with
@@ -33,7 +33,6 @@ user therefore serialise instead of overwriting each other.
 
 import asyncio
 import logging
-import os
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -42,10 +41,12 @@ from core.database import pg
 
 logger = logging.getLogger(__name__)
 
-USER_DAILY_CREDIT_LIMIT: int = int(os.getenv("USER_DAILY_CREDIT_LIMIT", "100"))
-USER_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("USER_MONTHLY_CREDIT_LIMIT", "3000"))
-GUEST_DAILY_CREDIT_LIMIT: int = int(os.getenv("GUEST_DAILY_CREDIT_LIMIT", "20"))
-GUEST_MONTHLY_CREDIT_LIMIT: int = int(os.getenv("GUEST_MONTHLY_CREDIT_LIMIT", "300"))
+# Fixed in code on purpose — they used to be read from env vars, which let
+# production drift away from what the repo says. Changing a limit is a commit.
+USER_DAILY_CREDIT_LIMIT: int = 200
+USER_MONTHLY_CREDIT_LIMIT: int = 5000
+GUEST_DAILY_CREDIT_LIMIT: int = 100
+GUEST_MONTHLY_CREDIT_LIMIT: int = 300
 
 # Cost of one charge, keyed by whatever the caller passes as `mode`.
 #

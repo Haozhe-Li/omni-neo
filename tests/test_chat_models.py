@@ -81,3 +81,12 @@ def test_the_remaining_models_are_unchanged():
 def test_unknown_ids_still_fail_loudly():
     with pytest.raises(ValueError):
         resolve_model("gpt-9000")
+
+
+def test_credit_limits_are_fixed_constants():
+    from core.database import db_user_usage as u
+
+    assert (u.GUEST_DAILY_CREDIT_LIMIT, u.GUEST_MONTHLY_CREDIT_LIMIT) == (100, 300)
+    assert (u.USER_DAILY_CREDIT_LIMIT, u.USER_MONTHLY_CREDIT_LIMIT) == (200, 5000)
+    assert u._limits("guest_abc") == (100, 300)
+    assert u._limits("user_abc") == (200, 5000)
