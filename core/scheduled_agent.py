@@ -7,7 +7,7 @@ thread_id it's given, so the resulting thread is a completely ordinary
 conversation afterward (the user can open it and keep chatting).
 
 The agent's `response_format` (see core/agent.py's `ScheduledReportOutput` /
-`build_scheduled_agent`) forces the model's final turn through Gemini's native
+`build_scheduled_agent`) forces the model's final turn through the provider's native
 structured output, so `{title, summary, report}` come back pre-parsed in
 `result["structured_response"]` — no regex-scraping of hand-written tags out
 of free text.

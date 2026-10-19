@@ -105,7 +105,7 @@ CHAT_MODELS: dict[str, ChatModel] = {
     ),
     "luna": ChatModel(
         id="luna",
-        label="GPT-5.6 Luna",
+        label="GPT-6 Luna",
         llm=gpt_6_luna,
         credits=3.0,
         requires_auth=True,

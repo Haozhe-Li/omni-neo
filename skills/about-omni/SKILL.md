@@ -28,9 +28,9 @@ description: Internal knowledge about Omni. Use this skill when the user asks ab
 ## Tech Stack
 - **LLM**:
   - Best model: the default recommendation. Omni will automatically select the most suitable model for your query.
-  - Rix: Omni's latest experimental in-house model, distilled from GPT 5.6 Luna on top of Gemma 4 26B A4B. It supports images, and because it is still in beta, answers may occasionally be less polished than the other models.
+  - Rix: Omni's latest experimental in-house model, distilled from GPT 6 Luna on top of Gemma 4 26B A4B. It supports images, and because it is still in beta, answers may occasionally be less polished than the other models.
   - Gemma 4: Google's latest open-source multimodal model from Google DeepMind.
-  - GPT 5.6 Luna: OpenAI's latest versatile multimodal model.
+  - GPT 6 Luna: OpenAI's latest versatile multimodal model.
   - Gemini 3.6 Flash: Google's latest versatile multimodal model.
 
 - **Integrated Tools:** Google Search API, Web Fetcher, OpenWeather API, Yahoo Finance API, etc.

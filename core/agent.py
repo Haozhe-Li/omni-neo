@@ -624,18 +624,18 @@ citation markers are the only allowed reference to a source.
 def build_scheduled_agent():
     """Construct the agent variant used for scheduled research tasks.
 
-    Uses Gemini Flash-Lite with `ProviderStrategy` structured output (verified
-    empirically to work alongside tool calls on this model) instead of asking
-    the model to hand-wrap a `<summary>`/`<report>` block in free text — the
-    prior tag-parsing approach was fragile (a malformed/missing tag silently
-    broke `core/scheduled_agent.py`'s regex extraction) and is unrelated to
-    why scheduled uses a cheaper model than pro: no one is watching this run
-    live, so there's no latency pressure to justify a pricier one either way.
+    Runs on GPT-6 Luna, the same model `best` serves, with `ProviderStrategy`
+    structured output instead of asking the model to hand-wrap a
+    `<summary>`/`<report>` block in free text — the prior tag-parsing approach
+    was fragile (a malformed/missing tag silently broke
+    `core/scheduled_agent.py`'s regex extraction). It used to run on Gemini
+    Flash-Lite; a report nobody reads live still has to be right, so it gets
+    the stronger model.
     """
     _register_harness_profiles()
     return create_deep_agent(
         name="Omni Scheduled",
-        model=gemini_flash_lite_latest,
+        model=gpt_6_luna,
         tools=AGENT_TOOLS,
         system_prompt=_SCHEDULED_PROMPT,
         skills=[SKILLS_SOURCE] if SCHEDULED_SKILL_FILES else None,
