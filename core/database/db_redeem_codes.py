@@ -116,8 +116,13 @@ def redeem_code(user_id: str, code: str) -> dict:
             conn.execute("UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = %s", (code,))
             ledger = conn.execute(
                 "INSERT INTO user_usage (user_id, extra_granted) VALUES (%s, %s) "
+                # Fold what's left of the old balance into the new grant and zero
+                # `extra_used`, so the meter starts a fresh bar: already-spent
+                # credits are gone, not carried as "used" against the new total.
                 "ON CONFLICT (user_id) DO UPDATE "
-                "   SET extra_granted = user_usage.extra_granted + EXCLUDED.extra_granted, "
+                "   SET extra_granted = GREATEST(user_usage.extra_granted - user_usage.extra_used, 0) "
+                "                       + EXCLUDED.extra_granted, "
+                "       extra_used = 0, "
                 "       updated_at = now() "
                 "RETURNING extra_granted, extra_used",
                 (user_id, credits),
