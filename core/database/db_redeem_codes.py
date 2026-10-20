@@ -85,26 +85,33 @@ def redeem_code(user_id: str, code: str) -> dict:
                 return {"status": "invalid_code"}
             if row["expired"]:
                 return {"status": "code_expired"}
-            # Checked before exhaustion so that someone retrying a code they already
-            # used hears "already redeemed", not "code exhausted".
-            if conn.execute(
-                "SELECT 1 FROM code_redemptions WHERE code = %s AND user_id = %s", (code, user_id)
-            ).fetchone():
-                return {"status": "already_redeemed"}
-            # max_uses <= 0 means unlimited — an evergreen/default code anyone can
-            # claim. It is unlimited *users*, one redemption each: the UNIQUE
-            # (code, user_id) guard below still applies.
-            if row["max_uses"] > 0 and row["used_count"] >= row["max_uses"]:
-                return {"status": "code_exhausted"}
-
+            # max_uses < 0 marks a repeatable code: no per-user or total limit, so
+            # the same account can redeem it again and again (an operator/test
+            # code). Such redemptions are not written to code_redemptions — its
+            # UNIQUE (code, user_id) allows one row per user — only counted in
+            # used_count.
+            repeatable = row["max_uses"] < 0
             credits = row["credits"]
-            won = conn.execute(
-                "INSERT INTO code_redemptions (code, user_id, credits) VALUES (%s, %s, %s) "
-                "ON CONFLICT (code, user_id) DO NOTHING RETURNING id",
-                (code, user_id, credits),
-            ).fetchone()
-            if won is None:
-                return {"status": "already_redeemed"}
+            if not repeatable:
+                # Checked before exhaustion so that someone retrying a code they already
+                # used hears "already redeemed", not "code exhausted".
+                if conn.execute(
+                    "SELECT 1 FROM code_redemptions WHERE code = %s AND user_id = %s", (code, user_id)
+                ).fetchone():
+                    return {"status": "already_redeemed"}
+                # max_uses == 0 means unlimited *users*, one redemption each — an
+                # evergreen/default code anyone can claim once: the UNIQUE
+                # (code, user_id) guard below still applies.
+                if row["max_uses"] > 0 and row["used_count"] >= row["max_uses"]:
+                    return {"status": "code_exhausted"}
+
+                won = conn.execute(
+                    "INSERT INTO code_redemptions (code, user_id, credits) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (code, user_id) DO NOTHING RETURNING id",
+                    (code, user_id, credits),
+                ).fetchone()
+                if won is None:
+                    return {"status": "already_redeemed"}
 
             conn.execute("UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = %s", (code,))
             ledger = conn.execute(

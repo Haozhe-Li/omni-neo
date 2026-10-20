@@ -12,6 +12,8 @@ straight into whatever is handing them out.
     # An evergreen code with a name people can remember, claimable once per
     # user by any number of users:
     python3 scripts/gen_redeem_codes.py --code OMNIKNOWSXYZ --max-uses 0 --note "default code"
+    # A repeatable code (operator/test): same account can redeem it over and over:
+    python3 scripts/gen_redeem_codes.py --code OMNIKNOWSXYZ --max-uses -1 --note "repeatable"
 
 Requires the same DATABASE_URL the backend uses (loaded from
 .env, as main.py does).
@@ -42,7 +44,8 @@ def main() -> int:
     ap.add_argument("--credits", type=float, default=1000, help="credits each code grants")
     ap.add_argument("--max-uses", type=int, default=1,
                     help="redemptions allowed per code (1 = single-use; >1 = shared campaign "
-                         "code; 0 or less = unlimited users, still one redemption each)")
+                         "code; 0 = unlimited users, still one redemption each; "
+                         "-1 or less = repeatable: unlimited users AND unlimited redemptions per user)")
     ap.add_argument("--expires-in-days", type=int, default=None, help="omit for no expiry")
     ap.add_argument("--note", default=None, help="free-form label, e.g. the campaign name")
     ap.add_argument("--dry-run", action="store_true", help="print codes without inserting")

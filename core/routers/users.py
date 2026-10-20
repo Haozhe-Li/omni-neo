@@ -17,7 +17,7 @@ from core.database.db_shared_threads import delete_user_shares
 from core.database.db_user_files import get_user_file_buckets, delete_user_files
 from core.database.db_user_usage import get_usage, delete_user_usage
 from core.database.db_redeem_codes import redeem_code
-from core.database.db_free_credit import request_free_credit
+from core.database.db_free_credit import get_free_credit_status, request_free_credit
 from core.RAG.file_parser import delete_user_uploads_from_s3
 
 router = APIRouter(prefix="/api", tags=["users"])
@@ -74,6 +74,18 @@ def api_redeem_code(
             detail={"error": result["status"]},
         )
     return result
+
+
+@router.get("/free_credit")
+async def api_free_credit_status(user_id: str = Depends(get_current_user)):
+    """
+    Read-only companion to POST /free_credit: reports whether a check is on
+    cooldown (and the code it handed out, and whether that code was redeemed)
+    so the page can show the right state on load. Never mints anything.
+    """
+    if user_id.startswith("guest_"):
+        raise HTTPException(status_code=403, detail={"error": "sign_in_required"})
+    return await get_free_credit_status(user_id)
 
 
 @router.post("/free_credit")

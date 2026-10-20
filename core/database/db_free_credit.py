@@ -18,8 +18,10 @@ here later without touching request_free_credit or the router.
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
-from core.database.db_redeem_codes import create_restricted_code
+from core.database import pg
+from core.database.db_redeem_codes import create_restricted_code, normalize_code
 from core.utils.redis_client import get_async_redis
 
 logger = logging.getLogger(__name__)
@@ -81,3 +83,49 @@ async def request_free_credit(user_id: str) -> dict:
     payload = {"status": "ok", "code": code, "expires_at": expires_at}
     await r.set(key, json.dumps(payload), ex=_GRANT_COOLDOWN_S)
     return payload
+
+
+async def get_free_credit_status(user_id: str) -> dict:
+    """Read-only view of the cooldown, for the page to render before the user
+    clicks anything. Never mints and never runs the risk check. Returns one of:
+
+      {"status": "available"}                                   — no check on file; the button may be offered
+      {"status": "cooldown", "code": str, "expires_at": iso,
+       "redeemed": bool, "available_at": iso}                   — a grant is on file; show its code
+      {"status": "denied", "available_at": iso}                 — a denial is on file
+
+    `available_at` is when the cached result lapses and a new check may run
+    (the Redis key's remaining TTL), `redeemed` whether the cached code has
+    already been claimed by this user.
+    """
+    r = get_async_redis()
+    key = _COOLDOWN_KEY_PREFIX + user_id
+
+    cached_raw = await r.get(key)
+    if not cached_raw:
+        return {"status": "available"}
+    try:
+        cached = json.loads(cached_raw)
+    except ValueError:
+        return {"status": "available"}
+
+    ttl = await r.ttl(key)
+    available_at = (datetime.now(timezone.utc) + timedelta(seconds=max(ttl, 0))).isoformat()
+
+    if cached.get("status") == "denied":
+        return {"status": "denied", "available_at": available_at}
+    if cached.get("status") != "ok" or not cached.get("code"):
+        return {"status": "available"}
+
+    redeemed = await asyncio.to_thread(
+        pg.fetch_one,
+        "SELECT 1 FROM code_redemptions WHERE code = %s AND user_id = %s",
+        (normalize_code(cached["code"]), user_id),
+    )
+    return {
+        "status": "cooldown",
+        "code": cached["code"],
+        "expires_at": cached.get("expires_at"),
+        "redeemed": redeemed is not None,
+        "available_at": available_at,
+    }
