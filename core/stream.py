@@ -343,6 +343,17 @@ def _reasoning_of(chunk: AIMessageChunk) -> str:
     return ""
 
 
+def is_pasted_content_name(filename: str) -> bool:
+    """True for the file the frontend makes out of a long paste.
+
+    The composer turns a long or code-like paste into `pasted_content.txt` and
+    uploads it like any other file (so it works for guests too); the thread's
+    own name dedup may suffix it, `pasted_content(1).txt`.
+    """
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
+    return re.fullmatch(r"pasted_content(?:\(\d+\))?", stem) is not None
+
+
 def _dedupe_document_name(
     thread_id: str | None, filename: str, file_id: str, created_at
 ) -> str:
@@ -383,19 +394,6 @@ def _tagged_block(tag: str, body: str) -> str:
     if not body:
         return ""
     return f"<{tag}>\n{body}\n</{tag}>"
-
-
-def _pasted_content_blocks(pasted: list[str] | None) -> list[str]:
-    """One `<pasted_content>` block per pasted text.
-
-    The text is the user's own and goes in verbatim, bar one thing: a literal
-    closing tag inside it would end the block early and let the rest read as
-    instructions, so that exact sequence is defanged.
-    """
-    return [
-        _tagged_block("pasted_content", re.sub(r"</(\s*pasted_content\s*)>", r"<\\/\1>", text, flags=re.I))
-        for text in (pasted or [])
-    ]
 
 
 # Mirrors QueryRequest.source_url's max_length (core/utils/data_model.py) —
@@ -512,7 +510,6 @@ def build_message_content(
     skill: str | None = None,
     source_url: list[str] | None = None,
     enrichment_text: str = "",
-    pasted_content: list[str] | None = None,
 ) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
 
@@ -573,6 +570,15 @@ def build_message_content(
                 path = f"/uploads/{mounted_name}"
                 full_text = record.get("extracted_text") or ""
                 files[path] = create_file_data(full_text)
+                if is_pasted_content_name(record.get("original_filename") or filename):
+                    # Text the user pasted, not a document to cite: mounted so the
+                    # agent can read it, but never numbered and never sent to the
+                    # sources rail.
+                    document_notes.append(
+                        f"{filename} -> mounted at {path} (text the user pasted into the message; "
+                        "read it, but it is not a source — do not cite it)"
+                    )
+                    continue
                 n = register_document_citation(
                     title=filename,
                     file_id=file_id,
@@ -615,7 +621,6 @@ def build_message_content(
             _tagged_block("user_memory", user_memory),
             _tagged_block("system_reminder", system_reminder),
             _tagged_block("attached_files", attached_files),
-            *_pasted_content_blocks(pasted_content),
             _tagged_block("requested_skill", skill),
             _tagged_block("follow_up_selection", follow_up_content),
             _tagged_block("context_enrichment", context_enrichment),
@@ -664,7 +669,6 @@ async def _stream_agent(
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
-    pasted_content: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
     harmful: "asyncio.Future[bool] | None" = None,
 ):
@@ -756,7 +760,7 @@ async def _stream_agent(
         enrichment = Enrichment()
         if skill_is_new and not source_url:
             enrichment = requested_skill_enrichment(skill)
-        elif not source_url and not pasted_content and not skill and first_turn:
+        elif not source_url and not skill and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,
@@ -791,7 +795,6 @@ async def _stream_agent(
             skill=skill,
             source_url=source_url,
             enrichment_text=enrichment.text,
-            pasted_content=pasted_content,
         )
         # The agent is a deep agent with a StateBackend: hand it the skill files
         # (so SkillsMiddleware can surface/read them) plus any uploaded
@@ -1052,7 +1055,6 @@ async def run_agent_stream(
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
-    pasted_content: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: input gates, then the agent, fail-soft.
@@ -1074,10 +1076,7 @@ async def run_agent_stream(
     # agent — so the guarantee is unchanged (a harmful query never reaches the
     # model) while its latency overlaps with the scout instead of adding to it.
     # `is_harmful` fails open and never raises.
-    # Pasted text used to arrive inside `query` and so was sampled by the guard;
-    # keep it in the sample now that it travels separately.
-    guard_text = query if not pasted_content else f"{query}\n{pasted_content[0]}"
-    harmful = asyncio.ensure_future(is_harmful(guard_text))
+    harmful = asyncio.ensure_future(is_harmful(query))
     try:
         async for event in _stream_agent(
             query, thread_id, model_id, system_reminder, attached_file_ids,
@@ -1090,7 +1089,6 @@ async def run_agent_stream(
             rewind_config=rewind_config,
             extra_sources=extra_sources,
             source_url=source_url,
-            pasted_content=pasted_content,
             cancellation_event=cancellation_event,
             harmful=harmful,
         ):
