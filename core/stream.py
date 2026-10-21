@@ -385,6 +385,19 @@ def _tagged_block(tag: str, body: str) -> str:
     return f"<{tag}>\n{body}\n</{tag}>"
 
 
+def _pasted_content_blocks(pasted: list[str] | None) -> list[str]:
+    """One `<pasted_content>` block per pasted text.
+
+    The text is the user's own and goes in verbatim, bar one thing: a literal
+    closing tag inside it would end the block early and let the rest read as
+    instructions, so that exact sequence is defanged.
+    """
+    return [
+        _tagged_block("pasted_content", re.sub(r"</(\s*pasted_content\s*)>", r"<\\/\1>", text, flags=re.I))
+        for text in (pasted or [])
+    ]
+
+
 # Mirrors QueryRequest.source_url's max_length (core/utils/data_model.py) —
 # enforced again here so a caller that bypasses the Pydantic model can't hand
 # the agent an unbounded fetch list.
@@ -499,6 +512,7 @@ def build_message_content(
     skill: str | None = None,
     source_url: list[str] | None = None,
     enrichment_text: str = "",
+    pasted_content: list[str] | None = None,
 ) -> tuple[str | list, dict, list[dict]]:
     """Build the user message, inlining images and mounting documents as files.
 
@@ -601,6 +615,7 @@ def build_message_content(
             _tagged_block("user_memory", user_memory),
             _tagged_block("system_reminder", system_reminder),
             _tagged_block("attached_files", attached_files),
+            *_pasted_content_blocks(pasted_content),
             _tagged_block("requested_skill", skill),
             _tagged_block("follow_up_selection", follow_up_content),
             _tagged_block("context_enrichment", context_enrichment),
@@ -649,6 +664,7 @@ async def _stream_agent(
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
+    pasted_content: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
     harmful: "asyncio.Future[bool] | None" = None,
 ):
@@ -740,7 +756,7 @@ async def _stream_agent(
         enrichment = Enrichment()
         if skill_is_new and not source_url:
             enrichment = requested_skill_enrichment(skill)
-        elif not source_url and not skill and first_turn:
+        elif not source_url and not pasted_content and not skill and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,
@@ -775,6 +791,7 @@ async def _stream_agent(
             skill=skill,
             source_url=source_url,
             enrichment_text=enrichment.text,
+            pasted_content=pasted_content,
         )
         # The agent is a deep agent with a StateBackend: hand it the skill files
         # (so SkillsMiddleware can surface/read them) plus any uploaded
@@ -1035,6 +1052,7 @@ async def run_agent_stream(
     rewind_config: dict | None = None,
     extra_sources: list[dict] | None = None,
     source_url: list[str] | None = None,
+    pasted_content: list[str] | None = None,
     cancellation_event: asyncio.Event | None = None,
 ):
     """Top-level SSE generator: input gates, then the agent, fail-soft.
@@ -1056,7 +1074,10 @@ async def run_agent_stream(
     # agent — so the guarantee is unchanged (a harmful query never reaches the
     # model) while its latency overlaps with the scout instead of adding to it.
     # `is_harmful` fails open and never raises.
-    harmful = asyncio.ensure_future(is_harmful(query))
+    # Pasted text used to arrive inside `query` and so was sampled by the guard;
+    # keep it in the sample now that it travels separately.
+    guard_text = query if not pasted_content else f"{query}\n{pasted_content[0]}"
+    harmful = asyncio.ensure_future(is_harmful(guard_text))
     try:
         async for event in _stream_agent(
             query, thread_id, model_id, system_reminder, attached_file_ids,
@@ -1069,6 +1090,7 @@ async def run_agent_stream(
             rewind_config=rewind_config,
             extra_sources=extra_sources,
             source_url=source_url,
+            pasted_content=pasted_content,
             cancellation_event=cancellation_event,
             harmful=harmful,
         ):

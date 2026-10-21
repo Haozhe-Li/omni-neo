@@ -82,7 +82,7 @@ _STRUCTURAL_LEAK_PATTERNS = [
     # per-request content inside — is itself conclusive, independent of what
     # that content is.
     re.compile(
-        r"</?(?:personalization|user_memory|attached_files|requested_skill|follow_up_selection|user_query)>",
+        r"</?(?:personalization|user_memory|attached_files|pasted_content|requested_skill|follow_up_selection|user_query)>",
         re.IGNORECASE,
     ),
     # gpt-oss / Harmony response-format special tokens and the fixed

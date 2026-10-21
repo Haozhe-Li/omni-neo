@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from langchain_core.messages import HumanMessage as LCHumanMessage, RemoveMessage
 
@@ -32,7 +32,7 @@ from core.redis_stream import (
     stream_read,
     STREAM_TTL_DONE,
 )
-from core.utils.data_model import Personalization, QueryRequest, CheckSourceRequest, ClassifyUrlRequest
+from core.utils.data_model import MAX_PASTED_CONTENT_CHARS, Personalization, QueryRequest, CheckSourceRequest, ClassifyUrlRequest
 from core.check_source import check_source_matches
 from core.utils.source_credibility import classify_single_url
 from core.utils.citations import reset_citation_registry_async
@@ -122,6 +122,7 @@ async def _generate_background(
     follow_up_content: str | None = None,
     skill: str | None = None,
     source_url: list[str] | None = None,
+    pasted_content: list[str] | None = None,
 ) -> None:
     """Run the agent, buffer every SSE event to Redis, and save to Postgres on done."""
     # Structured timing for the generation task: how long until the first event
@@ -172,6 +173,7 @@ async def _generate_background(
             user_local_datetime=user_local_datetime,
             turn=turn,
             source_url=source_url,
+            pasted_content=pasted_content,
             cancellation_event=cancel_event,
         ):
             if n_events == 0:
@@ -622,6 +624,7 @@ async def chat(
                 cancel_event=cancel_event,
                 memory_enabled=memory_enabled,
                 source_url=request.source_url,
+                pasted_content=request.pasted_content,
             )
         )
         generation_tasks[thread_id] = task
@@ -651,6 +654,7 @@ async def chat(
                 user_local_datetime=p.user_local_datetime if p else None,
                 turn=request.turn,
                 source_url=request.source_url,
+                pasted_content=request.pasted_content,
                 cancellation_event=cancel_event,
             ):
                 yield chunk
@@ -672,6 +676,16 @@ class RewindRequest(BaseModel):
     new_query: str | None = None  # None = pure regenerate; set to edit the last user msg
     personalization: Personalization | None = None
     attached_file_ids: list[dict[str, str]] | None = None
+    # Same as QueryRequest.pasted_content; only read when `new_query` is set.
+    pasted_content: list[str] | None = Field(default=None, max_length=5)
+
+    @field_validator("pasted_content")
+    @classmethod
+    def _cap_pasted_content(cls, v):
+        if v and any(len(t) > MAX_PASTED_CONTENT_CHARS for t in v):
+            raise ValueError(f"pasted_content items are limited to {MAX_PASTED_CONTENT_CHARS} characters")
+        return v
+
     # 1-indexed turn to rewind to (see QueryRequest.turn) — the boundary
     # checkpoint targeted is "state right after this turn's HumanMessage,
     # before the agent replied". None means "the most recent turn", matching
@@ -881,6 +895,7 @@ async def api_rewind_thread(
             build_message_content,
             body.new_query, system_reminder_str, body.attached_file_ids, thread_id,
             user_memory=user_memory_str,
+            pasted_content=body.pasted_content,
         )
     else:
         # Regenerate mode: same content, unchanged.
