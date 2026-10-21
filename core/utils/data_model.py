@@ -1,9 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
-
-# Per pasted block. The frontend trims to the same limit before sending.
-MAX_PASTED_CONTENT_CHARS = 100_000
+from pydantic import BaseModel, Field
 
 
 class Personalization(BaseModel):
@@ -42,19 +39,6 @@ class QueryRequest(BaseModel):
     # limit the frontend's URL picker enforces, kept here too so a client that
     # bypasses the UI can't hand the agent an unbounded fetch list.
     source_url: list[str] | None = Field(default=None, max_length=5)
-    # Long text the user pasted into the composer, which the frontend lifts out
-    # of the query box into an attachment chip. Sent inline rather than as an
-    # uploaded file so it works for guests (uploads need a sign-in), costs no S3
-    # round trip, and never becomes a citation source. Inlined into the user
-    # message as `<pasted_content>` blocks (see build_message_content).
-    pasted_content: list[str] | None = Field(default=None, max_length=5)
-
-    @field_validator("pasted_content")
-    @classmethod
-    def _cap_pasted_content(cls, v):
-        if v and any(len(t) > MAX_PASTED_CONTENT_CHARS for t in v):
-            raise ValueError(f"pasted_content items are limited to {MAX_PASTED_CONTENT_CHARS} characters")
-        return v
 
     @property
     def resolved_model_id(self) -> str | None:
