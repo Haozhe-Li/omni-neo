@@ -3,10 +3,10 @@ and the tools are all fakes.
 
     venv/bin/python3.12 -m pytest tests/test_context_enrichment_router.py -q
 
-The contract under test: the router decides alone for web_search / about_omni /
-direct_response; weather, stock and currency (arguments needed), long web_search
-queries (needs a short reformulation), "unsure", and any router failure all go to the
-scout LLM. Nothing the router does may raise into the turn.
+The contract under test: the router decides alone for about_omni / direct_response /
+skills; web_search (the scout LLM always writes the query, the user's text is never
+passed through), weather, stock and currency (arguments needed), "unsure", and any
+router failure all go to the scout LLM. Nothing the router does may raise into the turn.
 """
 
 from __future__ import annotations
@@ -75,16 +75,24 @@ class Harness:
         monkeypatch.setattr(ce, "_about_omni_text", lambda: "OMNI SKILL BODY")
 
 
-def test_web_search_decided_by_router_skips_the_llm_and_searches_the_query_verbatim(monkeypatch):
-    h = Harness(monkeypatch, FakeRouter(result("web_search")))
+def test_short_web_search_query_is_generated_by_the_llm_never_passed_through(monkeypatch):
+    decision = ce.EnrichmentDecision(action="web_search", search_query="vector database")
+    h = Harness(monkeypatch, FakeRouter(result("web_search")), scout_decision=decision)
     out = run(ce.enrich_context("  what is a vector database  "))
-    assert h.llm_calls == []
-    assert h.tool_calls[0][0] == "web_search" and h.tool_calls[0][1].search_query == "what is a vector database"
+    assert h.llm_calls == ["  what is a vector database  "] and h.routed_labels == ["web_search"]
+    assert h.tool_calls[0][0] == "web_search" and h.tool_calls[0][1].search_query == "vector database"
     assert out.action == "web_search" and "BODY" in out.text
     assert out.events[0] == {
-        "type": "tool_call", "tool": "web_search", "args": {"query": "what is a vector database"},
+        "type": "tool_call", "tool": "web_search", "args": {"query": "vector database"},
         "id": ce._SCOUT_CALL_ID,
     }
+
+
+def test_web_search_with_scout_failure_is_no_enrichment_not_a_passthrough(monkeypatch):
+    h = Harness(monkeypatch, FakeRouter(result("web_search")), scout_decision=None)
+    out = run(ce.enrich_context("what is a vector database"))
+    assert h.llm_calls == ["what is a vector database"] and h.tool_calls == []
+    assert out.text == "" and out.events == []
 
 
 def test_direct_response_enriches_nothing_and_does_not_call_the_llm(monkeypatch):
@@ -111,7 +119,7 @@ def test_widget_labels_still_go_to_the_llm_because_it_extracts_the_arguments(mon
 
 
 def test_long_web_search_query_goes_to_the_llm_for_a_short_reformulation(monkeypatch):
-    long_q = " ".join(["word"] * (ce._SHORTCUT_WORD_LIMIT + 2))
+    long_q = " ".join(["word"] * 22)
     decision = ce.EnrichmentDecision(action="web_search", search_query="short query")
     h = Harness(monkeypatch, FakeRouter(result("web_search")), scout_decision=decision)
     run(ce.enrich_context(long_q))
@@ -223,7 +231,8 @@ def test_the_shipped_choices_define_a_web_research_skill_that_exists_on_disk():
 def test_scout_search_reports_the_pages_it_retrieved_as_a_tool_result(monkeypatch):
     from core.utils.citations import register_citation, reset_citation_registry
 
-    Harness(monkeypatch, FakeRouter(result("web_search")))
+    decision = ce.EnrichmentDecision(action="web_search", search_query="vector database")
+    Harness(monkeypatch, FakeRouter(result("web_search")), scout_decision=decision)
     real = ce._ACTIONS["web_search"]
 
     async def search_that_cites(d):
