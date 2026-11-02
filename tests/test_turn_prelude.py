@@ -136,6 +136,25 @@ def test_benign_turn_reaches_the_model_and_emits_the_scout_step(prelude):
     assert events[0]["type"] == "tool_call"
 
 
+def test_an_attachment_skips_the_scout_entirely(prelude, monkeypatch):
+    # The scout reads only the query text, never the file, so it must not run
+    # (and its search must not fire) on a turn that carries an attachment.
+    prelude["install"](guard_delay=0.01, guard_verdict=False, scout_delay=0.01)
+    monkeypatch.setattr(
+        stream_mod, "build_message_content", lambda *a, **kw: ("hello", {}, [])
+    )
+    events = collect(attached_file_ids=[{"file-1": "report.pdf"}])
+    assert "scout_start" not in prelude["marks"]
+    assert prelude["agent"].started == 1
+    assert all(e["type"] != "tool_call" for e in events)
+
+
+def test_no_attachment_still_runs_the_scout(prelude):
+    prelude["install"](guard_delay=0.01, guard_verdict=False, scout_delay=0.01)
+    collect(attached_file_ids=[])
+    assert "scout_start" in prelude["marks"]
+
+
 def test_unfinished_guard_is_cancelled_when_the_stream_is_abandoned(prelude, monkeypatch):
     prelude["install"](guard_delay=5.0, guard_verdict=False, scout_delay=0.0)
     cancelled = []

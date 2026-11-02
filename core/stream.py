@@ -733,7 +733,11 @@ async def _stream_agent(
         #    `skill_already_delivered`.
         # 3. The pre-flight scout (`enrich_context`), first turn only — see
         #    below. Its router may answer with a skill instead of a lookup
-        #    (`Enrichment.skill`), which is then treated as case 2.
+        #    (`Enrichment.skill`), which is then treated as case 2. Skipped
+        #    whenever the turn carries an attachment: the scout sees only the
+        #    query text, never the image or document, so "what's in this
+        #    picture" would be searched blind. The agent can see the file and
+        #    decides for itself what else to look up.
         #
         # The scout is on the critical path by necessity: whatever it finds
         # has to be inside the user message the agent is about to read, so
@@ -760,7 +764,7 @@ async def _stream_agent(
         enrichment = Enrichment()
         if skill_is_new and not source_url:
             enrichment = requested_skill_enrichment(skill)
-        elif not source_url and not skill and first_turn:
+        elif not source_url and not skill and not attached_file_ids and first_turn:
             enrichment = await enrich_context(
                 query,
                 user_location=user_location,
